@@ -1,0 +1,25 @@
+# Credentials — never commit these
+.env
+
+# Scraped data — may contain PII
+data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Node
+ui/node_modules/
+ui/build/
+
+# Playwright
+playwright-report/
+test-results/
+
+# OS
+.DS_Store
+Thumbs.db
