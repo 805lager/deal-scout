@@ -1,18 +1,20 @@
 {
   "manifest_version": 3,
   "name": "Deal Scout — AI Deal Scorer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "AI-powered deal scoring for Facebook Marketplace, Craigslist, and Amazon. Scores deals instantly using real market data.",
 
   "permissions": [
     "activeTab",
     "storage",
-    "notifications"
+    "notifications",
+    "clipboardWrite"
   ],
 
   "host_permissions": [
     "https://www.facebook.com/marketplace/*",
     "https://www.craigslist.org/*",
+    "https://*.craigslist.org/*",
     "https://www.amazon.com/*",
     "http://localhost:8000/*"
   ],
@@ -26,7 +28,12 @@
     {
       "matches": [
         "https://www.facebook.com/marketplace/item/*",
-        "https://www.facebook.com/marketplace/*/item/*"
+        "https://www.facebook.com/marketplace/*/item/*",
+        "https://www.facebook.com/marketplace/",
+        "https://www.facebook.com/marketplace",
+        "https://www.facebook.com/marketplace/search/*",
+        "https://www.facebook.com/marketplace/category/*",
+        "https://www.facebook.com/marketplace/*/search/*"
       ],
       "js": ["content/fbm.js"],
       "run_at": "document_idle"

@@ -86,6 +86,7 @@ class ListingRequest(BaseModel):
     seller_name:    str  = ""
     listing_url:    str  = ""
     is_multi_item:  bool = False  # True for bundles/sets/lots — adjusts Claude's valuation logic
+    seller_trust:   dict = {}     # Seller trust signals extracted by content script
 
     class Config:
         json_schema_extra = {
@@ -175,6 +176,7 @@ async def score_listing(listing: ListingRequest):
         "seller_name":    listing.seller_name,
         "listing_url":    listing.listing_url,
         "is_multi_item":  listing.is_multi_item,
+        "seller_trust":   listing.seller_trust,
         "image_urls":     [],
     }
 

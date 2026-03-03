@@ -80,6 +80,35 @@ class DealScore:
 
 # ── Prompt Builder ────────────────────────────────────────────────────────────
 
+def _format_seller_trust(trust: dict) -> str:
+    """
+    Format seller trust data for the Claude prompt.
+
+    WHY A HELPER:
+    The trust dict may be empty (e.g. listing came from the web UI, not the
+    extension). We centralise the formatting logic here so the prompt builder
+    stays clean and we never crash on missing keys.
+    """
+    if not trust:
+        return "No seller trust data available (listing scored via web UI)"
+
+    tier    = trust.get('trust_tier', 'unknown')
+    lines   = [f"Trust tier: {tier.upper()}"]
+
+    if trust.get('member_since'):
+        lines.append(f"Member since: {trust['member_since']}")
+    if trust.get('response_rate') is not None:
+        lines.append(f"Response rate: {trust['response_rate']}%")
+    if trust.get('other_listings') is not None:
+        lines.append(f"Other active listings: {trust['other_listings']}")
+    if trust.get('seller_rating') is not None:
+        lines.append(f"Seller rating: {trust['seller_rating']}/5")
+    if len(lines) == 1:
+        lines.append("No additional seller details visible on this listing")
+
+    return "\n".join(lines)
+
+
 def build_scoring_prompt(listing: dict, market_value: dict) -> str:
     """
     Build the prompt that Claude uses to score the deal.
@@ -131,6 +160,9 @@ Seller:       {listing.get('seller_name', 'Unknown')}
 Bundle/Set:   {'Yes — see multi-item instructions above' if is_multi else 'No — single item'}
 Description:  {listing.get('description', 'No description provided')}
 
+## SELLER TRUST
+{_format_seller_trust(listing.get('seller_trust', {}))}
+
 ## MARKET VALUE DATA (from eBay — single-item comps)
 eBay sold avg:       ${market_value['sold_avg']:.2f}  ({market_value['sold_count']} completed sales)
 eBay sold range:     ${market_value['sold_low']:.2f} - ${market_value['sold_high']:.2f}
@@ -146,6 +178,7 @@ Analyze this listing holistically. Consider:
 - Does the condition description match the claimed condition?
 - Are there red flags (vague description, suspicious claims, missing accessories)?
 - Are there positive signals (extras included, detailed description, honest disclosure)?
+- What does the seller trust tier tell you about risk? A low-trust seller warrants more caution.
 - What is a reasonable offer price if the buyer wants to negotiate?
 - Would YOU recommend buying this at the listed price?
 
