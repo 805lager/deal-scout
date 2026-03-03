@@ -77,14 +77,15 @@ class ListingRequest(BaseModel):
     What the React UI sends us.
     All fields except title and price are optional — we handle missing data gracefully.
     """
-    title:       str
-    price:       float
-    raw_price_text: str = ""
-    description: str   = ""
-    location:    str   = ""
-    condition:   str   = "Unknown"
-    seller_name: str   = ""
-    listing_url: str   = ""
+    title:          str
+    price:          float
+    raw_price_text: str  = ""
+    description:    str  = ""
+    location:       str  = ""
+    condition:      str  = "Unknown"
+    seller_name:    str  = ""
+    listing_url:    str  = ""
+    is_multi_item:  bool = False  # True for bundles/sets/lots — adjusts Claude's valuation logic
 
     class Config:
         json_schema_extra = {
@@ -173,6 +174,7 @@ async def score_listing(listing: ListingRequest):
         "condition":      listing.condition,
         "seller_name":    listing.seller_name,
         "listing_url":    listing.listing_url,
+        "is_multi_item":  listing.is_multi_item,
         "image_urls":     [],
     }
 

@@ -93,19 +93,45 @@ def build_scoring_prompt(listing: dict, market_value: dict) -> str:
     Claude needs both to reason well. Market data alone misses
     listing-specific signals (condition, extras, red flags).
     Listing data alone has no price anchor.
+
+    WHY MULTI-ITEM HANDLING:
+    A "Ryobi 6-tool set for $290" should NOT be compared against
+    single Ryobi tool eBay comps (~$80 each). Without this flag,
+    Claude would wrongly call a $290 bundle overpriced.
+    When is_multi_item=True we tell Claude to reason about
+    aggregate value — what would each item cost individually.
     """
+    is_multi = listing.get('is_multi_item', False)
+
+    # Build a context-specific instruction block for multi-item listings
+    multi_item_instruction = ""
+    if is_multi:
+        multi_item_instruction = """
+## IMPORTANT: MULTI-ITEM / BUNDLE LISTING
+This listing contains multiple items, a set, lot, kit, or bundle.
+The eBay market data below reflects SINGLE-ITEM prices, not bundle prices.
+
+Adjust your analysis accordingly:
+- Estimate what each included item would cost individually on eBay
+- Sum those individual values to get total bundle market value
+- Compare the asking price against that aggregate value, NOT single-item comps
+- Note which items in the bundle drive most of the value
+- Flag if key items (like batteries, chargers, or cases) appear missing
+"""
+
     return f"""You are an expert deal evaluator for a personal shopping assistant.
 Your job is to analyze a second-hand marketplace listing and produce a structured deal score.
-
+{multi_item_instruction}
 ## LISTING DETAILS
-Title:       {listing['title']}
-Price:       {listing['raw_price_text']}
-Condition:   {listing.get('condition', 'Not specified')}
-Location:    {listing.get('location', 'Unknown')}
-Seller:      {listing.get('seller_name', 'Unknown')}
-Description: {listing.get('description', 'No description provided')}
+Title:        {listing['title']}
+Price:        {listing['raw_price_text']}
+Condition:    {listing.get('condition', 'Not specified')}
+Location:     {listing.get('location', 'Unknown')}
+Seller:       {listing.get('seller_name', 'Unknown')}
+Bundle/Set:   {'Yes — see multi-item instructions above' if is_multi else 'No — single item'}
+Description:  {listing.get('description', 'No description provided')}
 
-## MARKET VALUE DATA (from eBay)
+## MARKET VALUE DATA (from eBay — single-item comps)
 eBay sold avg:       ${market_value['sold_avg']:.2f}  ({market_value['sold_count']} completed sales)
 eBay sold range:     ${market_value['sold_low']:.2f} - ${market_value['sold_high']:.2f}
 eBay active avg:     ${market_value['active_avg']:.2f}  ({market_value['active_count']} active listings)
@@ -116,10 +142,10 @@ Data confidence:     {market_value['confidence']}
 
 ## YOUR TASK
 Analyze this listing holistically. Consider:
-- How does the asking price compare to real sold comps?
+- How does the asking price compare to real sold comps (adjusted for bundles if applicable)?
 - Does the condition description match the claimed condition?
-- Are there red flags in the listing (vague description, suspicious claims, etc.)?
-- Are there positive signals (extras included, detailed description, etc.)?
+- Are there red flags (vague description, suspicious claims, missing accessories)?
+- Are there positive signals (extras included, detailed description, honest disclosure)?
 - What is a reasonable offer price if the buyer wants to negotiate?
 - Would YOU recommend buying this at the listed price?
 
@@ -129,9 +155,9 @@ Use exactly this structure:
 
 {{
   "score": <integer 1-10>,
-  "verdict": "<10 words or less — e.g. 'Overpriced by 25%, negotiate down'>",
+  "verdict": "<10 words or less — e.g. 'Good bundle deal, 30% below aggregate value'>",
   "summary": "<2-3 sentences explaining the score in plain English>",
-  "value_assessment": "<1-2 sentences on what this item is actually worth>",
+  "value_assessment": "<1-2 sentences on what this item or bundle is actually worth>",
   "condition_notes": "<1-2 sentences on your read of the condition claim>",
   "red_flags": ["<flag 1>", "<flag 2>"],
   "green_flags": ["<flag 1>", "<flag 2>"],
