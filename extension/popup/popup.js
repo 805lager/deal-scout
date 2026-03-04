@@ -1,9 +1,5 @@
 /**
  * popup.js — Extension Popup Logic
- *
- * Handles the popup that appears when you click the extension icon.
- * Checks API health, shows current platform status, and lets
- * users manually trigger scoring on the current page.
  */
 
 const API_BASE = "http://localhost:8000";
@@ -23,6 +19,8 @@ async function checkAPIHealth() {
           Claude: ${data.anthropic_key} ·
           eBay: ${data.ebay_key}
         </span>`;
+      // Enable the open scorer button only if API is up
+      document.getElementById("open-scorer").classList.remove("disabled");
     } else {
       throw new Error(`HTTP ${resp.status}`);
     }
@@ -37,13 +35,41 @@ async function checkAPIHealth() {
 }
 
 
+// ── Open Full Scorer ──────────────────────────────────────────────────────────
+
+document.getElementById("open-scorer").addEventListener("click", async (e) => {
+  /**
+   * WHY WE OPEN IN A NEW TAB (not a popup window):
+   * The full scorer at localhost:8000/docs gives a live interactive API view.
+   * Once the React UI (Week 4) is running on :3000, swap the URL below.
+   * For now this opens the FastAPI docs which lets you manually score listings.
+   */
+  e.preventDefault();
+
+  // Check if API is actually up before opening
+  try {
+    const resp = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(2000) });
+    if (resp.ok) {
+      chrome.tabs.create({ url: `${API_BASE}/docs` });
+      window.close();
+    } else {
+      throw new Error("not ok");
+    }
+  } catch {
+    const statusEl = document.getElementById("api-status");
+    statusEl.className = "status-card error";
+    statusEl.innerHTML = `
+      ❌ API not running — can't open scorer<br>
+      <span style="font-size:11px">
+        Run: python -m uvicorn api.main:app --port 8000
+      </span>`;
+  }
+});
+
+
 // ── Score Current Page ────────────────────────────────────────────────────────
 
 document.getElementById("score-current").addEventListener("click", async () => {
-  /**
-   * Manually trigger scoring on the current tab.
-   * Useful when the auto-detect didn't fire, or user wants a re-score.
-   */
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
   const isSupportedPage =
@@ -58,7 +84,6 @@ document.getElementById("score-current").addEventListener("click", async () => {
     return;
   }
 
-  // Send message to the content script on the current page
   chrome.tabs.sendMessage(tab.id, { type: "RESCORE" }, (response) => {
     if (chrome.runtime.lastError) {
       document.getElementById("api-status").className = "status-card error";
@@ -67,7 +92,7 @@ document.getElementById("score-current").addEventListener("click", async () => {
     }
   });
 
-  window.close(); // Close popup so user can see the sidebar
+  window.close();
 });
 
 

@@ -647,6 +647,83 @@ function waitForElement(selector, timeoutMs = 5000) {
 }
 
 
+// ── Draggable Sidebar ───────────────────────────────────────────────────────────────────
+
+function makeDraggable(root, handle) {
+  /**
+   * WHY top/left AFTER DRAG (not bottom/right):
+   * The root starts anchored bottom/right. Once the user drags,
+   * we switch to top/left so the position math stays positive and
+   * predictable. We also block the click→toggle for the duration
+   * of a drag so a short drag doesn't accidentally collapse the panel.
+   */
+  let isDragging = false;
+  let dragStartX, dragStartY, rootStartX, rootStartY;
+  let wasDragged = false;
+
+  handle.style.cursor = "grab";
+
+  handle.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    isDragging = true;
+    wasDragged = false;
+    handle.style.cursor = "grabbing";
+
+    // Convert current bottom/right to top/left so offset math works
+    const rect    = root.getBoundingClientRect();
+    root.style.bottom = "auto";
+    root.style.right  = "auto";
+    root.style.top    = rect.top  + "px";
+    root.style.left   = rect.left + "px";
+
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+    rootStartX = rect.left;
+    rootStartY = rect.top;
+    e.preventDefault();
+  });
+
+  document.addEventListener("mousemove", (e) => {
+    if (!isDragging) return;
+    const dx = e.clientX - dragStartX;
+    const dy = e.clientY - dragStartY;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) wasDragged = true;
+
+    // Clamp so it can't be dragged fully off-screen
+    const newLeft = Math.max(0, Math.min(window.innerWidth  - 80, rootStartX + dx));
+    const newTop  = Math.max(0, Math.min(window.innerHeight - 40, rootStartY + dy));
+    root.style.left = newLeft + "px";
+    root.style.top  = newTop  + "px";
+  });
+
+  document.addEventListener("mouseup", () => {
+    if (!isDragging) return;
+    isDragging = false;
+    handle.style.cursor = "grab";
+    // Persist position so it survives page navigation
+    chrome.storage.local
+      .set({ ds_sidebar_pos: { left: root.style.left, top: root.style.top } })
+      .catch(() => {});
+  });
+
+  // Block the toggle-click if mouseup was end of a drag (capture phase)
+  handle.addEventListener("click", (e) => {
+    if (wasDragged) { e.stopImmediatePropagation(); wasDragged = false; }
+  }, true);
+
+  // Restore last saved position on inject
+  chrome.storage.local.get("ds_sidebar_pos").then((stored) => {
+    const pos = stored?.ds_sidebar_pos;
+    if (pos?.left && pos?.top) {
+      root.style.bottom = "auto";
+      root.style.right  = "auto";
+      root.style.left   = pos.left;
+      root.style.top    = pos.top;
+    }
+  }).catch(() => {});
+}
+
+
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 
 function injectSidebar({ loading, listing }) {
@@ -681,7 +758,10 @@ function injectSidebar({ loading, listing }) {
     </div>`;
 
   document.body.appendChild(root);
-  root.querySelector("#dealscout-tab").addEventListener("click", toggleSidebar);
+
+  const tab = root.querySelector("#dealscout-tab");
+  tab.addEventListener("click", toggleSidebar);
+  makeDraggable(root, tab);
 }
 
 function toggleSidebar() {
