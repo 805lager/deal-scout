@@ -87,56 +87,79 @@ async function runScorer() {
 // ══════════════════════════════════════════════════════════════════════════════
 
 function extractSellerTrust() {
-  const sellerSection = document.body.innerText;
+  /**
+   * WHY THESE SPECIFIC PATTERNS:
+   * Verified live against current FBM DOM (March 2026):
+   *   - FBM says "Joined Facebook in 2022", NOT "Member since"
+   *   - Review count appears as standalone "(5)" span near seller name
+   *   - "Highly rated" appears as exact text in a span
+   *   - FBM does NOT show numeric star ratings — we infer from badges
+   */
+  const bodyText = document.body.innerText;
 
-  // Member since — FBM shows this on listing pages
-  const memberMatch = sellerSection.match(/Member since (\w+ \d{4})/i);
-  const memberSince = memberMatch ? memberMatch[1] : null;
+  // "Joined Facebook in 2022" — confirmed present in current DOM
+  const joinedMatch = bodyText.match(/Joined Facebook in (\d{4})/i);
+  const memberSince = joinedMatch ? `Jan ${joinedMatch[1]}` : null;
 
-  // Response rate — sometimes visible
-  const responseMatch = sellerSection.match(/(\d+)%\s*response rate/i);
+  // Review count — appears as "(5)" as a standalone leaf span
+  const reviewSpan = Array.from(document.querySelectorAll('span'))
+    .find(el => el.childElementCount === 0 && /^\(\d+\)$/.test(el.innerText?.trim()));
+  const reviewCount = reviewSpan
+    ? parseInt(reviewSpan.innerText.replace(/[()]/g, ''))
+    : null;
+
+  // "Highly rated" badge — confirmed present in current DOM
+  const isHighlyRated = bodyText.includes('Highly rated');
+
+  // Response rate — not always shown but check anyway
+  const responseMatch = bodyText.match(/(\d+)%\s*response rate/i);
   const responseRate  = responseMatch ? parseInt(responseMatch[1]) : null;
 
   // Other listings count
-  const listingsMatch = sellerSection.match(/(\d+)\s*(other\s*)?listings?/i);
+  const listingsMatch = bodyText.match(/(\d+)\s*(?:other\s*)?listings?/i);
   const otherListings = listingsMatch ? parseInt(listingsMatch[1]) : null;
 
-  // Ratings / reviews
-  const ratingMatch = sellerSection.match(/([\d.]+)\s*(?:out of 5|★|stars?)/i);
-  const rating      = ratingMatch ? parseFloat(ratingMatch[1]) : null;
+  // Infer a rating proxy from what FBM actually shows
+  // FBM has no numeric stars — "Highly rated" + review count is our signal
+  const inferredRating = isHighlyRated ? 4.8
+    : (reviewCount && reviewCount >= 5) ? 4.0
+    : null;
 
   return {
     member_since:    memberSince,
     response_rate:   responseRate,
     other_listings:  otherListings,
-    seller_rating:   rating,
-    // Compute a simple trust tier for the prompt
-    trust_tier: computeTrustTier(memberSince, responseRate, otherListings, rating),
+    seller_rating:   inferredRating,
+    review_count:    reviewCount,
+    is_highly_rated: isHighlyRated,
+    trust_tier:      computeTrustTier(memberSince, responseRate, otherListings, inferredRating),
   };
 }
 
 function computeTrustTier(memberSince, responseRate, otherListings, rating) {
   /**
-   * WHY A TRUST TIER:
-   * Rather than dumping raw numbers into the Claude prompt, we give it
-   * a pre-computed tier. This makes the prompt more concise and gives
-   * Claude a clear signal to weight in its scoring.
+   * Scoring based on signals actually present in the FBM DOM.
+   * "Highly rated" badge (inferred rating 4.8) is the strongest signal.
+   * Account age (from "Joined Facebook in YYYY") is second.
    */
   let score = 0;
+
   if (memberSince) {
     const year = parseInt(memberSince.match(/\d{4}/)?.[0] || "0");
-    if (year && year < 2022) score += 2; // 3+ years old
-    else if (year && year < 2024) score += 1;
+    if (year && year <= 2022) score += 2;      // 3+ year old account
+    else if (year && year <= 2024) score += 1; // 1-2 year old account
   }
-  if (responseRate && responseRate >= 80) score += 2;
-  else if (responseRate && responseRate >= 50) score += 1;
-  if (otherListings && otherListings >= 10) score += 1;
-  if (rating && rating >= 4.5) score += 2;
-  else if (rating && rating >= 3.5) score += 1;
 
-  if (score >= 5) return "high";
+  if (rating && rating >= 4.5) score += 3;    // "Highly rated" badge = inferred 4.8
+  else if (rating && rating >= 4.0) score += 2; // Has reviews, decent score
+
+  if (responseRate && responseRate >= 80) score += 1;
+
+  if (otherListings && otherListings >= 5) score += 1;
+
+  if (score >= 4) return "high";
   if (score >= 2) return "medium";
-  return "unknown"; // Not enough data, not necessarily bad
+  return "unknown"; // Not enough data visible — not necessarily bad
 }
 
 
@@ -411,45 +434,51 @@ async function badgeVisibleListings() {
 // ── Listing Extraction ────────────────────────────────────────────────────────
 
 function extractListing() {
-  const title = (
-    getText('[data-testid="marketplace-pdp-title"]') ||
-    getText('h1[dir="auto"]') ||
-    getText('h1')
-  );
+  /**
+   * WHY WE NO LONGER USE data-testid SELECTORS:
+   * Facebook silently removed all data-testid attributes from Marketplace
+   * in late 2024. Every selector like [data-testid="marketplace-pdp-title"]
+   * now returns null. We've replaced them with structural + pattern selectors
+   * that are more resilient to FBM's frequent DOM changes.
+   */
 
-  const rawPriceText = (
-    getText('[data-testid="marketplace-pdp-price"]') ||
-    getText('div[aria-label*="price" i] span') ||
-    findPriceText()
-  );
+  // TITLE — FBM always has two h1s on a listing page:
+  //   [0] = "Notifications" (left nav)
+  //   [1] = actual listing title
+  // We skip the first one explicitly.
+  const allH1s  = Array.from(document.querySelectorAll('h1'))
+    .map(el => el.innerText?.trim())
+    .filter(t => t && t !== 'Notifications' && t.length > 1);
+  const title = allH1s[0] || null;
 
-  if (!title || !rawPriceText) return null;
+  // PRICE — Scan all spans for the first clean "$XXX" or "$X,XXX" pattern.
+  // The listing price is always the first $ amount that appears in the DOM
+  // flow (above the fold on the right panel).
+  const rawPriceText = findPriceText();
 
-  const description = (
-    getText('[data-testid="marketplace-pdp-description"]') ||
-    getText('div[style*="word-break"] span') ||
-    ""
-  );
+  if (!title || !rawPriceText) {
+    console.warn("[DealScout] Missing title or price", { title, rawPriceText });
+    return null;
+  }
 
-  const location = (
-    getText('[data-testid="marketplace-pdp-seller-location"]') ||
-    getText('span[aria-label*="location" i]') ||
-    ""
-  );
+  // DESCRIPTION — FBM wraps listing body text in span[dir=auto] inside
+  // div[aria-hidden=false]. We grab all candidates and return the longest
+  // one — that's almost always the actual listing description.
+  const description = findDescription();
 
-  const condition = (
-    getText('[data-testid="marketplace-pdp-condition"]') ||
-    findConditionText(description) ||
-    "Unknown"
-  );
+  // LOCATION — Scan leaf spans for "City, ST" pattern (e.g. "San Marcos, CA").
+  // This is more reliable than any structural selector since FBM wraps it
+  // differently depending on listing type.
+  const location = findLocation();
 
-  const sellerName = (
-    getText('a[href*="/marketplace/seller/"] span') ||
-    getText('a[href*="/profile.php"] span') ||
-    ""
-  );
+  // CONDITION — Scan for exact FBM condition strings at the leaf span level.
+  const condition = findConditionInDOM() || findConditionText(description) || "Unknown";
 
-  // FEATURE 5: Extract seller trust signals from DOM
+  // SELLER NAME — Scan for the name text that appears in the Seller section.
+  // FBM no longer uses /marketplace/seller/ or /profile.php hrefs reliably.
+  const sellerName = findSellerName();
+
+  // FEATURE 5: Extract seller trust signals
   const sellerTrust = extractSellerTrust();
 
   return {
@@ -465,6 +494,99 @@ function extractListing() {
     is_multi_item:   detectMultiItem(title, description),
     source:          "fbm_extension",
   };
+}
+
+function findDescription() {
+  /**
+   * WHY WE FILTER SOCIAL CONTENT:
+   * FBM pages contain Facebook feed posts (reels, shared posts) alongside
+   * the actual listing. span[dir=auto] matches both. We filter out social
+   * media noise by excluding strings that look like posts rather than
+   * product descriptions.
+   *
+   * Strategy: collect all span[dir=auto] candidates, exclude obvious social
+   * content (contains "shared a", has @-mentions, has multiple newlines),
+   * then return the longest clean candidate.
+   */
+  const socialNoiseRe = /shared a |shared an |@[\w]+|#[\w]+|\n.*\n.*\n/i;
+
+  const candidates = Array.from(
+    document.querySelectorAll('div[aria-hidden="false"] span[dir="auto"]')
+  )
+    .map(el => el.innerText?.trim())
+    .filter(t =>
+      t &&
+      t.length > 15 &&          // long enough to be a real description
+      t.length < 3000 &&        // not a giant blob of page text
+      !socialNoiseRe.test(t)    // not a social media post
+    );
+
+  if (!candidates.length) return "";
+
+  // Return the longest clean candidate
+  return candidates.reduce((a, b) => a.length > b.length ? a : b, "");
+}
+
+function findLocation() {
+  // Scan leaf spans for a "City, ST" or "City, State" pattern.
+  // Exclude obvious non-location matches.
+  const cityStateRe = /^[A-Za-z\s]+,\s*[A-Z]{2}$/;
+  const found = Array.from(document.querySelectorAll('span'))
+    .find(el => el.childElementCount === 0 && cityStateRe.test(el.innerText?.trim()));
+  return found?.innerText?.trim() || "";
+}
+
+function findConditionInDOM() {
+  /**
+   * WHY WE PREFER FULL CONDITION STRINGS:
+   * "New", "Good", "Fair" appear as standalone words all over the page.
+   * The full FBM condition strings like "Used - Like New" are unique to
+   * the listing details panel. We check full strings first, fall back to
+   * short ones only if nothing else matches.
+   */
+  const fullConditions  = ["Used - Like New", "Used - Good", "Used - Fair", "Used - Poor"];
+  const shortConditions = ["New", "Like New", "Good", "Fair", "Poor"];
+
+  const allLeafSpans = Array.from(document.querySelectorAll('span'))
+    .filter(el => el.childElementCount === 0);
+
+  // Try unambiguous multi-word conditions first
+  const fullMatch = allLeafSpans.find(el => fullConditions.includes(el.innerText?.trim()));
+  if (fullMatch) return fullMatch.innerText.trim();
+
+  // For short conditions, only match if near the "Condition" label
+  // to avoid matching "New" from unrelated page content
+  const conditionLabel = allLeafSpans.find(el => el.innerText?.trim() === 'Condition');
+  if (conditionLabel) {
+    const section = conditionLabel.closest('div') || conditionLabel.parentElement;
+    const nearby  = Array.from(section?.querySelectorAll('span') || [])
+      .find(el => el.childElementCount === 0 && shortConditions.includes(el.innerText?.trim()));
+    if (nearby) return nearby.innerText.trim();
+  }
+
+  return null;
+}
+
+function findSellerName() {
+  // The seller section contains a clickable name — find spans inside links
+  // that appear near "Seller information" heading text.
+  // Fall back to scanning for any person-name-looking span near seller section.
+  const sellerHeading = Array.from(document.querySelectorAll('span, div'))
+    .find(el => el.innerText?.trim() === 'Seller information');
+
+  if (sellerHeading) {
+    // Walk siblings/children to find a name span nearby
+    const section = sellerHeading.closest('div[class]') || sellerHeading.parentElement;
+    const nameEl  = section?.querySelector?.('a span, strong');
+    if (nameEl?.innerText?.trim()) return nameEl.innerText.trim();
+  }
+
+  // Fallback — find a link that goes to a profile containing a name span
+  return (
+    getText('a[href*="/marketplace/seller/"] span') ||
+    getText('a[href*="/profile/"] span') ||
+    ""
+  );
 }
 
 function detectMultiItem(title, description) {
@@ -654,10 +776,11 @@ function renderScore(r) {
                    : trust?.trust_tier === "medium"  ? "Moderate history"
                    : "Limited seller info";
   const trustDetails = [
-    trust?.member_since   ? `Member since ${trust.member_since}` : null,
-    trust?.response_rate  ? `${trust.response_rate}% response rate` : null,
-    trust?.other_listings ? `${trust.other_listings} other listings` : null,
-    trust?.seller_rating  ? `⭐ ${trust.seller_rating} rating` : null,
+    trust?.member_since    ? `Member since ${trust.member_since}` : null,
+    trust?.review_count    ? `${trust.review_count} reviews` : null,
+    trust?.is_highly_rated ? `🏅 Highly rated` : null,
+    trust?.response_rate   ? `${trust.response_rate}% response rate` : null,
+    trust?.other_listings  ? `${trust.other_listings} other listings` : null,
   ].filter(Boolean).join(" · ");
 
   const sellerBlock = `
