@@ -481,10 +481,14 @@ function extractListing() {
   // FEATURE 5: Extract seller trust signals
   const sellerTrust = extractSellerTrust();
 
+  // Detect if the seller reduced the price (crossed-out original shown in DOM)
+  const originalPrice = findOriginalPrice();
+
   return {
     title:           title.trim(),
     price:           parsePrice(rawPriceText),
     raw_price_text:  rawPriceText.trim(),
+    original_price:  originalPrice ? parsePrice(originalPrice) : null,
     description:     description.trim(),
     location:        location.trim(),
     condition:       condition.trim(),
@@ -600,10 +604,44 @@ function detectMultiItem(title, description) {
 }
 
 function findPriceText() {
+  /**
+   * WHY WE CHECK text-decoration FOR STRIKETHROUGH:
+   * FBM shows price reductions as two stacked elements:
+   *   current price  = plain span,             e.g. "$200"
+   *   original price = line-through span,       e.g. "$250" (crossed out)
+   * We skip any span whose computed style includes line-through so we
+   * always return the CURRENT price, not the old crossed-out one.
+   */
   const spans = document.querySelectorAll("span");
   for (const span of spans) {
     const t = span.innerText?.trim();
-    if (t && t.startsWith("$") && t.length < 15 && /\d/.test(t)) return t;
+    if (!t || !t.startsWith("$") || t.length > 15 || !/\d/.test(t)) continue;
+    if (!/^\$[\d,]+$/.test(t)) continue; // plain price only, no extra chars
+
+    const deco = getComputedStyle(span).textDecorationLine ||
+                 getComputedStyle(span).textDecoration || "";
+    if (deco.includes("line-through")) continue; // skip original/crossed-out price
+
+    return t;
+  }
+  return null;
+}
+
+function findOriginalPrice() {
+  /**
+   * Find the crossed-out original price if the seller reduced the listing.
+   * Returns null when no price reduction is shown.
+   * We pass this to Claude as context so it can note the price drop.
+   */
+  const spans = document.querySelectorAll("span");
+  for (const span of spans) {
+    const t = span.innerText?.trim();
+    if (!t || !t.startsWith("$") || t.length > 15 || !/\d/.test(t)) continue;
+    if (!/^\$[\d,]+$/.test(t)) continue;
+
+    const deco = getComputedStyle(span).textDecorationLine ||
+                 getComputedStyle(span).textDecoration || "";
+    if (deco.includes("line-through")) return t;
   }
   return null;
 }
@@ -660,20 +698,35 @@ function makeDraggable(root, handle) {
    */
   let wasDragged = false;
   let dragStartX, dragStartY, rootStartX, rootStartY;
+  // Grab the panel here so we can blind it during drag
+  const panel = root.querySelector("#dealscout-panel");
 
-  handle.style.cursor = "grab";
+  // These reinforce what's already in the HTML template — belt-and-suspenders
+  handle.style.cursor      = "grab";
+  handle.style.touchAction = "none";
+  handle.style.userSelect  = "none";
+
+  function endDrag(pointerId) {
+    handle.releasePointerCapture(pointerId);
+    handle.style.cursor = "grab";
+    // Restore panel — user can scroll content again
+    if (panel) panel.style.pointerEvents = "";
+  }
 
   handle.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
 
-    // Capture ALL future pointer events to this element until pointerup
-    // This is the key — FBM cannot intercept captured pointer events
-    handle.setPointerCapture(e.pointerId);
+    // WHY WE BLIND THE PANEL:
+    // The panel (overflow-y:auto, 967px tall) overlaps the tab by ~26px at
+    // its bottom edge. Chrome can cancel setPointerCapture if it detects a
+    // scroll container underneath the drag path. Disabling pointer-events on
+    // the panel for the duration of the drag prevents that cancellation.
+    if (panel) panel.style.pointerEvents = "none";
 
+    handle.setPointerCapture(e.pointerId);
     wasDragged = false;
     handle.style.cursor = "grabbing";
 
-    // Convert bottom/right anchor to top/left so drag math is straightforward
     const rect        = root.getBoundingClientRect();
     root.style.bottom = "auto";
     root.style.right  = "auto";
@@ -686,19 +739,17 @@ function makeDraggable(root, handle) {
     rootStartY = rect.top;
 
     e.preventDefault();
-    e.stopPropagation(); // don't let FBM see the pointerdown either
+    e.stopPropagation();
   });
 
   handle.addEventListener("pointermove", (e) => {
-    // Only fires when pointer is captured (i.e. during a drag)
     if (!handle.hasPointerCapture(e.pointerId)) return;
 
     const dx = e.clientX - dragStartX;
     const dy = e.clientY - dragStartY;
     if (Math.abs(dx) > 4 || Math.abs(dy) > 4) wasDragged = true;
-    if (!wasDragged) return; // don't move on tiny jitter
+    if (!wasDragged) return;
 
-    // Clamp so it can't be dragged fully off-screen
     const newLeft = Math.max(0, Math.min(window.innerWidth  - 80, rootStartX + dx));
     const newTop  = Math.max(0, Math.min(window.innerHeight - 40, rootStartY + dy));
     root.style.left = newLeft + "px";
@@ -709,19 +760,21 @@ function makeDraggable(root, handle) {
   });
 
   handle.addEventListener("pointerup", (e) => {
-    handle.releasePointerCapture(e.pointerId);
-    handle.style.cursor = "grab";
-
+    endDrag(e.pointerId);
     if (wasDragged) {
-      // Persist position so it survives FBM's SPA navigation
       chrome.storage.local
         .set({ ds_sidebar_pos: { left: root.style.left, top: root.style.top } })
         .catch(() => {});
     }
   });
 
-  // Block the click→toggle if pointerup was end of a real drag
-  // Use capture phase so we fire before the toggleSidebar listener
+  // Safety net: browser can cancel capture (Escape, window blur, etc.)
+  // Without this, the cursor gets stuck on 'grabbing' and panel stays blind
+  handle.addEventListener("lostpointercapture", (e) => {
+    endDrag(e.pointerId);
+  });
+
+  // Block click→toggle if pointerup ended a real drag (capture phase)
   handle.addEventListener("click", (e) => {
     if (wasDragged) {
       e.stopImmediatePropagation();
@@ -760,7 +813,7 @@ function injectSidebar({ loading, listing }) {
       background:linear-gradient(135deg,#667eea,#764ba2);
       color:#fff;border-radius:10px 10px 6px 6px;
       padding:6px 14px;font-size:13px;font-weight:700;
-      cursor:pointer;box-shadow:0 2px 12px rgba(102,102,234,0.4);
+      cursor:grab;touch-action:none;z-index:1;box-shadow:0 2px 12px rgba(102,102,234,0.4);
       user-select:none;display:flex;align-items:center;gap:6px;
     ">
       🛒 Deal Scout
@@ -937,7 +990,11 @@ function renderScore(r) {
       ${r.new_price  ? `<div style="display:flex;justify-content:space-between;font-size:12px;color:#6b7280;padding:2px 0"><span>New retail</span><span>$${r.new_price.toFixed(0)}</span></div>` : ""}
       <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:700;
                   border-top:1px solid #e5e7eb;padding-top:6px;margin-top:4px">
-        <span>Listed price</span><span>$${r.price.toFixed(0)}</span>
+        <span>Listed price</span>
+        <span>
+          ${r.price.toFixed(0)}
+          ${r.original_price ? `<span style="text-decoration:line-through;color:#9ca3af;font-size:11px;margin-left:4px">${r.original_price.toFixed(0)}</span> <span style="color:#22c55e;font-size:11px">&#9660;${Math.round((1 - r.price/r.original_price)*100)}% off</span>` : ""}
+        </span>
       </div>
       <div style="font-size:12px;font-weight:600;margin-top:4px">${diffLabel}</div>
     </div>
