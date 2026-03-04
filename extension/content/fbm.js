@@ -651,26 +651,30 @@ function waitForElement(selector, timeoutMs = 5000) {
 
 function makeDraggable(root, handle) {
   /**
-   * WHY top/left AFTER DRAG (not bottom/right):
-   * The root starts anchored bottom/right. Once the user drags,
-   * we switch to top/left so the position math stays positive and
-   * predictable. We also block the click→toggle for the duration
-   * of a drag so a short drag doesn't accidentally collapse the panel.
+   * WHY setPointerCapture INSTEAD OF document mousemove/mouseup:
+   * Facebook calls stopPropagation() on mouse events throughout their app.
+   * document-level mousemove/mouseup handlers never fire once FBM intercepts.
+   * setPointerCapture() bypasses this entirely — the browser routes ALL
+   * pointer events to our element for the duration of the drag, regardless
+   * of what FBM does with the event tree. Much more robust in a hostile DOM.
    */
-  let isDragging = false;
-  let dragStartX, dragStartY, rootStartX, rootStartY;
   let wasDragged = false;
+  let dragStartX, dragStartY, rootStartX, rootStartY;
 
   handle.style.cursor = "grab";
 
-  handle.addEventListener("mousedown", (e) => {
+  handle.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
-    isDragging = true;
+
+    // Capture ALL future pointer events to this element until pointerup
+    // This is the key — FBM cannot intercept captured pointer events
+    handle.setPointerCapture(e.pointerId);
+
     wasDragged = false;
     handle.style.cursor = "grabbing";
 
-    // Convert current bottom/right to top/left so offset math works
-    const rect    = root.getBoundingClientRect();
+    // Convert bottom/right anchor to top/left so drag math is straightforward
+    const rect        = root.getBoundingClientRect();
     root.style.bottom = "auto";
     root.style.right  = "auto";
     root.style.top    = rect.top  + "px";
@@ -680,35 +684,49 @@ function makeDraggable(root, handle) {
     dragStartY = e.clientY;
     rootStartX = rect.left;
     rootStartY = rect.top;
+
     e.preventDefault();
+    e.stopPropagation(); // don't let FBM see the pointerdown either
   });
 
-  document.addEventListener("mousemove", (e) => {
-    if (!isDragging) return;
+  handle.addEventListener("pointermove", (e) => {
+    // Only fires when pointer is captured (i.e. during a drag)
+    if (!handle.hasPointerCapture(e.pointerId)) return;
+
     const dx = e.clientX - dragStartX;
     const dy = e.clientY - dragStartY;
-    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) wasDragged = true;
+    if (Math.abs(dx) > 4 || Math.abs(dy) > 4) wasDragged = true;
+    if (!wasDragged) return; // don't move on tiny jitter
 
     // Clamp so it can't be dragged fully off-screen
     const newLeft = Math.max(0, Math.min(window.innerWidth  - 80, rootStartX + dx));
     const newTop  = Math.max(0, Math.min(window.innerHeight - 40, rootStartY + dy));
     root.style.left = newLeft + "px";
     root.style.top  = newTop  + "px";
+
+    e.preventDefault();
+    e.stopPropagation();
   });
 
-  document.addEventListener("mouseup", () => {
-    if (!isDragging) return;
-    isDragging = false;
+  handle.addEventListener("pointerup", (e) => {
+    handle.releasePointerCapture(e.pointerId);
     handle.style.cursor = "grab";
-    // Persist position so it survives page navigation
-    chrome.storage.local
-      .set({ ds_sidebar_pos: { left: root.style.left, top: root.style.top } })
-      .catch(() => {});
+
+    if (wasDragged) {
+      // Persist position so it survives FBM's SPA navigation
+      chrome.storage.local
+        .set({ ds_sidebar_pos: { left: root.style.left, top: root.style.top } })
+        .catch(() => {});
+    }
   });
 
-  // Block the toggle-click if mouseup was end of a drag (capture phase)
+  // Block the click→toggle if pointerup was end of a real drag
+  // Use capture phase so we fire before the toggleSidebar listener
   handle.addEventListener("click", (e) => {
-    if (wasDragged) { e.stopImmediatePropagation(); wasDragged = false; }
+    if (wasDragged) {
+      e.stopImmediatePropagation();
+      wasDragged = false;
+    }
   }, true);
 
   // Restore last saved position on inject
