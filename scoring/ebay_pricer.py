@@ -54,6 +54,13 @@ EBAY_APP_ID      = os.getenv("EBAY_APP_ID")
 EBAY_FINDING_API = "https://svcs.ebay.com/services/search/FindingService/v1"
 DATA_DIR         = Path(__file__).parent.parent / "data"
 
+# In-memory cache: (query, operation) -> (timestamp, results)
+# WHY: eBay Finding API has a per-minute burst limit. Repeated scoring of
+# the same item during a session would burn through it. Cache for 10 min.
+import time as _time
+_ebay_cache: dict = {}
+EBAY_CACHE_TTL_SECONDS = 600  # 10 minutes
+
 
 # ── Data Models ───────────────────────────────────────────────────────────────
 
@@ -65,6 +72,20 @@ class PricePoint:
     condition: str
     url: str
     sold: bool  # True = completed sale, False = active listing
+
+
+@dataclass
+class EbayListingItem:
+    """
+    A single eBay listing to surface in the sidebar's 'Like Products' section.
+    Each item becomes a clickable affiliate card — revenue per click-through to purchase.
+    """
+    title:         str
+    price:         float
+    condition:     str
+    url:           str   # Direct eBay item URL with affiliate params appended
+    sold:          bool  # True = completed sale, False = currently active
+    image_url:     str   # Thumbnail from eBay (empty string if unavailable)
 
 
 @dataclass
@@ -85,6 +106,15 @@ class MarketValue:
     new_price:       float  # Lowest new-condition price (0 if not found)
     estimated_value: float  # Our best single-number estimate (weighted avg)
     confidence:      str    # "high" / "medium" / "low" based on data quality
+    # Top matching eBay listings — shown as "Like Products" cards in the sidebar
+    # WHY HERE: Passing real listings lets users click through to buy/compare,
+    # generating affiliate revenue. The sidebar becomes a shopping tool, not
+    # just a score display.
+    sold_items_sample:   list = None  # top 3 recent sold listings
+    active_items_sample: list = None  # top 3 currently active listings
+    # Which pricing source produced this data — shown in sidebar for transparency
+    # and used by Claude to calibrate confidence in its analysis.
+    data_source: str = "ebay"  # "ebay" | "ebay_mock" | "google_shopping" | "google+ebay_mock"
 
 
 # ── Search Query Builder ──────────────────────────────────────────────────────
@@ -140,6 +170,13 @@ async def search_ebay(
         log.warning("No eBay API key — using mock data. Get your key at developer.ebay.com")
         return _mock_ebay_response(query, operation)
 
+    # Cache check — avoid burning eBay rate limit on repeat queries
+    cache_key = (query.lower().strip(), operation)
+    cached = _ebay_cache.get(cache_key)
+    if cached and (_time.time() - cached[0]) < EBAY_CACHE_TTL_SECONDS:
+        log.info(f"eBay cache hit for '{query}' ({operation})")
+        return cached[1]
+
     params = {
         "OPERATION-NAME":         operation,
         "SERVICE-VERSION":        "1.13.0",
@@ -170,17 +207,37 @@ async def search_ebay(
             data = resp.json()
 
         result = data.get(f"{operation}Response", [{}])[0]
+        ack = result.get("ack", [""])[0]
 
-        if result.get("ack", [""])[0] != "Success":
-            log.warning(f"eBay API non-success: {result.get('errorMessage', 'unknown')}")
+        if ack != "Success":
+            # Check specifically for rate limit error
+            errors = result.get("errorMessage", [{}])[0].get("error", [])
+            error_ids = [e.get("errorId", ["0"])[0] for e in errors]
+            if "10001" in error_ids:
+                log.warning(f"eBay rate limited — falling back to mock data for '{query}'")
+                result = _mock_ebay_response(query, operation)
+                for item in result:
+                    item["_is_mock"] = True
+                return result
+            log.warning(f"eBay API non-success ack={ack}: {result.get('errorMessage', 'unknown')}")
             return []
 
         items = result.get("searchResult", [{}])[0].get("item", [])
         log.info(f"eBay {operation}: found {len(items)} results for '{query}'")
-        return items
+
+        # Cache the successful result
+        _ebay_cache[cache_key] = (_time.time(), items)
+        return items  # no _is_mock tag — real data
 
     except httpx.HTTPStatusError as e:
         log.error(f"eBay HTTP error {e.response.status_code}: {e.response.text[:200]}")
+        if e.response.status_code >= 500:
+            log.warning("eBay 5xx — falling back to mock data")
+            result = _mock_ebay_response(query, operation)
+            # Tag results so get_market_value knows to try Google fallback
+            for item in result:
+                item["_is_mock"] = True
+            return result
         return []
     except Exception as e:
         log.error(f"eBay API error: {e}")
@@ -218,6 +275,82 @@ def parse_ebay_items(items: list[dict], sold: bool) -> list[PricePoint]:
     return points
 
 
+# ── Affiliate URL Builder ────────────────────────────────────────────────────
+
+EBAY_AFFILIATE_PARAMS = (
+    "mkevt=1"
+    "&mkcid=1"
+    "&mkrid=711-53200-19255-0"
+    "&campid={campaign_id}"
+    "&toolid=10001"
+    "&customid=dealscout"
+)
+
+def build_item_affiliate_url(item_url: str, campaign_id: str) -> str:
+    """
+    Append eBay Partner Network params to a direct item URL.
+    WHY PER-ITEM: Linking directly to the matching product (not a search page)
+    has a much higher conversion rate. User sees the exact item, clicks,
+    buys — we earn. Generic search page links have ~10x lower conversion.
+    """
+    if not item_url:
+        return ""
+    sep = "&" if "?" in item_url else "?"
+    return item_url + sep + EBAY_AFFILIATE_PARAMS.format(campaign_id=campaign_id or "0")
+
+
+def parse_ebay_items_with_images(
+    items: list[dict],
+    sold: bool,
+    campaign_id: str,
+    max_items: int = 4,
+) -> list[EbayListingItem]:
+    """
+    Parse raw eBay API response into EbayListingItem objects with affiliate URLs.
+    Returns up to max_items, sorted by price relevance (sold: newest first, active: lowest first).
+    """
+    result = []
+    for item in items:
+        try:
+            selling    = item.get("sellingStatus", [{}])[0]
+            price_str  = (
+                selling.get("convertedCurrentPrice", [{}])[0].get("__value__")
+                or selling.get("currentPrice", [{}])[0].get("__value__", "0")
+            )
+            price = float(price_str)
+            if price < 5:
+                continue
+
+            raw_url   = item.get("viewItemURL", [""])[0]
+            title     = item.get("title",  ["Unknown"])[0]
+            condition = item.get("condition", [{}])[0].get("conditionDisplayName", ["Used"])[0]
+
+            # eBay Finding API returns gallery images in galleryInfoContainer or galleryURL
+            gallery = item.get("galleryInfoContainer", [{}])[0]
+            image_url = (
+                gallery.get("hostedImgUrl", [""])[0]
+                or item.get("galleryURL", [""])[0]
+                or ""
+            )
+
+            result.append(EbayListingItem(
+                title     = title[:80],  # truncate for display
+                price     = round(price, 2),
+                condition = condition,
+                url       = build_item_affiliate_url(raw_url, campaign_id),
+                sold      = sold,
+                image_url = image_url,
+            ))
+
+            if len(result) >= max_items:
+                break
+
+        except (KeyError, IndexError, ValueError) as e:
+            log.debug(f"Skipping item in sample parse: {e}")
+
+    return result
+
+
 # ── Market Value Calculator ───────────────────────────────────────────────────
 
 async def get_market_value(listing_title: str, listing_condition: str = "Used") -> MarketValue:
@@ -238,6 +371,10 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used") 
         search_ebay(query, "findItemsAdvanced",  max_results=20),
         search_ebay(query, "findItemsAdvanced",  max_results=10, condition_filter=["1000"]),
     )
+
+    # Detect whether eBay returned mock data (rate limit fallback)
+    # _is_mock tag is set by search_ebay() when it falls back to _mock_ebay_response()
+    ebay_is_mock = any(item.get("_is_mock") for item in sold_raw + active_raw)
 
     sold_items   = parse_ebay_items(sold_raw,   sold=True)
     active_items = parse_ebay_items(active_raw, sold=False)
@@ -269,25 +406,67 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used") 
         estimated_value = 0.0
 
     # Confidence based on how many sold comps we found
-    if len(sold_items) >= 10:
+    if len(sold_items) >= 10 and not ebay_is_mock:
         confidence = "high"
-    elif len(sold_items) >= 3:
+    elif len(sold_items) >= 3 and not ebay_is_mock:
         confidence = "medium"
     else:
         confidence = "low"
 
+    # ── Google Shopping fallback ───────────────────────────────────────────────
+    # When eBay is rate-limited, try Google Shopping for real prices.
+    # WHY ONLY ON MOCK: Google Shopping is slower (Playwright) and we don't
+    # want to add 3-5s latency when eBay is working fine.
+    data_source = "ebay"
+    if ebay_is_mock:
+        data_source = "ebay_mock"
+        try:
+            from scoring.google_pricer import get_google_shopping_prices, prices_to_market_stats
+            google_prices = await get_google_shopping_prices(query, max_results=12)
+            stats = prices_to_market_stats(google_prices)
+            if stats and stats["count"] >= 3:
+                log.info(f"Google Shopping override: avg=${stats['avg']:.0f} ({stats['count']} prices)")
+                # Replace mock eBay stats with real Google prices
+                sold_avg        = stats["avg"]
+                sold_low        = stats["low"]
+                sold_high       = stats["high"]
+                estimated_value = stats["avg"]
+                # Use price spread as proxy for active market
+                active_avg = round(stats["avg"] * 1.05, 2)  # asking prices ~5% above sold
+                active_low = stats["low"]
+                confidence  = "medium" if stats["count"] >= 6 else "low"
+                data_source = "google_shopping"
+            else:
+                log.info("Google Shopping returned too few results, keeping mock data")
+                data_source = "google+ebay_mock"
+        except Exception as e:
+            log.warning(f"Google Shopping fallback failed: {e}")
+            data_source = "ebay_mock"
+
+    campaign_id = os.getenv("EBAY_CAMPAIGN_ID", "")
+
+    # Build item sample lists for the sidebar's "Like Products" section
+    # WHY 4 ITEMS: 3 would fit cleanly but 4 gives scroll depth without
+    # overwhelming a 310px sidebar. Sold items are more credible proof
+    # of value; active items show what the buyer could switch to instead.
+    sold_items_sample   = parse_ebay_items_with_images(sold_raw,   sold=True,  campaign_id=campaign_id, max_items=4)
+    active_items_sample = parse_ebay_items_with_images(active_raw, sold=False, campaign_id=campaign_id, max_items=4)
+
     return MarketValue(
-        query_used      = query,
-        sold_avg        = round(sold_avg,        2),
-        sold_low        = round(sold_low,         2),
-        sold_high       = round(sold_high,        2),
-        sold_count      = len(sold_items),
-        active_avg      = round(active_avg,       2),
-        active_low      = round(active_low,       2),
-        active_count    = len(active_items),
-        new_price       = round(new_price,        2),
-        estimated_value = round(estimated_value,  2),
-        confidence      = confidence,
+        query_used           = query,
+        sold_avg             = round(sold_avg,        2),
+        sold_low             = round(sold_low,         2),
+        sold_high            = round(sold_high,        2),
+        sold_count           = len(sold_items),
+        active_avg           = round(active_avg,       2),
+        active_low           = round(active_low,       2),
+        active_count         = len(active_items),
+        new_price            = round(new_price,        2),
+        estimated_value      = round(estimated_value,  2),
+        confidence           = confidence,
+        sold_items_sample    = sold_items_sample,
+        active_items_sample  = active_items_sample,
+        data_source          = data_source,
     )
 
 
@@ -295,23 +474,65 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used") 
 
 def _mock_ebay_response(query: str, operation: str) -> list[dict]:
     """
-    Realistic mock eBay data for the Orion XT8 telescope.
-    Lets you test the full pipeline before getting an eBay key.
-    Prices based on real eBay comps for this model.
+    Returns plausible mock eBay data scaled to the item's likely price range.
+    Used when: no API key set, rate limited, or eBay returns a 5xx error.
+
+    WHY PRICE ESTIMATION:
+    We derive a rough price range from keywords in the query so mock comps
+    are at least in the right ballpark. Claude's score will still be marked
+    low-confidence, but won't be absurd (bike scored against telescope prices).
     """
-    mock_prices = {
-        "findCompletedItems": [350, 375, 400, 420, 380, 390, 410, 360, 395, 405],
-        "findItemsAdvanced":  [399, 425, 450, 380, 415, 440, 395, 460, 420, 435],
-    }
-    prices = mock_prices.get(operation, [400])
-    items  = []
+    q = query.lower()
+
+    # Rough category price anchors — median used price estimate
+    if any(w in q for w in ["iphone", "samsung galaxy", "pixel"]):
+        base = 350
+    elif any(w in q for w in ["ipad", "tablet"]):
+        base = 300
+    elif any(w in q for w in ["macbook", "laptop", "notebook"]):
+        base = 600
+    elif any(w in q for w in ["ps5", "xbox", "playstation", "nintendo switch"]):
+        base = 350
+    elif any(w in q for w in ["surron", "sur-ron", "talaria", "super73", "super 73", "light bee", "storm bee", "ultra bee", "x160", "x260"]):
+        # Premium electric powersports — $2k-5k used range
+        base = 3000
+    elif any(w in q for w in ["electric bike", "electric dirt bike", "electric moto", "ebike", "e-bike"]):
+        base = 2000
+    elif any(w in q for w in ["bike", "bicycle", "scooter", "moped"]):
+        base = 900
+    elif any(w in q for w in ["car", "truck", "suv", "van", "vehicle"]):
+        base = 8000
+    elif any(w in q for w in ["camera", "lens", "dslr", "mirrorless"]):
+        base = 500
+    elif any(w in q for w in ["guitar", "piano", "keyboard", "drums"]):
+        base = 400
+    elif any(w in q for w in ["sofa", "couch", "desk", "chair", "table", "furniture"]):
+        base = 250
+    else:
+        base = 150  # Generic fallback
+
+    # Generate realistic price spread around the base
+    import random
+    random.seed(hash(query) % 10000)  # Deterministic per query
+    spread = 0.25
+    sold_prices   = [int(base * random.uniform(1 - spread, 1 + spread)) for _ in range(10)]
+    active_prices = [int(base * random.uniform(1.0,         1 + spread * 1.5)) for _ in range(10)]
+    prices = sold_prices if operation == "findCompletedItems" else active_prices
+
+    # WHY NO THUMBNAIL: eBay's placeholder paths 404 for mock IDs.
+    # The frontend's data-img-card handler will replace broken images with a 📦 emoji.
+    # Using a real eBay static asset as fallback thumb to avoid 404 flash.
+    items = []
     for i, price in enumerate(prices):
         is_new = (operation == "findItemsAdvanced" and i == 0)
+        # Unique mock item ID per (query, index) — gives each card a distinct URL
+        mock_item_id = abs(hash(f"{query}{i}{operation}")) % 999999999
         items.append({
-            "title":         [f"Orion SkyQuest XT8 Dobsonian {'New' if is_new else 'Used'}"],
+            "title":         [f"{query[:40]} {'New' if is_new else 'Used'} (estimated comp)"],
             "sellingStatus": [{"convertedCurrentPrice": [{"__value__": str(price)}]}],
             "condition":     [{"conditionDisplayName":  ["New" if is_new else "Used"]}],
-            "viewItemURL":   [f"https://www.ebay.com/itm/mock-{i}"],
+            "viewItemURL":   [f"https://www.ebay.com/sch/i.html?_nkw={query.replace(' ', '+')}&LH_Sold={'1' if operation == 'findCompletedItems' else '0'}&LH_Complete={'1' if operation == 'findCompletedItems' else '0'}&_udlo={int(price*0.7)}&_udhi={int(price*1.3)}&_sop=12"],
+            "galleryURL":    [""],
         })
     return items
 

@@ -1,0 +1,498 @@
+"""
+Product Evaluator — Reliability & Reputation Signals
+
+WHY THIS EXISTS:
+  Price is only half the picture. A listing at 30% below market is still a
+  bad buy if that product model is known for failing after 6 months.
+
+  This module gathers real owner sentiment from two sources:
+    1. Reddit public search — enthusiast communities are brutally honest
+       about product failures, build quality, and hidden issues
+    2. Google Shopping aggregate ratings — star scores pulled from the same
+       page we're already scraping for pricing (near-zero extra latency)
+
+  The output does two things:
+    a) Enriches Claude's scoring prompt so it can factor in known issues
+       ("this telescope is known for collimation problems out of the box")
+    b) Powers the suggestion cards — we can say why an alternative is better
+       ("Sky-Watcher 8" has better build quality and fewer reported issues")
+
+WHY NOT Consumer Reports / Wirecutter:
+  No public API. Scraping carries legal risk. Reddit + Google Shopping
+  provides comparable signal for the product categories we care about
+  (consumer electronics, power tools, outdoor gear, sporting goods)
+  completely for free.
+
+REDDIT API NOTES:
+  Uses the public JSON endpoint (no OAuth required for read-only search).
+  Rate limit: ~30 requests/minute unauthenticated. At POC scale (1 call
+  per unique product, cached 30 min) this is never an issue.
+
+  For production: register a free Reddit app at https://www.reddit.com/prefs/apps
+  and add REDDIT_CLIENT_ID + REDDIT_CLIENT_SECRET to .env for 100 req/min.
+
+LATENCY:
+  Reddit: ~0.5-1.5s (two parallel HTTP requests)
+  Google rating: ~1-2s (Playwright page already loaded for pricing)
+  Both run concurrently with eBay pricing — net added latency: ~0s
+"""
+
+import asyncio
+import logging
+import re
+import time
+from dataclasses import dataclass, field
+from typing import Optional
+
+import httpx
+from dotenv import load_dotenv
+
+load_dotenv()
+
+log = logging.getLogger(__name__)
+
+_cache: dict = {}
+_CACHE_TTL = 1800  # 30 min — reliability data doesn't change minute-to-minute
+
+
+# ── Data Model ────────────────────────────────────────────────────────────────
+
+@dataclass
+class ProductEvaluation:
+    """
+    Aggregated reliability and reputation signal for a product model.
+
+    Consumed by:
+      - deal_scorer.build_scoring_prompt() — Claude gets the reputation context
+      - suggestion_engine — cards show reliability tier alongside price
+      - fbm.js renderScore() — sidebar shows reliability badge
+    """
+    product_name:      str
+    overall_rating:    Optional[float]  # 1-5 stars aggregated; None if unknown
+    review_count:      int
+    reliability_tier:  str              # "excellent"|"good"|"mixed"|"poor"|"unknown"
+    known_issues:      list             # ["motor noise above 50%", "battery issues"]
+    strengths:         list             # ["excellent optics for price", "easy setup"]
+    reddit_sentiment:  Optional[str]    # 1-2 sentence owner consensus summary
+    reddit_post_count: int
+    sources_used:      list             # ["reddit", "google_shopping"]
+    confidence:        str              # "high" | "medium" | "low"
+
+    def to_prompt_text(self) -> str:
+        """
+        Format for inclusion in Claude's scoring prompt.
+        Concise and direct — Claude reasons better from conclusions than raw data.
+        """
+        if self.reliability_tier == "unknown" or self.confidence == "low":
+            return "Product reputation: Insufficient data to assess reliability for this model."
+
+        lines = [f"Product reputation: {self.reliability_tier.upper()} reliability tier"]
+
+        if self.overall_rating and self.review_count >= 10:
+            lines.append(f"Aggregate rating: {self.overall_rating:.1f}/5 stars ({self.review_count:,} reviews)")
+
+        if self.known_issues:
+            lines.append(f"Known issues: {'; '.join(self.known_issues[:3])}")
+
+        if self.strengths:
+            lines.append(f"Owner strengths: {'; '.join(self.strengths[:3])}")
+
+        if self.reddit_sentiment:
+            lines.append(f"Community consensus: {self.reddit_sentiment}")
+
+        return "\n".join(lines)
+
+
+# ── Main Entry Point ──────────────────────────────────────────────────────────
+
+async def evaluate_product(
+    brand: str,
+    model: str,
+    category: str,
+    display_name: str,
+) -> ProductEvaluation:
+    """
+    Gather reliability signals for a product from Reddit + Google Shopping.
+
+    Runs both sources concurrently. Never raises — returns "unknown" tier
+    on any failure so the scoring pipeline continues uninterrupted.
+
+    Results cached for 30 minutes — the same product appearing in multiple
+    listings in a session costs one lookup, not one per listing.
+    """
+    if not brand and not model:
+        log.debug("[Evaluator] No brand/model — skipping evaluation")
+        return _unknown_evaluation(display_name)
+
+    cache_key = f"{brand.lower()} {model.lower()}".strip()
+    now = time.time()
+
+    if cache_key in _cache:
+        entry = _cache[cache_key]
+        if now - entry["ts"] < _CACHE_TTL:
+            log.info(f"[Evaluator] Cache hit: '{cache_key}'")
+            return entry["data"]
+
+    log.info(f"[Evaluator] Evaluating: '{display_name}'")
+
+    # Run Reddit search + Google Shopping rating concurrently
+    # return_exceptions=True prevents one failure from cancelling the other
+    reddit_data, google_rating = await asyncio.gather(
+        _fetch_reddit_signals(brand, model, category),
+        _fetch_google_rating(display_name),
+        return_exceptions=True,
+    )
+
+    if isinstance(reddit_data, Exception):
+        log.warning(f"[Evaluator] Reddit failed: {reddit_data}")
+        reddit_data = _empty_reddit()
+
+    if isinstance(google_rating, Exception):
+        log.warning(f"[Evaluator] Google rating failed: {google_rating}")
+        google_rating = {"rating": None, "count": 0}
+
+    rating = google_rating.get("rating")
+    count  = google_rating.get("count", 0)
+    issues = reddit_data.get("issues", [])
+    posts  = reddit_data.get("posts", [])
+
+    tier       = _determine_tier(rating, count, issues, posts)
+    confidence = _determine_confidence(rating, count, posts)
+
+    sources = []
+    if posts:       sources.append("reddit")
+    if rating:      sources.append("google_shopping")
+
+    result = ProductEvaluation(
+        product_name      = display_name,
+        overall_rating    = rating,
+        review_count      = count,
+        reliability_tier  = tier,
+        known_issues      = issues[:5],
+        strengths         = reddit_data.get("strengths", [])[:5],
+        reddit_sentiment  = reddit_data.get("sentiment"),
+        reddit_post_count = len(posts),
+        sources_used      = sources,
+        confidence        = confidence,
+    )
+
+    _cache[cache_key] = {"data": result, "ts": now}
+    log.info(
+        f"[Evaluator] {tier.upper()} tier — "
+        f"rating={rating}, reviews={count}, reddit={len(posts)} posts"
+    )
+    return result
+
+
+# ── Reddit Signal Extraction ──────────────────────────────────────────────────
+
+# Regex patterns that signal product problems in Reddit text
+_ISSUE_PATTERNS = [
+    (r'\b(break|broke|broken|failure|failed|fail|dead|died)\b',        "reliability issues reported"),
+    (r'\b(noisy|noise|loud|rattle|vibrat|squeaking)\b',                "noise or vibration issues"),
+    (r'\b(battery|charge|charging).{0,25}(issue|problem|bad|drain|die)', "battery or charging issues"),
+    (r'\b(motor|engine|transmission).{0,25}(issue|problem|burn|overheat|fail)', "motor or drivetrain issues"),
+    (r'\b(customer.?service|support).{0,20}(bad|terrible|awful|useless|ignore)', "poor customer support"),
+    (r'\b(plastic|cheap.?feel|flimsy|fragile|thin)\b',                 "build quality concerns"),
+    (r'\b(defect|lemon|doa|out.of.box|oobox)\b',                      "out-of-box defect reports"),
+    (r'\b(recall|safety.?issue|dangerous|hazard|fire|explod)\b',       "safety concerns reported"),
+    (r'\b(return|refund).{0,20}(denied|refused|difficult|nightmare)',   "return or refund issues"),
+]
+
+# Regex patterns that signal product strengths in Reddit text
+_STRENGTH_PATTERNS = [
+    (r'\b(excellent|amazing|outstanding|love it|perfect|superb)\b',           "highly praised by owners"),
+    (r'\b(reliable|dependable|durable|solid|sturdy|tank)\b',                  "strong durability"),
+    (r'\b(easy|simple|intuitive).{0,20}(use|setup|assemble|install)',         "easy to use or set up"),
+    (r'\b(great|good|best).{0,20}(value|bang.for.the.buck|money|price)',      "excellent value for money"),
+    (r'\b(customer.?service|support).{0,20}(great|excellent|helpful|fast)',   "responsive customer support"),
+    (r'\b(optic|lens|glass|image|picture|view).{0,20}(sharp|clear|crisp|excellent)', "excellent optics/image quality"),
+    (r'\b(well.?built|quality.?construction|premium.?feel|solid.?build)\b',   "premium build quality"),
+]
+
+
+async def _fetch_reddit_signals(brand: str, model: str, category: str) -> dict:
+    """
+    Search Reddit for owner discussions and extract issue/strength signals.
+
+    WHY TWO QUERIES:
+    "[product] review" finds enthusiast assessments and recommendation threads.
+    "[product] problem issue" finds complaint threads where real failures surface.
+    Together they give a balanced signal in two parallel requests.
+
+    WHY PUBLIC JSON API:
+    Reddit's /search.json works without OAuth for read-only queries.
+    Headers must include a descriptive User-Agent or Reddit 429s immediately.
+    """
+    product_term = f"{brand} {model}".strip()
+    if not product_term:
+        return _empty_reddit()
+
+    queries = [
+        f"{product_term} review",
+        f"{product_term} problem issue",
+    ]
+
+    all_posts = []
+
+    async with httpx.AsyncClient(
+        timeout=8.0,
+        # Reddit 429s instantly without a descriptive User-Agent
+        headers={"User-Agent": "DealScout/0.3 deal-scoring-extension (opensource; github.com/805lager/deal-scout)"},
+        follow_redirects=True,
+    ) as client:
+        tasks = [_single_reddit_search(client, q) for q in queries]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for r in results:
+            if isinstance(r, list):
+                all_posts.extend(r)
+
+    # Deduplicate by URL — both queries may return the same top posts
+    seen, unique_posts = set(), []
+    for p in all_posts:
+        if p["url"] not in seen:
+            seen.add(p["url"])
+            unique_posts.append(p)
+
+    if not unique_posts:
+        return _empty_reddit()
+
+    # Build combined text from top 10 posts for pattern matching
+    combined_text = " ".join(
+        f"{p.get('title', '')} {p.get('selftext', '')}"
+        for p in unique_posts[:10]
+    ).lower()
+
+    issues, strengths = [], []
+    seen_i, seen_s = set(), set()
+
+    for pattern, label in _ISSUE_PATTERNS:
+        if re.search(pattern, combined_text, re.IGNORECASE) and label not in seen_i:
+            issues.append(label)
+            seen_i.add(label)
+
+    for pattern, label in _STRENGTH_PATTERNS:
+        if re.search(pattern, combined_text, re.IGNORECASE) and label not in seen_s:
+            strengths.append(label)
+            seen_s.add(label)
+
+    # Build a plain-English sentiment summary for the Claude prompt
+    n = len(unique_posts)
+    sentiment = None
+    if n >= 3:
+        if len(issues) == 0 and len(strengths) >= 2:
+            sentiment = f"Strongly positive across {n} Reddit discussions. Owners highlight reliability and value."
+        elif len(issues) >= 2 and len(strengths) <= 1:
+            sentiment = f"Mixed or negative reception in {n} Reddit threads. Recurring: {issues[0]}."
+        elif len(issues) >= 1:
+            sentiment = f"Mostly positive in {n} discussions but some owners report {issues[0]}."
+        else:
+            sentiment = f"Discussed in {n} Reddit threads with no strong consensus on reliability."
+
+    return {
+        "posts":     unique_posts,
+        "issues":    issues,
+        "strengths": strengths,
+        "sentiment": sentiment,
+    }
+
+
+async def _single_reddit_search(client: httpx.AsyncClient, query: str) -> list:
+    """Execute one Reddit search and return a list of post dicts."""
+    try:
+        resp = await client.get(
+            "https://www.reddit.com/search.json",
+            params={
+                "q":     query,
+                "sort":  "relevance",
+                "limit": "10",
+                "t":     "year",    # Last year — older posts less product-relevant
+                "type":  "link",
+            }
+        )
+        if resp.status_code == 429:
+            log.debug(f"[Reddit] Rate limited for '{query}'")
+            return []
+        if resp.status_code != 200:
+            log.debug(f"[Reddit] HTTP {resp.status_code} for '{query}'")
+            return []
+
+        posts = resp.json().get("data", {}).get("children", [])
+        return [
+            {
+                "title":     p["data"].get("title", ""),
+                "selftext":  p["data"].get("selftext", "")[:400],
+                "score":     p["data"].get("score", 0),
+                "url":       p["data"].get("url", ""),
+                "subreddit": p["data"].get("subreddit", ""),
+            }
+            for p in posts
+            if p.get("data", {}).get("score", 0) > 2  # Skip near-zero posts
+        ]
+    except Exception as e:
+        log.debug(f"[Reddit] Search error for '{query}': {e}")
+        return []
+
+
+# ── Google Shopping Rating ────────────────────────────────────────────────────
+
+async def _fetch_google_rating(product_name: str) -> dict:
+    """
+    Extract aggregate star rating from the Google Shopping page.
+
+    Reuses the persistent Playwright browser from google_pricer.py —
+    the browser is already running, so this is just a new tab open/close.
+
+    Google aggregates ratings from Amazon, Best Buy, Walmart, etc. into a
+    single star score. This is a broad, retailer-neutral signal that
+    correlates well with actual product quality for consumer goods.
+
+    WHY ARIA-LABELS:
+    Google's class names are obfuscated and change frequently. The aria-label
+    attributes ("Rated 4.5 out of 5 stars") are semantic and stable.
+    """
+    try:
+        from scoring.google_pricer import _ensure_browser
+        import urllib.parse
+
+        browser = await _ensure_browser()
+        context = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            ),
+            locale="en-US",
+            viewport={"width": 1280, "height": 800},
+        )
+        page = await context.new_page()
+
+        try:
+            encoded = urllib.parse.quote_plus(product_name)
+            await page.goto(
+                f"https://www.google.com/search?tbm=shop&q={encoded}&hl=en&gl=us",
+                wait_until="domcontentloaded",
+                timeout=12000,
+            )
+            await page.wait_for_timeout(1000)
+
+            rating_data = await page.evaluate("""
+                () => {
+                    const ratingPatterns = [
+                        /([0-9]\\.?[0-9]?)\\s*out\\s*of\\s*5/i,
+                        /rated\\s*([0-9]\\.?[0-9]?)/i,
+                    ];
+
+                    let rating = null;
+                    let count  = 0;
+
+                    // aria-labels are the most stable selector on Google Shopping
+                    document.querySelectorAll('[aria-label]').forEach(el => {
+                        const label = el.getAttribute('aria-label') || '';
+                        for (const pat of ratingPatterns) {
+                            const m = label.match(pat);
+                            if (m) {
+                                const r = parseFloat(m[1]);
+                                if (r >= 1 && r <= 5 && !rating) rating = r;
+                            }
+                        }
+                    });
+
+                    // Review count from text like "(1,234 reviews)"
+                    const countMatch = (document.body.innerText || '').match(
+                        /\\(([\\d,]+)\\s*(reviews?|ratings?)\\)/i
+                    );
+                    if (countMatch) {
+                        count = parseInt(countMatch[1].replace(/,/g, ''), 10) || 0;
+                    }
+
+                    return { rating, count };
+                }
+            """)
+
+            return rating_data or {"rating": None, "count": 0}
+
+        finally:
+            await context.close()
+
+    except Exception as e:
+        log.debug(f"[Evaluator] Google rating scrape failed: {e}")
+        return {"rating": None, "count": 0}
+
+
+# ── Tier & Confidence Logic ───────────────────────────────────────────────────
+
+def _determine_tier(
+    rating: Optional[float],
+    review_count: int,
+    issues: list,
+    reddit_posts: list,
+) -> str:
+    """
+    Map raw signals to a reliability tier.
+
+    WHY TIERS (not a numeric score):
+    "Mixed reviews — known battery issues" is immediately actionable.
+    A number like "3.2/5" is not. Tiers translate directly to UI labels
+    and suggestion card messaging.
+    """
+    has_rating = rating is not None and review_count >= 10
+    has_reddit = len(reddit_posts) >= 3
+
+    if not has_rating and not has_reddit:
+        return "unknown"
+
+    issue_count = len(issues)
+
+    if has_rating:
+        if rating >= 4.5 and issue_count == 0:
+            return "excellent"
+        elif rating >= 4.2 and issue_count <= 1:
+            return "good"
+        elif rating >= 3.5:
+            return "mixed"
+        else:
+            return "poor"
+
+    # Reddit-only path (no Google rating)
+    if issue_count == 0:
+        return "good"
+    elif issue_count == 1:
+        return "mixed"
+    else:
+        return "poor"
+
+
+def _determine_confidence(
+    rating: Optional[float],
+    review_count: int,
+    reddit_posts: list,
+) -> str:
+    has_solid_rating = rating is not None and review_count >= 100
+    has_reddit       = len(reddit_posts) >= 5
+
+    if has_solid_rating and has_reddit:
+        return "high"
+    elif has_solid_rating or (rating is not None and len(reddit_posts) >= 2):
+        return "medium"
+    return "low"
+
+
+def _empty_reddit() -> dict:
+    return {"posts": [], "issues": [], "strengths": [], "sentiment": None}
+
+
+def _unknown_evaluation(product_name: str) -> ProductEvaluation:
+    return ProductEvaluation(
+        product_name      = product_name,
+        overall_rating    = None,
+        review_count      = 0,
+        reliability_tier  = "unknown",
+        known_issues      = [],
+        strengths         = [],
+        reddit_sentiment  = None,
+        reddit_post_count = 0,
+        sources_used      = [],
+        confidence        = "low",
+    )

@@ -31,7 +31,7 @@ const API_BASE = "http://localhost:8000";
 // Amazon/eBay account login, not by keeping the tag private.
 const AFFILIATE = {
   ebay: {
-    campaignId: "your_ebay_campaign_id",   // TODO: paste from partnernetwork.ebay.com
+    campaignId: "5339144027",              // eBay Partner Network campaign ID
     toolId:     "10001",
     trackingId: "dealscout",
   },
@@ -170,12 +170,69 @@ function setBadge(tabId, text, color) {
 }
 
 
+// ── SPA Navigation Handler ───────────────────────────────────────────────────
+
+/**
+ * WHY THIS IS NEEDED:
+ * FBM is a React SPA. Clicking a listing from search results changes the URL
+ * via history.pushState() — no full page reload happens. Chrome only injects
+ * content scripts on full page loads, so fbm.js never fires on SPA navigation.
+ *
+ * Fix: listen for history state changes on facebook.com and programmatically
+ * re-inject fbm.js when the URL becomes a listing page.
+ *
+ * WHY webNavigation over tabs.onUpdated:
+ * tabs.onUpdated fires for every DOM mutation and status change — too noisy.
+ * onHistoryStateUpdated fires exactly once per pushState/replaceState call,
+ * which is what FBM uses for in-app navigation.
+ */
+/**
+ * WHY DEBOUNCE:
+ * FBM calls history.pushState() 3-4 times per listing page load as it
+ * progressively hydrates the SPA (routing, prefetch, analytics, etc.).
+ * Without debouncing, fbm.js injects 4 times and fires 4 API calls.
+ * We wait 800ms after the LAST pushState before injecting — by that point
+ * FBM has settled and the DOM is ready for extraction.
+ *
+ * Per-tab map so navigating two tabs concurrently doesn't cross-cancel.
+ */
+const spaDebounceTimers = new Map();
+
+chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
+  if (!details.url.includes("facebook.com/marketplace")) return;
+  if (details.frameId !== 0) return;
+
+  // Only re-inject on listing pages — search/browse pages use the
+  // manifest content_scripts injection (no re-inject needed)
+  const isListingPage = details.url.includes("/marketplace/item/") ||
+                        /\/marketplace\/[^/]+\/item\//.test(details.url);
+  if (!isListingPage) return;
+
+  // Cancel any pending inject for this tab and restart the timer
+  if (spaDebounceTimers.has(details.tabId)) {
+    clearTimeout(spaDebounceTimers.get(details.tabId));
+  }
+
+  const timer = setTimeout(() => {
+    spaDebounceTimers.delete(details.tabId);
+    chrome.scripting.executeScript({
+      target: { tabId: details.tabId },
+      files:  ["content/fbm.js"],
+    }).catch(err => {
+      console.debug("[DealScout] Re-inject skipped:", err.message);
+    });
+  }, 800); // 800ms — long enough for FBM's burst of pushStates to finish
+
+  spaDebounceTimers.set(details.tabId, timer);
+}, {
+  url: [{ hostContains: "facebook.com" }],
+});
+
+
 // ── Installation Handler ──────────────────────────────────────────────────────
 
 chrome.runtime.onInstalled.addListener(({ reason }) => {
   if (reason === "install") {
-    // Open onboarding page on first install
-    // TODO: Create an onboarding page explaining the extension
     console.log("Deal Scout installed — ready to score deals");
   }
 });

@@ -5,10 +5,12 @@ Exposes a single endpoint for the POC:
   POST /score  — accepts listing details, runs the full pipeline, returns a deal score
 
 The pipeline it runs:
-  1. Receives listing data from the React UI
-  2. Calls ebay_pricer.py to get market value
-  3. Calls deal_scorer.py to get Claude's AI analysis
-  4. Returns the combined result as JSON
+  1. product_extractor.py  — Claude Haiku extracts brand/model/search_query from vague title
+  2. ebay_pricer.py        — eBay comps using extracted query (not raw title)
+     product_evaluator.py — Reddit + Google Shopping reliability signals (concurrent with #2)
+  3. deal_scorer.py        — Claude scores the deal with product reputation context injected
+  4. suggestion_engine.py  — Generates affiliate buy suggestion cards based on score
+  5. Returns combined result as JSON to the extension sidebar
 
 WHY FastAPI over Flask:
   Built-in async support matches our async scraper/scorer architecture.
@@ -40,6 +42,10 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from scoring.ebay_pricer import get_market_value
 from scoring.deal_scorer import score_deal
+from scoring.product_extractor import extract_product, ProductInfo
+from scoring.product_evaluator import evaluate_product
+from scoring.suggestion_engine import get_suggestions
+from dataclasses import asdict as dc_asdict_top
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -86,7 +92,11 @@ class ListingRequest(BaseModel):
     seller_name:    str  = ""
     listing_url:    str  = ""
     is_multi_item:  bool = False  # True for bundles/sets/lots — adjusts Claude's valuation logic
+    is_vehicle:     bool = False  # True for motorcycles/cars/ATVs — suppresses irrelevant flags
     seller_trust:   dict = {}     # Seller trust signals extracted by content script
+    original_price: float = 0.0   # Crossed-out price if seller reduced it (from DOM dual-price container)
+    shipping_cost:  float = 0.0   # Cost to ship — 0 means free or local pickup
+    image_urls:     list = []     # Listing photo URLs — first one sent to Claude Vision
 
     class Config:
         json_schema_extra = {
@@ -114,13 +124,18 @@ class DealScoreResponse(BaseModel):
     location:    str
     condition:   str
 
-    # Market value from eBay
-    estimated_value:  float
-    sold_avg:         float
-    sold_count:       int
-    active_avg:       float
-    new_price:        float
+    # Market data (eBay or Google Shopping fallback)
+    estimated_value:   float
+    sold_avg:          float
+    sold_count:        int
+    active_avg:        float
+    new_price:         float
     market_confidence: str
+    data_source:       str = "ebay"  # "ebay" | "google_shopping" | "ebay_mock"
+
+    # Like Products — real eBay items surfaced as affiliate cards
+    sold_items_sample:   list = []
+    active_items_sample: list = []
 
     # Claude's deal analysis
     score:             int
@@ -134,6 +149,14 @@ class DealScoreResponse(BaseModel):
     should_buy:        bool
     ai_confidence:     str
     model_used:        str
+    image_analyzed:    bool = False  # True when Claude Vision was used on listing photo
+    original_price:    float = 0.0  # Seller's original price if reduced (strikethrough)
+    shipping_cost:     float = 0.0  # Shipping cost extracted from listing (0 = free/pickup)
+
+    # Product intelligence — new modules
+    product_info:       dict = {}   # Extracted brand/model/search_query from ProductExtractor
+    product_evaluation: dict = {}   # Reliability tier, known issues from ProductEvaluator
+    suggestions:        list = []   # Actionable buy recommendations from SuggestionEngine
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -152,20 +175,62 @@ async def root():
 @app.post("/score", response_model=DealScoreResponse)
 async def score_listing(listing: ListingRequest):
     """
-    Main endpoint — runs the full pipeline for a single listing.
+    Main endpoint — runs the full 5-step product intelligence pipeline.
 
-    Takes listing details from the UI, returns a complete deal score.
-    The React UI calls this when the user hits 'Score This Deal'.
-
-    Pipeline:
-      1. Build a listing dict from the request
-      2. Call eBay pricer to get market value
-      3. Call Claude scorer to get AI analysis
-      4. Combine and return
+    Step 1: Product extraction — Claude Haiku converts vague titles to specific queries
+    Step 2: Parallel — eBay market value (extracted query) + product reliability eval
+    Step 3: Claude deal scoring with reputation context injected into prompt
+    Step 4: Suggestion engine — affiliate buy cards (same_cheaper / better_model / amazon)
+    Step 5: Serialize and return
     """
     log.info(f"Scoring request: '{listing.title}' @ ${listing.price}")
 
-    # Build listing dict — matches the format our scorer expects
+    # ── Step 1: Extract product identity ────────────────────────────────────────
+    # "Telescope" → "Orion SkyQuest XT8 Intelliscope" — this single step
+    # is the biggest accuracy improvement in the entire pipeline.
+    try:
+        product_info = await extract_product(listing.title, listing.description)
+    except Exception as e:
+        log.warning(f"Product extraction failed ({e}) — using title fallback")
+        from scoring.product_extractor import _fallback_extraction
+        product_info = _fallback_extraction(listing.title)
+
+    # ── Step 2: Parallel — eBay market value + product evaluation ────────────
+    # Both are I/O-bound. Running concurrently saves ~1-2s vs sequential.
+    try:
+        market_value, product_eval = await asyncio.gather(
+            get_market_value(
+                listing_title     = product_info.search_query,  # extracted query, not raw title
+                listing_condition = listing.condition,
+            ),
+            evaluate_product(
+                brand        = product_info.brand,
+                model        = product_info.model,
+                category     = product_info.category,
+                display_name = product_info.display_name,
+            ),
+            return_exceptions=True,
+        )
+
+        if isinstance(market_value, Exception):
+            log.error(f"eBay pricing failed: {market_value}")
+            raise HTTPException(status_code=500, detail=f"Market value lookup failed: {market_value}")
+
+        if isinstance(product_eval, Exception):
+            log.warning(f"Product evaluation failed ({product_eval}) — continuing without")
+            from scoring.product_evaluator import _unknown_evaluation
+            product_eval = _unknown_evaluation(product_info.display_name)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Parallel fetch failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Market data fetch failed: {e}")
+
+    # ── Step 3: Claude deal scoring ──────────────────────────────────────────
+    from dataclasses import asdict as dc_asdict
+    market_value_dict = dc_asdict(market_value)
+
     listing_dict = {
         "title":          listing.title,
         "price":          listing.price,
@@ -176,56 +241,71 @@ async def score_listing(listing: ListingRequest):
         "seller_name":    listing.seller_name,
         "listing_url":    listing.listing_url,
         "is_multi_item":  listing.is_multi_item,
+        "is_vehicle":     listing.is_vehicle,
         "seller_trust":   listing.seller_trust,
-        "image_urls":     [],
+        "original_price": listing.original_price,
+        "shipping_cost":  listing.shipping_cost,
+        "image_urls":     listing.image_urls or [],
     }
 
-    # Step 1: Get eBay market value
+    image_url = listing.image_urls[0] if listing.image_urls else None
+
     try:
-        market_value = await get_market_value(
-            listing_title=listing.title,
-            listing_condition=listing.condition,
+        deal_score = await score_deal(
+            listing_dict,
+            market_value_dict,
+            image_url          = image_url,
+            product_evaluation = product_eval,
         )
+    except RuntimeError as e:
+        real_error = str(e)
+        log.error(f"Scoring failed: {real_error}")
+        raise HTTPException(status_code=500, detail=real_error)
     except Exception as e:
-        log.error(f"eBay pricing failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Market value lookup failed: {str(e)}")
-
-    # Step 2: Get Claude deal score
-    # WHY asdict: MarketValue is a dataclass — asdict converts it cleanly to
-    # a plain dict that score_deal expects. The inline vars() approach was brittle.
-    from dataclasses import asdict as dc_asdict
-    market_value_dict = dc_asdict(market_value)
-
-    try:
-        deal_score = await score_deal(listing_dict, market_value_dict)
-    except Exception as e:
-        log.error(f"Claude scoring exception: {e}")
-        raise HTTPException(status_code=500, detail=f"AI scoring exception: {str(e)}")
+        log.error(f"Unexpected scoring exception: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
     if not deal_score:
-        # score_deal returns None on failure — check the API server terminal
-        # for the detailed error logged by deal_scorer.py
-        raise HTTPException(
-            status_code=500,
-            detail="AI scoring returned None — check API terminal for the real error"
-        )
+        raise HTTPException(status_code=500, detail="Scorer returned no result — check API terminal")
 
     log.info(f"Score: {deal_score.score}/10 — {deal_score.verdict}")
 
+    # ── Step 4: Generate suggestions ──────────────────────────────────────────
+    try:
+        suggestions = await get_suggestions(
+            product_info  = product_info,
+            market_value  = market_value,
+            deal_score    = deal_score,
+            listing_price = listing.price,
+        )
+    except Exception as e:
+        log.warning(f"Suggestion engine failed ({e}) — returning empty suggestions")
+        suggestions = []
+
+    # ── Step 5: Serialize ────────────────────────────────────────────────
+    sold_items_sample   = [dc_asdict(i) for i in (market_value.sold_items_sample   or [])]
+    active_items_sample = [dc_asdict(i) for i in (market_value.active_items_sample or [])]
+    suggestions_dicts   = [dc_asdict(s) for s in suggestions]
+
     return DealScoreResponse(
         # Listing
-        title     = listing.title,
-        price     = listing.price,
-        location  = listing.location,
-        condition = listing.condition,
+        title          = listing.title,
+        price          = listing.price,
+        location       = listing.location,
+        condition      = listing.condition,
+        original_price = listing.original_price,
+        shipping_cost  = listing.shipping_cost,
 
         # Market value
-        estimated_value   = market_value.estimated_value,
-        sold_avg          = market_value.sold_avg,
-        sold_count        = market_value.sold_count,
-        active_avg        = market_value.active_avg,
-        new_price         = market_value.new_price,
-        market_confidence = market_value.confidence,
+        estimated_value     = market_value.estimated_value,
+        sold_avg            = market_value.sold_avg,
+        sold_count          = market_value.sold_count,
+        active_avg          = market_value.active_avg,
+        new_price           = market_value.new_price,
+        market_confidence   = market_value.confidence,
+        data_source         = market_value.data_source,
+        sold_items_sample   = sold_items_sample,
+        active_items_sample = active_items_sample,
 
         # Deal score
         score             = deal_score.score,
@@ -239,6 +319,12 @@ async def score_listing(listing: ListingRequest):
         should_buy        = deal_score.should_buy,
         ai_confidence     = deal_score.confidence,
         model_used        = deal_score.model_used,
+        image_analyzed    = deal_score.image_analyzed,
+
+        # Product intelligence
+        product_info       = dc_asdict_top(product_info),
+        product_evaluation = dc_asdict_top(product_eval),
+        suggestions        = suggestions_dicts,
     )
 
 
@@ -276,6 +362,46 @@ async def test_claude():
         return {"status": "error", "detail": f"Bad request (likely billing): {e}"}
     except Exception as e:
         return {"status": "error", "detail": str(e)}
+
+
+@app.get("/test-ebay")
+async def test_ebay():
+    """Debug endpoint — calls eBay directly, exposes raw response for diagnosis."""
+    import httpx, os
+    app_id = os.getenv("EBAY_APP_ID", "")
+    url = "https://svcs.ebay.com/services/search/FindingService/v1"
+    params = {
+        "OPERATION-NAME": "findCompletedItems",
+        "SERVICE-VERSION": "1.13.0",
+        "SECURITY-APPNAME": app_id,
+        "RESPONSE-DATA-FORMAT": "JSON",
+        "REST-PAYLOAD": "",
+        "keywords": "iPhone 13 Pro 256GB",
+        "paginationInput.entriesPerPage": "3",
+        "sortOrder": "BestMatch",
+        "itemFilter(0).name": "SoldItemsOnly",
+        "itemFilter(0).value": "true",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url, params=params)
+        # Don't raise — read the body regardless of status code
+        try:
+            raw = resp.json()
+        except Exception:
+            raw = {"raw_text": resp.text[:500]}
+        ebay_resp = raw.get("findCompletedItemsResponse", [{}])[0]
+        return {
+            "http_status": resp.status_code,
+            "ack": ebay_resp.get("ack", ["?"])[0],
+            "total_entries": ebay_resp.get("paginationOutput", [{}])[0].get("totalEntries", ["?"])[0],
+            "item_count": len(ebay_resp.get("searchResult", [{}])[0].get("item", [])),
+            "error_message": ebay_resp.get("errorMessage"),
+            "app_id_used": app_id[:25] + "...",
+            "raw_body_preview": str(raw)[:800],
+        }
+    except Exception as e:
+        return {"error": str(e), "type": type(e).__name__}
 
 
 @app.get("/health")

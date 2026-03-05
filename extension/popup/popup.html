@@ -34,6 +34,65 @@
     }
     .status-card.active { background: #f0fdf4; color: #15803d; }
     .status-card.error  { background: #fef2f2; color: #dc2626; }
+
+    /* Pro toggle card */
+    .pro-card {
+      background: linear-gradient(135deg, #f8f7ff, #fdf4ff);
+      border: 1px solid #e9d5ff;
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-bottom: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .pro-card .pro-label {
+      font-size: 13px;
+      font-weight: 700;
+      color: #7c3aed;
+    }
+    .pro-card .pro-hint {
+      font-size: 11px;
+      color: #9ca3af;
+      margin-top: 2px;
+    }
+    /* Toggle switch */
+    .toggle-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: #6b7280;
+    }
+    .toggle {
+      position: relative;
+      width: 40px;
+      height: 22px;
+    }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle-slider {
+      position: absolute;
+      inset: 0;
+      background: #d1d5db;
+      border-radius: 22px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .toggle-slider::before {
+      content: '';
+      position: absolute;
+      left: 3px;
+      top: 3px;
+      width: 16px;
+      height: 16px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform 0.2s;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    }
+    .toggle input:checked + .toggle-slider { background: #7c3aed; }
+    .toggle input:checked + .toggle-slider::before { transform: translateX(18px); }
+
     .platform-list { margin-bottom: 16px; }
     .platform {
       display: flex;
@@ -80,13 +139,31 @@
 <body>
   <div class="header">
     <h1>🛒 Deal Scout</h1>
-    <span class="version">v0.1.0</span>
+    <span class="version">v0.3.0</span>
   </div>
 
   <div class="body">
     <!-- API Status -->
     <div id="api-status" class="status-card">
       ⏳ Checking API connection...
+    </div>
+
+    <!-- Pro Toggle
+         WHY A POPUP TOGGLE (not Stripe for POC):
+         In production, Pro status is verified server-side against a Stripe
+         subscription. For the POC, we just flip chrome.storage.local.ds_pro
+         so we can demo the full Pro feature set without a payment flow.
+         The content script's isPro() reads this same key.
+    -->
+    <div class="pro-card">
+      <div>
+        <div class="pro-label">✨ Pro Mode</div>
+        <div class="pro-hint" id="pro-hint">Enables eBay comps &amp; photo analysis</div>
+      </div>
+      <label class="toggle" title="Toggle Pro mode (POC demo only)">
+        <input type="checkbox" id="pro-toggle">
+        <span class="toggle-slider"></span>
+      </label>
     </div>
 
     <!-- Supported Platforms -->

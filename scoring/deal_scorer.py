@@ -51,9 +51,18 @@ log = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 
-# Initialize the Anthropic client once at module level
-# WHY: Creating a new client per request is wasteful — reuse the connection
-client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+# Lazy-initialized client — not created until first API call.
+# WHY LAZY (not module-level eager init):
+#   1. Consistent with product_extractor.py and suggestion_engine.py
+#   2. If API key is rotated after server start, next call picks it up from os.getenv
+#   3. Avoids a client object with api_key=None if .env isn't loaded at import time
+_scoring_client: Optional[anthropic.Anthropic] = None
+
+def _get_scoring_client() -> anthropic.Anthropic:
+    global _scoring_client
+    if _scoring_client is None:
+        _scoring_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    return _scoring_client
 
 
 # ── Data Model ────────────────────────────────────────────────────────────────
@@ -76,6 +85,7 @@ class DealScore:
     should_buy:         bool    # Simple yes/no recommendation
     confidence:         str     # "high" / "medium" / "low"
     model_used:         str     # Which Claude model scored this
+    image_analyzed:     bool    = False  # True if Claude Vision analyzed the listing photo
 
 
 # ── Prompt Builder ────────────────────────────────────────────────────────────
@@ -109,7 +119,7 @@ def _format_seller_trust(trust: dict) -> str:
     return "\n".join(lines)
 
 
-def build_scoring_prompt(listing: dict, market_value: dict) -> str:
+def build_scoring_prompt(listing: dict, market_value: dict, product_evaluation=None) -> str:
     """
     Build the prompt that Claude uses to score the deal.
 
@@ -148,12 +158,46 @@ Adjust your analysis accordingly:
 - Flag if key items (like batteries, chargers, or cases) appear missing
 """
 
+    is_vehicle = listing.get('is_vehicle', False)
+    vehicle_instruction = ""
+    if is_vehicle:
+        vehicle_instruction = """
+## IMPORTANT: VEHICLE / POWERSPORTS / MOTORCYCLE LISTING
+This listing is for a vehicle, motorcycle, dirt bike, ATV, or similar.
+Apply vehicle-specific reasoning:
+- DO NOT flag 'no accessories mentioned' — vehicles don't come with accessories by default
+- DO NOT flag 'no original packaging' — N/A for vehicles
+- DO NOT flag 'unknown condition' if the description mentions mechanical state, mileage, or wear
+- Standard attributes (mileage, transmission type, exterior color) are expected, NOT suspicious
+- Clean title is a STRONG green flag — always mention it if present
+- Red flags specific to vehicles: salvage/rebuilt title, no title, flood/fire damage, no VIN, non-running
+- Mileage context: under 5,000 miles on a used dirt bike is very low; over 50,000 on a car is high
+- eBay comps for vehicles vary widely — use the price RANGE, not just the average
+- Modifications / aftermarket parts: assess whether they add or detract from value for this item type
+"""
+
+    # ── Shipping cost context ─────────────────────────────────────────────────
+    # WHY: $275 item + $46.68 shipping = $321.68 true cost to buyer.
+    # Without this Claude evaluates item price alone vs eBay avg, which
+    # dramatically understates how bad the deal is for shipped listings.
+    shipping_cost = listing.get('shipping_cost', 0) or 0
+    price         = listing.get('price', 0) or 0
+    total_cost    = price + shipping_cost
+
+    if shipping_cost > 0:
+        shipping_line = (
+            f"\nShipping:     ${shipping_cost:.2f}"
+            f"\nTotal cost:   ${total_cost:.2f}  ← USE THIS for price-to-market comparison, NOT the item price alone"
+        )
+    else:
+        shipping_line = "\nShipping:     Free / local pickup (no additional cost)"
+
     return f"""You are an expert deal evaluator for a personal shopping assistant.
 Your job is to analyze a second-hand marketplace listing and produce a structured deal score.
-{multi_item_instruction}
+{multi_item_instruction}{vehicle_instruction}
 ## LISTING DETAILS
 Title:        {listing['title']}
-Price:        {listing['raw_price_text']}
+Price:        {listing['raw_price_text']}{f" (reduced from ${listing['original_price']:.0f} — seller has already dropped the price)" if listing.get('original_price') and listing['original_price'] > listing.get('price', 0) else ''}{shipping_line}
 Condition:    {listing.get('condition', 'Not specified')}
 Location:     {listing.get('location', 'Unknown')}
 Seller:       {listing.get('seller_name', 'Unknown')}
@@ -182,6 +226,16 @@ Analyze this listing holistically. Consider:
 - What is a reasonable offer price if the buyer wants to negotiate?
 - Would YOU recommend buying this at the listed price?
 
+## PRODUCT REPUTATION
+{product_evaluation.to_prompt_text() if product_evaluation else 'No product reputation data available for this model.'}
+
+## CRITICAL RULES FOR DATA QUALITY
+- If Data confidence is "low", do NOT flag price-to-comp mismatch as a red flag. State in value_assessment that comps are limited and you cannot confirm fair pricing, but do not penalize the score for it.
+- Only fire a "price above market" red flag when confidence is "medium" or "high" AND the gap is significant.
+- Red flags should be grounded in the listing text itself (vague description, implausible claims, inconsistent details), NOT in weak eBay comp data.
+- Never flag standard vehicle attributes (mileage, transmission, color, battery specs) as suspicious.
+- Do not flag missing accessories or original packaging for vehicles, motorcycles, or powersports items.
+
 ## RESPONSE FORMAT
 Respond ONLY with a valid JSON object. No preamble, no explanation, no markdown fences.
 Use exactly this structure:
@@ -206,34 +260,119 @@ recommended_offer should be realistic — not insultingly low, not full ask if o
 
 # ── Claude API Call ───────────────────────────────────────────────────────────
 
-async def score_deal(listing: dict, market_value: dict) -> Optional[DealScore]:
+async def _fetch_image_base64(image_url: str) -> Optional[tuple[str, str]]:
+    """
+    Fetch an image URL and return (base64_data, media_type).
+    Returns None if fetch fails — caller falls back to text-only scoring.
+
+    WHY httpx OVER requests:
+      httpx is async-native, so we can await it without blocking the event loop.
+      requests.get() would block the entire FastAPI server during the image fetch.
+
+    WHY FBM IMAGES WORK SERVER-SIDE:
+      Facebook CDN (fbcdn.net) images are publicly accessible via URL — the
+      security parameters are embedded in the URL itself (no session cookie needed).
+      They're typically valid for several hours after page load.
+    """
+    try:
+        import httpx
+        import base64
+        async with httpx.AsyncClient(timeout=6.0, follow_redirects=True) as http:
+            resp = await http.get(
+                image_url,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            )
+        if resp.status_code != 200:
+            log.warning(f"Image fetch failed: HTTP {resp.status_code} for {image_url[:80]}")
+            return None
+        media_type = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+        if not media_type.startswith("image/"):
+            return None
+        b64 = base64.standard_b64encode(resp.content).decode()
+        log.info(f"Image fetched: {len(resp.content)//1024}KB, {media_type}")
+        return b64, media_type
+    except Exception as e:
+        log.warning(f"Image fetch error: {type(e).__name__}: {e}")
+        return None
+
+
+async def score_deal(
+    listing: dict,
+    market_value: dict,
+    image_url: Optional[str] = None,
+    product_evaluation=None,  # ProductEvaluation from product_evaluator — enriches Claude's context
+) -> Optional[DealScore]:
     """
     Send listing + market data to Claude and parse the deal score response.
 
-    WHY claude-3-5-haiku:
-      Fast and cheap — ideal for POC. Scoring a listing should feel instant.
-      We can upgrade to Sonnet for production if we need deeper reasoning.
-      Haiku handles structured JSON output reliably at this complexity level.
+    image_url: if provided, fetches the image and includes it in the Claude
+    message as a vision input. Claude will analyze actual photo condition
+    vs. the seller's claimed condition — catches "like new" listings with
+    obvious damage. Adds ~1s latency for the image fetch.
+
+    WHY claude-haiku-4-5 for vision:
+      Haiku 4.5 supports multimodal input and is fast enough for real-time
+      sidebar scoring. We can upgrade to Sonnet if vision quality is lacking.
     """
     if not os.getenv("ANTHROPIC_API_KEY"):
         log.error("ANTHROPIC_API_KEY not set in .env")
         log.error("Get your key at: https://console.anthropic.com")
         return None
 
-    prompt = build_scoring_prompt(listing, market_value)
-    log.info("Sending listing to Claude for deal scoring...")
+    prompt = build_scoring_prompt(listing, market_value, product_evaluation)
+
+    # Attempt image fetch if URL provided
+    # WHY CONCURRENT: fetch image while building prompt — saves ~0.5s
+    image_result = None
+    if image_url:
+        log.info(f"Fetching listing image for vision analysis...")
+        image_result = await _fetch_image_base64(image_url)
+
+    image_analyzed = image_result is not None
+
+    # Build Claude message — text-only or multimodal depending on image availability
+    if image_analyzed:
+        b64_data, media_type = image_result
+        # WHY IMAGE FIRST: Claude processes content blocks in order.
+        # Seeing the photo before reading the description mirrors how a
+        # human buyer evaluates a listing — you look at the photos first.
+        message_content = [
+            {
+                "type": "image",
+                "source": {
+                    "type":       "base64",
+                    "media_type": media_type,
+                    "data":       b64_data,
+                }
+            },
+            {
+                "type": "text",
+                "text": (
+                    "You have been shown the main listing photo above. "
+                    "Factor the photo into your analysis: "
+                    "Does the visible condition match the seller's claims? "
+                    "Are there signs of damage, wear, or missing parts not mentioned? "
+                    "Are any included accessories visible?\n\n"
+                    + prompt
+                )
+            }
+        ]
+        log.info("Sending listing + photo to Claude Vision...")
+    else:
+        message_content = prompt
+        log.info("Sending listing to Claude (text-only)...")
 
     try:
-        # WHY we run this in an executor:
-        # The anthropic client is synchronous. We wrap it in asyncio
-        # so it doesn't block the event loop when we wire this into FastAPI.
-        loop = asyncio.get_event_loop()
+        # WHY executor: anthropic client is synchronous; wrap to avoid blocking FastAPI
+        # WHY get_running_loop() not get_event_loop(): we're inside an async function,
+        # so there's always a running loop. get_running_loop() is the correct call here.
+        loop = asyncio.get_running_loop()
         response = await loop.run_in_executor(
             None,
-            lambda: client.messages.create(
+            lambda: _get_scoring_client().messages.create(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=1024,
-                messages=[{"role": "user", "content": prompt}]
+                messages=[{"role": "user", "content": message_content}]
             )
         )
 
@@ -271,17 +410,21 @@ async def score_deal(listing: dict, market_value: dict) -> Optional[DealScore]:
             should_buy        = bool(data.get("should_buy", False)),
             confidence        = data.get("confidence", "medium"),
             model_used        = response.model,
+            image_analyzed    = image_analyzed,
         )
 
-    except anthropic.AuthenticationError:
-        log.error("Invalid Anthropic API key — check your .env file")
-        return None
-    except anthropic.RateLimitError:
-        log.error("Anthropic rate limit hit — wait a moment and retry")
-        return None
+    except anthropic.AuthenticationError as e:
+        # Surface the real error so FastAPI can show it in the sidebar
+        raise RuntimeError(f"Anthropic auth failed — check ANTHROPIC_API_KEY in .env ({e})") from e
+    except anthropic.RateLimitError as e:
+        raise RuntimeError(f"Anthropic rate limit hit — wait a moment and retry ({e})") from e
+    except anthropic.BadRequestError as e:
+        # This usually means billing issue or model not available
+        raise RuntimeError(f"Anthropic bad request — likely billing or model issue ({e})") from e
+    except anthropic.NotFoundError as e:
+        raise RuntimeError(f"Anthropic model not found — check model string ({e})") from e
     except Exception as e:
-        log.error(f"Claude API error: {e}")
-        return None
+        raise RuntimeError(f"Claude API error: {type(e).__name__}: {e}") from e
 
 
 # ── Output ────────────────────────────────────────────────────────────────────

@@ -1,24 +1,25 @@
-# Personal Shopping Bot
+# Deal Scout — AI-Powered Deal Scoring Browser Extension
 
-An AI-powered shopping assistant that scores deals on Facebook Marketplace,
-Craigslist, and other platforms using Claude AI and real market data from eBay and Amazon.
+An AI-powered shopping assistant that scores deals on Facebook Marketplace and Craigslist using Claude AI and real market data from eBay.
 
 ---
 
 ## Project Structure
 ```
 Personal_Shopping_Bot/
-├── scraper/          # POC-only Playwright scraper (replaced by extension in production)
-├── api/              # FastAPI backend — deal scoring, affiliate links, watchlists
-├── scoring/          # Claude API deal scoring, eBay + Amazon price comparison
+├── scraper/          # POC-only Playwright scraper (superseded by extension)
+├── api/              # FastAPI backend — deal scoring, eBay pricing, affiliate links
+├── scoring/          # Claude API scoring engine, eBay price comparison
 ├── extension/        # Chrome browser extension (production data collection layer)
-│   ├── manifest.json     # Extension config — permissions, scripts, metadata
-│   ├── background.js     # Service worker — handles API calls, affiliate link injection
-│   ├── content.js        # Page scraper — reads FBM/Craigslist/Amazon DOM
-│   ├── popup.html        # Extension popup UI
-│   └── popup.js          # Popup logic
-├── ui/               # React web UI — standalone deal scorer (POC + affiliate demo)
-├── data/             # Flat file storage for POC (JSON, no database yet)
+│   ├── manifest.json         # Extension config — permissions, v0.2.0
+│   ├── background.js         # Service worker — API calls, affiliate injection
+│   ├── content/
+│   │   └── fbm.js            # FBM + Craigslist content script (~850 lines)
+│   ├── popup/
+│   │   ├── popup.html        # Extension popup UI
+│   │   └── popup.js          # Popup logic — API health check, score trigger
+├── ui/               # React web UI — standalone deal scorer (Week 4 — not yet built)
+├── data/             # Flat file storage for POC (JSON)
 ├── .env              # Credentials — NEVER commit this to git
 ├── check_setup.py    # Setup verification script
 ├── requirements.txt
@@ -30,10 +31,10 @@ Personal_Shopping_Bot/
 ## Product Vision
 
 **Phase 1 (Now):** Free browser extension + affiliate revenue
-- Extension detects when user views a FBM/Craigslist/Amazon listing
-- Automatically scores the deal using Claude AI + eBay/Amazon market data
-- Shows a deal score sidebar — no user action needed
-- Affiliate links to eBay/Amazon embedded in results — revenue on click-through purchases
+- Extension detects when user views a FBM/Craigslist listing
+- Scores the deal using Claude AI + eBay market data
+- Sidebar shows deal score, flags, recommended offer, message templates
+- Affiliate links to eBay/Amazon embedded in results — revenue on click-through
 
 **Phase 2:** Freemium — power users pay for alerts + watchlists
 - Free tier: real-time scoring on listings you visit
@@ -45,65 +46,42 @@ Personal_Shopping_Bot/
 
 ---
 
-## Monetization Strategy
+## Monetization
 
 ### Affiliate Revenue (Phase 1)
-Every deal score result shows comparison links to eBay and Amazon with embedded affiliate IDs.
-When a user clicks through and purchases, we earn a commission — no user friction, no paywall.
+Every deal score shows eBay and Amazon comparison links with embedded affiliate IDs.
+Commission on any click-through purchase — zero user friction, zero paywall.
 
 | Program | Commission | Sign Up |
 |---------|-----------|---------|
-| eBay Partner Network | 50-70% of eBay's revenue on referred sales | https://partnernetwork.ebay.com |
-| Amazon Associates | 1-10% depending on category | https://affiliate-program.amazon.com |
-
-### Affiliate Link Format
-```
-eBay:   https://www.ebay.com/sch/i.html?_nkw={query}&mkevt=1&mkcid=1&mkrid=711-53200-19255-0&campid={CAMPAIGN_ID}&toolid=10001
-Amazon: https://www.amazon.com/s?k={query}&tag={ASSOCIATE_TAG}
-```
+| eBay Partner Network | 50–70% of eBay's revenue on referred sales | https://partnernetwork.ebay.com |
+| Amazon Associates | 1–10% by category | https://affiliate-program.amazon.com |
 
 ---
 
-## API Keys — Where to Get Them
+## API Keys
 
-### Anthropic (Claude API)
-1. Go to https://console.anthropic.com
-2. Sign in → **API Keys** → **Create Key**
-3. Paste into `.env` as `ANTHROPIC_API_KEY=sk-ant-...`
-
-### eBay API (price comparison)
-1. Go to https://developer.ebay.com
-2. **My Account → Application Access Keys → Create App → Production**
-3. Copy App ID into `.env` as `EBAY_APP_ID=...`
-
-### eBay Partner Network (affiliate revenue)
-1. Go to https://partnernetwork.ebay.com
-2. Apply for an account (usually approved within 24hrs)
-3. Get your Campaign ID and paste into `.env` as `EBAY_CAMPAIGN_ID=...`
-
-### Amazon Product Advertising API (price comparison)
-1. Join Amazon Associates at https://affiliate-program.amazon.com
-2. Once approved, go to Tools → Product Advertising API
-3. Get Access Key + Secret Key + Associate Tag
-4. Paste into `.env` as `AMAZON_ACCESS_KEY`, `AMAZON_SECRET_KEY`, `AMAZON_ASSOCIATE_TAG`
-
-### Amazon Associates (affiliate revenue)
-- Same account as above — your Associate Tag is embedded in all product links
+| Key | Where | .env Variable |
+|-----|-------|---------------|
+| Anthropic | https://console.anthropic.com → API Keys | `ANTHROPIC_API_KEY` |
+| eBay API | https://developer.ebay.com → App Keys | `EBAY_APP_ID` |
+| eBay Affiliate | https://partnernetwork.ebay.com | `EBAY_CAMPAIGN_ID` |
+| Amazon API | https://affiliate-program.amazon.com → PA API | `AMAZON_ACCESS_KEY`, `AMAZON_SECRET_KEY` |
+| Amazon Affiliate | Same account | `AMAZON_ASSOCIATE_TAG` |
 
 ---
 
 ## Setup
 
 ```bash
-# 1. Install Python dependencies
+# Install dependencies
 python -m pip install -r requirements.txt
-
-# 2. Install Playwright browser (POC scraper only)
 python -m playwright install chromium
 
-# 3. Fill in your .env file (see API Keys section above)
+# Configure credentials
+cp .env.example .env   # fill in your keys
 
-# 4. Verify everything is ready
+# Verify setup
 python check_setup.py
 ```
 
@@ -111,114 +89,98 @@ python check_setup.py
 
 ## Running the Stack
 
-### POC Scraper (data collection — replaced by extension in production)
 ```bash
-# Manual text input mode — no FB account needed
-python scraper/fbm_scraper.py --mode text
-
-# Single URL mode
-python scraper/fbm_scraper.py --mode url --input "https://www.facebook.com/marketplace/item/123"
-
-# Batch mode — one URL per line in a text file
-python scraper/fbm_scraper.py --mode batch --input data/urls.txt
-```
-
-### eBay Pricer
-```bash
-python scoring/ebay_pricer.py
-```
-
-### Deal Scorer
-```bash
-python scoring/deal_scorer.py
-```
-
-### API Backend
-```bash
+# API backend (required for extension to function)
 python -m uvicorn api.main:app --reload --port 8000
-# Docs available at http://localhost:8000/docs
-```
+# Interactive docs → http://localhost:8000/docs
 
-### React UI
-```bash
+# React UI (not yet built — Week 4)
 cd ui && npm install && npm start
-# Opens at http://localhost:3000
+# Will open at http://localhost:3000
+
+# POC scraper (standalone, not needed for extension)
+python scraper/fbm_scraper.py --mode text
 ```
 
-### Chrome Extension (load unpacked)
-1. Open Chrome → `chrome://extensions`
-2. Enable **Developer Mode** (top right)
-3. Click **Load Unpacked**
-4. Select the `/extension` folder
-5. Browse to any FBM or Craigslist listing — sidebar appears automatically
+### Load Extension in Chrome
+1. `chrome://extensions` → Enable **Developer Mode**
+2. **Load Unpacked** → select the `/extension` folder
+3. Navigate to any FBM listing — sidebar appears automatically
 
 ---
 
-## Build Progress
+## Build Status
 
-### POC (Weeks 1-4) ✅ Complete
+### POC (Weeks 1–4) ✅
 | Week | Goal | Status |
 |------|------|--------|
-| 1 | FBM scraper — 3 modes, no login required | ✅ Done |
-| 2 | eBay API — market price comparison | ✅ Done |
-| 3 | Claude API — deal scoring engine | ✅ Done |
-| 4 | React UI — paste a listing, get a score | ✅ Done |
+| 1 | FBM scraper — 3 modes | ✅ |
+| 2 | eBay price comparison | ✅ (mock data while API approval pending) |
+| 3 | Claude deal scoring engine | ✅ |
+| 4 | React UI | ⏳ Scaffolded, not yet built |
 
-### Phase 1 — Chrome Extension + Affiliate Revenue
-| Task | Status |
-|------|--------|
-| Extension manifest + permissions | ✅ Scaffolded |
-| Content script — FBM listing detection | 🔲 In progress |
-| Content script — Craigslist listing detection | 🔲 Not started |
-| Content script — Amazon listing detection | 🔲 Not started |
-| Background service worker — API calls | 🔲 Not started |
-| Sidebar UI — deal score display | 🔲 Not started |
-| eBay affiliate link injection | 🔲 Not started |
-| Amazon affiliate link injection | 🔲 Not started |
+### Phase 1 — Chrome Extension
+| Feature | Status |
+|---------|--------|
+| Manifest v3, permissions, service worker | ✅ |
+| FBM content script — full DOM extraction | ✅ |
+| Craigslist content script | ✅ |
+| Collapsible sidebar — score, flags, offer | ✅ |
+| Draggable sidebar (persists position) | ✅ |
+| One-click message templates (clipboard) | ✅ |
+| Price history tracking (chrome.storage) | ✅ |
+| Search results overlay badges | ✅ |
+| Seller trust scoring | ✅ |
+| Strikethrough / price reduction detection | ✅ |
+| eBay real API data | ⏳ Pending eBay API approval |
+| Amazon price anchor | 🔲 Not started |
+| eBay affiliate link activation | 🔲 Needs campaign ID in .env |
+| Amazon affiliate link activation | 🔲 Needs associate tag in .env |
+| OfferUp support | 🔲 Not started |
+| Chrome Web Store submission | 🔲 Not started |
 
 ---
 
 ## Changelog
 
-### v0.1.0 — POC Complete (Mar 3, 2026)
-- ✅ Built Playwright-based FBM scraper with 3 modes (URL, text, batch)
-- ✅ Built eBay Finding API price comparison module with mock fallback
-- ✅ Built Claude API deal scoring engine with structured JSON output
-- ✅ Built React UI — paste a listing, get a full AI deal score
-- ✅ Built FastAPI backend wiring all three stages together
-- ✅ Validated full pipeline on real listing (Orion telescope, Gskyer telescope)
-- ✅ Confirmed Claude catches condition inconsistencies and flags red/green signals
+### v0.2.0 — Extension (Mar 2026)
+- ✅ Chrome extension with FBM + Craigslist content scripts
+- ✅ Full DOM extraction without data-testid (Facebook removed them late 2024)
+- ✅ Collapsible, draggable sidebar with deal score, flags, recommended offer
+- ✅ One-click message templates (offer, condition inquiry, fast offer)
+- ✅ Price history tracking across visits (chrome.storage.local)
+- ✅ Search results overlay — badge each listing thumbnail with cached score
+- ✅ Seller trust scoring — account age, review count, Highly Rated badge
+- ✅ Strikethrough price detection — identifies seller price reductions
+- ✅ Popup: API health check, manual rescore trigger, Open Full Scorer button
 
-### Next Up — v0.2.0 Chrome Extension
-- Chrome extension scaffold (manifest, content script, background worker)
-- FBM listing auto-detection and scraping from user's own session
-- Amazon price comparison integration
-- eBay + Amazon affiliate link injection in deal score results
-
----
-
-## ⚠️ Bot Detection Notes
-- Scraper: always run with `HEADLESS=false` — visible browser is less detectable
-- Extension: runs in user's own authenticated session — no bot detection issues
-- Never run the scraper from a datacenter IP — use home/residential connection
+### v0.1.0 — POC (Mar 2026)
+- ✅ Playwright-based FBM scraper (URL, text, batch modes)
+- ✅ eBay Finding API price comparison with mock fallback
+- ✅ Claude API deal scoring with structured JSON output
+- ✅ FastAPI backend wiring scraper → eBay → Claude
+- ✅ Validated on real listings (Orion telescope, Gskyer telescope)
 
 ---
 
-## ⚠️ Security Notes
-- Never commit `.env` to git — already in `.gitignore`
-- Extension never touches user credentials — reads DOM only
-- Affiliate IDs live server-side in `.env` — never exposed to the extension
+## ⚠️ Notes
 
----
+**Bot Detection**
+- Extension runs in user's own authenticated session — no bot detection issues
+- POC scraper: always use `HEADLESS=false`, never run from datacenter IP
+
+**Security**
+- `.env` is gitignored — never commit it
+- Extension reads DOM only — never touches credentials
+- Affiliate IDs live server-side in `.env`, never exposed to extension JS
 
 ## Tech Stack
 | Layer | Technology |
 |-------|-----------|
 | Browser Extension | JavaScript, Chrome Manifest V3 |
-| Data Collection (POC) | Python + Playwright |
 | Backend API | Python + FastAPI |
-| AI Scoring | Anthropic Claude API (claude-haiku-4-5) |
-| Price Comparison | eBay Finding API + Amazon Product Advertising API |
+| AI Scoring | Anthropic Claude API |
+| Price Comparison | eBay Finding API + Amazon PA API |
 | Affiliate Revenue | eBay Partner Network + Amazon Associates |
-| Frontend | React |
-| Storage | Flat JSON files (POC) → PostgreSQL (Phase 2) |
+| Frontend | React (Week 4) |
+| Storage | chrome.storage.local (extension) + flat JSON (POC) |
