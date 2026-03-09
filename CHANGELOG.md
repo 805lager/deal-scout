@@ -5,6 +5,92 @@ Format: `vX.Y.Z — Description (Date)`
 
 ---
 
+## v0.22.0 — Chrome Web Store + Railway Launch (Mar 2026)
+
+### Summary
+First public release. Extension published to Chrome Web Store. Backend live on Railway.
+All users now hit `https://deal-scout-production.up.railway.app` by default — no DevTools setup required.
+
+### Changes
+- **Extension points at Railway by default** (`extension/popup/popup.js`)
+  - `API_BASE_DEFAULT` changed from `http://localhost:8000` → `https://deal-scout-production.up.railway.app`
+  - Zero setup for new users — install extension, open FBM, scores work immediately
+- **⚙️ API Settings panel added to popup** (`extension/popup/popup.html`, `extension/popup/popup.js`)
+  - Collapsible panel under the Score button lets you switch API URL without touching code
+  - Saves to `chrome.storage.local` key `ds_api_base` — persists across sessions
+  - Re-pings `/health` immediately after save so status card updates live
+  - Useful for switching back to `localhost:8000` during local dev
+- **`localhost` removed from `host_permissions`** (`extension/manifest.json`)
+  - `http://localhost:8000/*` removed — would have been flagged by Google's extension review
+  - Local dev still works via the ⚙️ Settings panel URL override
+- **Version bumped to 0.21.1** (`extension/manifest.json`)
+  - Aligns manifest version with changelog version
+- **Logger NameError fixed in `_save_report_local()`** (`api/main.py`)
+  - `logger.info/error` → `log.info/error` in the local file fallback path
+  - Same root cause as v0.21.1 Discord fix — `logger` variable never defined, `log` is correct
+  - Would have crashed Railway on the first report submission when Discord webhook is down
+
+### Chrome Web Store — Submission Steps
+1. Zip `extension/` folder only (not the full project)
+2. Go to [chrome.google.com/webstore/devconsole](https://chrome.google.com/webstore/devconsole)
+3. Pay $5 one-time developer fee (first time only)
+4. New Item → Upload zip → fill in store listing:
+   - Name: `Deal Scout — AI Deal Scorer`
+   - Description: from `manifest.json` description field
+   - Screenshots: at least 1 of sidebar scoring a listing
+   - Category: Productivity
+5. Submit for review — Google approves in 1–3 days
+6. Share the store link — users click Install, done
+
+### Update Workflow (ongoing)
+
+**Backend update (scoring logic, prompts, bug fixes):**
+1. Make changes locally
+2. Run `push.bat` → Railway auto-deploys in ~60s
+3. Done — all users get it instantly, no Chrome Store submission needed
+
+**Extension update (UI, fbm.js, popup, new permissions):**
+1. Make changes locally
+2. Bump `version` in `manifest.json` (e.g. `0.22.0` → `0.23.0`)
+3. Run `push.bat` to keep GitHub in sync
+4. Zip the `extension/` folder
+5. Chrome Web Store Developer Console → your listing → **Upload New Package** → upload zip
+6. Submit for review
+7. Chrome auto-updates all users silently within 24–48 hours — they do nothing
+
+**Rule of thumb:** If the change only touches `api/` or `scoring/`, it's a Railway push only.
+If it touches `extension/`, it needs a Store submission.
+
+### Railway Environment Variables (required)
+```
+ANTHROPIC_API_KEY     = sk-ant-api03-...
+EBAY_APP_ID           = ShaunLag-DealScou-PRD-...
+DISCORD_WEBHOOK_URL   = https://discord.com/api/webhooks/...
+CORS_ORIGINS          = *
+LOG_LEVEL             = INFO
+AMAZON_ASSOCIATE_TAG  = dealscout03f-20
+EBAY_CAMPAIGN_ID      = 5339144027
+EBAY_TRACKING_ID      = dealscout
+```
+
+### Health Check
+- Live API: https://deal-scout-production.up.railway.app/health
+- Expected: `{"api":"ok","anthropic_key":"set","ebay_key":"set"}`
+
+---
+
+## v0.21.1 — Logger NameError Fix (Mar 2026)
+
+### Bug Fixed
+- **`logger` NameError in `submit_report()` and `_save_report_local()`** (`api/main.py`)
+  - `logger.info/error` calls throughout the report endpoint used an undefined variable.
+    The module defines `log = logging.getLogger(__name__)`, not `logger`.
+  - Would cause a `NameError` crash on the first report submission, preventing Discord
+    delivery and local file fallback from working.
+  - Fix: All `logger.*` → `log.*` in both functions.
+
+---
+
 ## v0.21.0 — Deployment Readiness + Discord Reports (Mar 2026)
 
 ### New Features
