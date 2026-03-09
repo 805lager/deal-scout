@@ -731,9 +731,9 @@ async def submit_report(body: IssueReport):
             async with httpx.AsyncClient() as client:
                 r = await client.post(discord_url, json=payload, timeout=5.0)
                 r.raise_for_status()
-            logger.info(f"[Report] Sent to Discord: {entry['report'][:60]}")
+            log.info(f"[Report] Sent to Discord: {entry['report'][:60]}")
         except Exception as e:
-            logger.error(f"[Report] Discord delivery failed: {e}")
+            log.error(f"[Report] Discord delivery failed: {e}")
             # Fall through to local file as backup
             _save_report_local(entry)
     else:

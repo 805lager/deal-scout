@@ -1,13 +1,30 @@
 /**
- * popup.js — Extension Popup Logic
+ * popup.js — Deal Scout Extension Popup
+ * v0.20.0
+ *
+ * DEPLOYMENT NOTE:
+ *   API_BASE is read from chrome.storage.local key "ds_api_base" if set.
+ *   Default falls back to localhost for local dev.
+ *   To point at production: set ds_api_base = "https://your-api.railway.app"
+ *   in background.js onInstalled, or hardcode the URL below before packaging.
  */
 
-const API_BASE = "http://localhost:8000";
+const API_BASE_DEFAULT = "http://localhost:8000";
+
+async function getApiBase() {
+  try {
+    const stored = await chrome.storage.local.get("ds_api_base");
+    return stored.ds_api_base || API_BASE_DEFAULT;
+  } catch {
+    return API_BASE_DEFAULT;
+  }
+}
 
 // ── API Health Check ──────────────────────────────────────────────────────────
 
 async function checkAPIHealth() {
   const statusEl = document.getElementById("api-status");
+  const API_BASE = await getApiBase();
   try {
     const resp = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(3000) });
     if (resp.ok) {
@@ -16,10 +33,9 @@ async function checkAPIHealth() {
       statusEl.innerHTML = `
         ✅ API connected<br>
         <span style="font-size:11px">
-          Claude: ${data.anthropic_key} ·
+          Claude: ${data.anthropic_key} &nbsp;·&nbsp;
           eBay: ${data.ebay_key}
         </span>`;
-      document.getElementById("open-scorer").classList.remove("disabled");
     } else {
       throw new Error(`HTTP ${resp.status}`);
     }
@@ -28,122 +44,35 @@ async function checkAPIHealth() {
     statusEl.innerHTML = `
       ❌ API not running<br>
       <span style="font-size:11px">
-        Start it: python -m uvicorn api.main:app --port 8000
+        Start: <code>uvicorn api.main:app --port 8000</code>
       </span>`;
   }
 }
 
 
-// ── Pro Toggle ────────────────────────────────────────────────────────────────
-//
-// WHY chrome.storage.local (not a cookie or in-page state):
-// The toggle needs to be readable by the content script on any Facebook tab.
-// chrome.storage.local is shared across all extension contexts — popup,
-// content scripts, background worker. Cookies and localStorage are
-// origin-scoped (Facebook's domain) and aren't accessible from the popup.
-//
-// In production: replace this with a check against your Stripe subscription
-// API. The content script's isPro() already reads 'ds_pro' — just make the
-// server set it after verifying the payment.
 
-async function initProToggle() {
-  const toggle  = document.getElementById("pro-toggle");
-  const hint    = document.getElementById("pro-hint");
-
-  // Read current Pro state and set toggle accordingly
-  try {
-    const stored = await chrome.storage.local.get("ds_pro");
-    toggle.checked = stored.ds_pro === true;
-    updateProHint(toggle.checked, hint);
-  } catch {
-    toggle.checked = false;
-  }
-
-  toggle.addEventListener("change", async () => {
-    const isNowPro = toggle.checked;
-    try {
-      await chrome.storage.local.set({ ds_pro: isNowPro });
-      updateProHint(isNowPro, hint);
-
-      // Tell the active tab's content script to re-render — it caches isPro()
-      // as part of updateSidebar(), so a rescore is needed to reflect the change.
-      // We silently ignore errors here (tab might not have a content script loaded).
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (tab && (tab.url?.includes("facebook.com/marketplace") || tab.url?.includes("craigslist.org"))) {
-        chrome.tabs.sendMessage(tab.id, { type: "RESCORE" }).catch(() => {});
-      }
-    } catch (e) {
-      console.warn("[DealScout Popup] Failed to save Pro state:", e);
-      toggle.checked = !isNowPro; // Revert on failure
-    }
-  });
-}
-
-function updateProHint(isPro, hintEl) {
-  if (isPro) {
-    hintEl.innerHTML = '<span style="color:#7c3aed;font-weight:600">✓ Pro active</span> — eBay comps &amp; photo analysis on';
-  } else {
-    hintEl.textContent = 'Enables eBay comps & photo analysis';
-  }
-}
-
-
-// ── Open Full Scorer ──────────────────────────────────────────────────────────
-
-document.getElementById("open-scorer").addEventListener("click", async (e) => {
-  /**
-   * WHY WE OPEN IN A NEW TAB (not a popup window):
-   * The full scorer at localhost:8000/docs gives a live interactive API view.
-   * Once the React UI (Week 4) is running on :3000, swap the URL below.
-   * For now this opens the FastAPI docs which lets you manually score listings.
-   */
-  e.preventDefault();
-
-  try {
-    const resp = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(2000) });
-    if (resp.ok) {
-      chrome.tabs.create({ url: "http://localhost:3000" });
-      window.close();
-    } else {
-      throw new Error("not ok");
-    }
-  } catch {
-    const statusEl = document.getElementById("api-status");
-    statusEl.className = "status-card error";
-    statusEl.innerHTML = `
-      ❌ API not running — can't open scorer<br>
-      <span style="font-size:11px">
-        Run: python -m uvicorn api.main:app --port 8000
-      </span>`;
-  }
-});
-
-
-// ── Score Current Page ────────────────────────────────────────────────────────
+// ── Score Current Listing ─────────────────────────────────────────────────────
 
 document.getElementById("score-current").addEventListener("click", async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
   const isSupportedPage =
-    tab.url.includes("facebook.com/marketplace/item") ||
-    tab.url.includes("craigslist.org") ||
-    tab.url.includes("amazon.com/dp");
+    tab.url?.includes("facebook.com/marketplace/item") ||
+    tab.url?.includes("amazon.com/dp");
 
   if (!isSupportedPage) {
-    document.getElementById("api-status").className = "status-card error";
-    document.getElementById("api-status").innerText =
-      "⚠️ Navigate to a FBM, Craigslist, or Amazon listing first";
+    const statusEl = document.getElementById("api-status");
+    statusEl.className = "status-card error";
+    statusEl.innerText = "⚠️ Navigate to a Facebook Marketplace listing first";
     return;
   }
 
-  // WHY sendMessage BEFORE window.close():
-  // Closing the popup before the message is delivered can drop the message
-  // entirely. We close inside the callback so the channel stays open.
+  // Close popup AFTER message confirmed — close-before-deliver drops the message
   chrome.tabs.sendMessage(tab.id, { type: "RESCORE" }, (response) => {
     if (chrome.runtime.lastError) {
-      document.getElementById("api-status").className = "status-card error";
-      document.getElementById("api-status").innerText =
-        "⚠️ Could not reach content script — navigate to a FBM listing first";
+      const statusEl = document.getElementById("api-status");
+      statusEl.className = "status-card error";
+      statusEl.innerText = "⚠️ Reload the listing page and try again";
       setTimeout(() => window.close(), 2000);
     } else {
       window.close();
@@ -152,6 +81,57 @@ document.getElementById("score-current").addEventListener("click", async () => {
 });
 
 
+// ── Report Issue Modal ────────────────────────────────────────────────────────
+//
+// POC: POSTs to /report on the local API, which appends to reports.jsonl.
+// Production swap: replace the fetch URL with a Slack webhook, a Sentry
+// dsn, or a simple Airtable form — no other code changes needed.
+
+const modal     = document.getElementById("report-modal");
+const modalForm = document.getElementById("modal-form");
+const modalSent = document.getElementById("modal-sent");
+
+document.getElementById("report-link").addEventListener("click", async (e) => {
+  e.preventDefault();
+  // Pre-fill the URL so the user doesn't have to copy-paste it
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const ta = document.getElementById("report-text");
+    if (tab?.url && ta.value === "") ta.value = `URL: ${tab.url}\n\nIssue: `;
+  } catch {}
+  modal.classList.add("open");
+  document.getElementById("report-text").focus();
+});
+
+document.getElementById("modal-cancel").addEventListener("click", closeModal);
+modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); });
+
+document.getElementById("modal-send").addEventListener("click", async () => {
+  const text = document.getElementById("report-text").value.trim();
+  if (!text) return;
+
+  const API_BASE = await getApiBase();
+  try {
+    await fetch(`${API_BASE}/report`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ report: text, ts: new Date().toISOString() }),
+      signal: AbortSignal.timeout(4000),
+    });
+  } catch { /* fire-and-forget — don't block UX if API is down */ }
+
+  modalForm.style.display = "none";
+  modalSent.style.display = "block";
+  setTimeout(closeModal, 2000);
+});
+
+function closeModal() {
+  modal.classList.remove("open");
+  modalSent.style.display = "none";
+  modalForm.style.display = "";
+  document.getElementById("report-text").value = "";
+}
+
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 checkAPIHealth();
-initProToggle();
