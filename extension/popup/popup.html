@@ -87,6 +87,27 @@
     #modal-send   { background: linear-gradient(135deg,#667eea,#764ba2); color: #fff; }
     #modal-cancel { background: #f3f4f6; color: #374151; }
     #modal-sent   { display: none; text-align: center; padding: 12px 0; font-size: 13px; color: #16a34a; }
+    /* Settings panel */
+    #settings-toggle { background: none; border: none; cursor: pointer; color: #9ca3af; font-size: 11px; padding: 0; }
+    #settings-toggle:hover { color: #7c3aed; }
+    #settings-panel {
+      display: none; background: #f8fafc; border-radius: 8px;
+      padding: 10px 12px; margin-bottom: 12px; font-size: 12px;
+    }
+    #settings-panel.open { display: block; }
+    #settings-panel label { color: #6b7280; font-weight: 600; display: block; margin-bottom: 4px; }
+    #settings-panel input {
+      width: 100%; border: 1px solid #e5e7eb; border-radius: 5px;
+      padding: 6px 8px; font-size: 12px; font-family: inherit; margin-bottom: 8px;
+    }
+    #settings-panel input:focus { outline: none; border-color: #7c3aed; }
+    #settings-save {
+      padding: 5px 12px; background: #7c3aed; color: #fff;
+      border: none; border-radius: 5px; font-size: 12px; font-weight: 600;
+      cursor: pointer;
+    }
+    #settings-save:hover { background: #6d28d9; }
+    #settings-saved { display: none; color: #16a34a; font-size: 11px; margin-left: 8px; }
   </style>
 </head>
 <body>
@@ -126,6 +147,17 @@
     </div>
 
     <button id="score-current" class="btn">🔍 Score Current Listing</button>
+
+    <!-- Settings (collapsed by default) -->
+    <div style="text-align:right;margin-bottom:4px">
+      <button id="settings-toggle">⚙️ API Settings</button>
+    </div>
+    <div id="settings-panel">
+      <label for="api-url-input">API Base URL</label>
+      <input id="api-url-input" type="url" placeholder="https://deal-scout-production.up.railway.app">
+      <button id="settings-save">Save</button>
+      <span id="settings-saved">✅ Saved!</span>
+    </div>
 
   </div>
 

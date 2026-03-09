@@ -9,7 +9,7 @@
  *   in background.js onInstalled, or hardcode the URL below before packaging.
  */
 
-const API_BASE_DEFAULT = "http://localhost:8000";
+const API_BASE_DEFAULT = "https://deal-scout-production.up.railway.app";
 
 async function getApiBase() {
   try {
@@ -132,6 +132,29 @@ function closeModal() {
   document.getElementById("report-text").value = "";
 }
 
+
+// ── Settings Panel ───────────────────────────────────────────────────────────
+// Lets you switch between localhost and Railway without touching code.
+// The saved URL persists in chrome.storage.local as "ds_api_base".
+
+document.getElementById("settings-toggle").addEventListener("click", async () => {
+  const panel = document.getElementById("settings-panel");
+  panel.classList.toggle("open");
+  if (panel.classList.contains("open")) {
+    const current = await getApiBase();
+    document.getElementById("api-url-input").value = current;
+  }
+});
+
+document.getElementById("settings-save").addEventListener("click", async () => {
+  const url = document.getElementById("api-url-input").value.trim().replace(/\/$/, "");
+  if (!url) return;
+  await chrome.storage.local.set({ ds_api_base: url });
+  const saved = document.getElementById("settings-saved");
+  saved.style.display = "inline";
+  setTimeout(() => { saved.style.display = "none"; }, 2000);
+  checkAPIHealth(); // re-ping with new URL
+});
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 checkAPIHealth();
