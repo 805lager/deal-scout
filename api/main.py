@@ -34,6 +34,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
+from typing import Optional
 
 load_dotenv()
 
@@ -44,8 +45,27 @@ from scoring.ebay_pricer import get_market_value
 from scoring.deal_scorer import score_deal
 from scoring.product_extractor import extract_product, ProductInfo
 from scoring.product_evaluator import evaluate_product
-from scoring.suggestion_engine import get_suggestions
+from scoring.affiliate_router import get_affiliate_recommendations, should_trigger_buy_new, get_program_status, build_affiliate_event
+from scoring.security_scorer import score_security, SecurityScore
 from dataclasses import asdict as dc_asdict_top
+import time as _time
+import json as _json
+from datetime import datetime
+from collections import deque
+
+# In-memory event buffer — batched before write to avoid per-event I/O
+# In production this would flush to a database or analytics service
+_event_buffer: deque = deque(maxlen=10000)
+_event_file = Path(__file__).parent.parent / "data" / "analytics_events.jsonl"
+
+# Ensure data/ directory exists at startup.
+# WHY: data/ is gitignored (may contain PII) so it won't exist on a fresh
+# Railway container or new dev checkout. Any code that writes to _event_file
+# or REPORTS_FILE will silently fail without this guard.
+try:
+    _event_file.parent.mkdir(parents=True, exist_ok=True)
+except Exception as _mkdir_err:
+    print(f"[Startup] Warning: could not create data/ dir: {_mkdir_err}")
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -62,17 +82,28 @@ app = FastAPI(
     version="0.1.0-poc",
 )
 
-# CORS — allow the React UI to call this API
-# WHY explicit origins: wildcard (*) is fine for POC but we scope it
-# to our known UI port so it's easy to tighten later
+# CORS — configurable via CORS_ORIGINS env var
+#
+# Content scripts run in the context of facebook.com, so every API request
+# carries Origin: https://www.facebook.com. Popup requests carry the
+# chrome-extension:// origin. Both must be allowed.
+#
+# Local dev:   CORS_ORIGINS not set → defaults to "*" (allow all)
+# Production:  Set in Railway dashboard:
+#   CORS_ORIGINS=https://www.facebook.com,chrome-extension://YOUR_EXTENSION_ID
+#
+# Get your extension ID from chrome://extensions after loading the unpacked
+# extension. It stays stable once published to the Chrome Web Store.
+_cors_raw = os.getenv("CORS_ORIGINS", "*")
+cors_origins = ["*"] if _cors_raw.strip() == "*" else [
+    o.strip() for o in _cors_raw.split(",") if o.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        f"http://localhost:{UI_PORT}",
-        f"http://127.0.0.1:{UI_PORT}",
-    ],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=cors_origins,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 
@@ -93,10 +124,11 @@ class ListingRequest(BaseModel):
     listing_url:    str  = ""
     is_multi_item:  bool = False  # True for bundles/sets/lots — adjusts Claude's valuation logic
     is_vehicle:     bool = False  # True for motorcycles/cars/ATVs — suppresses irrelevant flags
-    seller_trust:   dict = {}     # Seller trust signals extracted by content script
+    vehicle_details: Optional[dict] = None  # Structured vehicle attrs: mileage, transmission, title_status, owners
+    seller_trust:   Optional[dict] = None   # Seller trust signals extracted by content script
     original_price: float = 0.0   # Crossed-out price if seller reduced it (from DOM dual-price container)
     shipping_cost:  float = 0.0   # Cost to ship — 0 means free or local pickup
-    image_urls:     list = []     # Listing photo URLs — first one sent to Claude Vision
+    image_urls:     Optional[list] = None  # Listing photo URLs — first one sent to Claude Vision
 
     class Config:
         json_schema_extra = {
@@ -128,10 +160,13 @@ class DealScoreResponse(BaseModel):
     estimated_value:   float
     sold_avg:          float
     sold_count:        int
+    sold_low:          float = 0.0   # Low end of price range
+    sold_high:         float = 0.0   # High end of price range
     active_avg:        float
+    active_low:        float = 0.0   # Lowest active listing price
     new_price:         float
     market_confidence: str
-    data_source:       str = "ebay"  # "ebay" | "google_shopping" | "ebay_mock"
+    data_source:       str = "ebay"  # "ebay" | "google_shopping" | "ebay_mock" | "cargurus" | "craigslist"
 
     # Like Products — real eBay items surfaced as affiliate cards
     sold_items_sample:   list = []
@@ -153,10 +188,15 @@ class DealScoreResponse(BaseModel):
     original_price:    float = 0.0  # Seller's original price if reduced (strikethrough)
     shipping_cost:     float = 0.0  # Shipping cost extracted from listing (0 = free/pickup)
 
-    # Product intelligence — new modules
-    product_info:       dict = {}   # Extracted brand/model/search_query from ProductExtractor
-    product_evaluation: dict = {}   # Reliability tier, known issues from ProductEvaluator
-    suggestions:        list = []   # Actionable buy recommendations from SuggestionEngine
+    # Product intelligence
+    product_info:          dict = {}   # Extracted brand/model/search_query
+    product_evaluation:    dict = {}   # Reliability tier, known issues
+    affiliate_cards:       list = []   # Ranked affiliate recommendation cards
+    buy_new_trigger:       bool = False
+    buy_new_message:       str  = ""
+    category_detected:     str  = ""
+    # Security scoring
+    security_score:        dict = {}   # Scam/fraud risk assessment
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -202,6 +242,8 @@ async def score_listing(listing: ListingRequest):
             get_market_value(
                 listing_title     = product_info.search_query,  # extracted query, not raw title
                 listing_condition = listing.condition,
+                is_vehicle        = listing.is_vehicle,
+                listing_price     = listing.price,  # for plausibility guard in ebay_pricer
             ),
             evaluate_product(
                 brand        = product_info.brand,
@@ -242,6 +284,7 @@ async def score_listing(listing: ListingRequest):
         "listing_url":    listing.listing_url,
         "is_multi_item":  listing.is_multi_item,
         "is_vehicle":     listing.is_vehicle,
+        "vehicle_details": listing.vehicle_details or {},
         "seller_trust":   listing.seller_trust,
         "original_price": listing.original_price,
         "shipping_cost":  listing.shipping_cost,
@@ -270,22 +313,68 @@ async def score_listing(listing: ListingRequest):
 
     log.info(f"Score: {deal_score.score}/10 — {deal_score.verdict}")
 
-    # ── Step 4: Generate suggestions ──────────────────────────────────────────
+    # ── Step 4: Generate affiliate recommendations ──────────────────────────────
+    from scoring.affiliate_router import detect_category
+    # Compute category here so it can be passed to both the affiliate router
+    # and the security scorer. Override to 'vehicles' when is_vehicle=True:
+    # detect_category() text-matches product_info and returns 'general' for
+    # car listings (BMW 328i has no word 'vehicle' in its description),
+    # which then triggers the Amazon safety net. (Bug B-V4)
+    category_detected = detect_category(product_info)
+    if listing.is_vehicle and category_detected not in ("vehicles", "cars", "trucks"):
+        log.info(f"[Category] Overriding '{category_detected}' → 'vehicles' (is_vehicle=True)")
+        category_detected = "vehicles"
+
     try:
-        suggestions = await get_suggestions(
-            product_info  = product_info,
-            market_value  = market_value,
-            deal_score    = deal_score,
-            listing_price = listing.price,
+        affiliate_cards = get_affiliate_recommendations(
+            product_info      = product_info,
+            listing_price     = listing.price,
+            shipping_cost     = listing.shipping_cost,
+            deal_score        = deal_score,
+            market_value      = market_value,
+            max_cards         = 3,
+            category_override = category_detected,  # pass pre-computed (may be vehicle override)
         )
     except Exception as e:
-        log.warning(f"Suggestion engine failed ({e}) — returning empty suggestions")
-        suggestions = []
+        log.warning(f"Affiliate router failed ({e}) — returning empty cards")
+        affiliate_cards = []
 
-    # ── Step 5: Serialize ────────────────────────────────────────────────
+    # Buy-new trigger check
+    # data_source guard: suppress for "ebay_mock" — mock prices are rough estimates,
+    # not real market data. iPhone 15 Pro mock base=$350 vs real new ~$1100.
+    buy_new, buy_new_msg = should_trigger_buy_new(
+        listing_price = listing.price + listing.shipping_cost,
+        new_price     = market_value.new_price,
+        is_vehicle    = listing.is_vehicle,   # suppress for vehicles: eBay new_price = parts
+        data_source   = market_value.data_source,  # suppress for mock data
+    )
+
+    # ── Step 4b: Security / scam scoring (runs concurrently with affiliate routing) ──
+    # WHY CONCURRENT: security scoring is a separate Haiku call (~1s).
+    # Running it after deal scoring (not before) means it never delays the score.
+    # Both affiliate routing and security scoring are post-score steps.
+    try:
+        security = await asyncio.wait_for(
+            score_security(
+                listing          = listing,
+                category         = category_detected,
+                market_value     = market_value,
+                normalized_title = product_info.display_name,  # corrected name from product_extractor
+            ),
+            timeout=10.0,
+        )
+    except Exception as e:
+        import traceback
+        err_detail = traceback.format_exc()
+        log.warning(f"Security scoring failed: {err_detail}")
+        from scoring.security_scorer import SecurityScore as _SS
+        security = _SS(score=5, risk_level="unknown", flags=[], recommendation="unable to assess")
+
+    # ── Step 5: Serialize ────────────────────────────────────────────────────
+    from dataclasses import asdict as dc_asdict
     sold_items_sample   = [dc_asdict(i) for i in (market_value.sold_items_sample   or [])]
     active_items_sample = [dc_asdict(i) for i in (market_value.active_items_sample or [])]
-    suggestions_dicts   = [dc_asdict(s) for s in suggestions]
+    affiliate_dicts     = [dc_asdict(c) for c in affiliate_cards]
 
     return DealScoreResponse(
         # Listing
@@ -300,7 +389,10 @@ async def score_listing(listing: ListingRequest):
         estimated_value     = market_value.estimated_value,
         sold_avg            = market_value.sold_avg,
         sold_count          = market_value.sold_count,
+        sold_low            = market_value.sold_low,
+        sold_high           = market_value.sold_high,
         active_avg          = market_value.active_avg,
+        active_low          = market_value.active_low,
         new_price           = market_value.new_price,
         market_confidence   = market_value.confidence,
         data_source         = market_value.data_source,
@@ -321,10 +413,14 @@ async def score_listing(listing: ListingRequest):
         model_used        = deal_score.model_used,
         image_analyzed    = deal_score.image_analyzed,
 
-        # Product intelligence
+        # Product intelligence + affiliate
         product_info       = dc_asdict_top(product_info),
         product_evaluation = dc_asdict_top(product_eval),
-        suggestions        = suggestions_dicts,
+        affiliate_cards    = affiliate_dicts,
+        buy_new_trigger    = buy_new,
+        buy_new_message    = buy_new_msg,
+        category_detected  = category_detected,
+        security_score     = dc_asdict_top(security),
     )
 
 
@@ -414,7 +510,249 @@ async def health():
     }
 
 
+class AnalyticsEvent(BaseModel):
+    """Privacy-safe analytics event from the extension."""
+    event:        str
+    program:      str   = ""
+    category:     str   = ""
+    price_bucket: str   = ""
+    card_type:    str   = ""
+    deal_score:   int   = 0
+
+
+@app.post("/event")
+async def record_event(evt: AnalyticsEvent):
+    """
+    Receive an anonymous analytics event from the extension.
+
+    WHY THIS EXISTS:
+      Affiliate click data is the foundation of the market intelligence product.
+      Over time, aggregate data tells us: which categories have the biggest
+      used-vs-new price gap, which affiliate programs convert best per category,
+      and which item types are most in-demand on used marketplaces.
+
+    PRIVACY:
+      No user ID, IP, listing URL, or identifiable data is stored.
+      Only category-level, price-bucketed, aggregated signals.
+      GDPR/CCPA compliant by design — nothing to delete.
+    """
+    record = {
+        "event":        evt.event,
+        "program":      evt.program,
+        "category":     evt.category,
+        "price_bucket": evt.price_bucket,
+        "card_type":    evt.card_type,
+        "deal_score":   evt.deal_score,
+        "hour":         __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:00"),
+    }
+    _event_buffer.append(record)
+
+    # Flush to JSONL file every 10 events
+    if len(_event_buffer) >= 10:
+        try:
+            with open(_event_file, "a") as f:
+                for r in list(_event_buffer):
+                    f.write(_json.dumps(r) + "\n")
+            _event_buffer.clear()
+            log.debug(f"Flushed {len(_event_buffer)} events to {_event_file.name}")
+        except Exception as e:
+            log.warning(f"Event flush failed: {e}")
+
+    return {"ok": True}
+
+
+@app.get("/debug/vehicle")
+async def debug_vehicle_pricer(title: str = "2018 Honda Accord LX Sedan 4D", zip_code: str = "92101"):
+    """
+    Debug endpoint — tests vehicle pricing pipeline end-to-end.
+    Returns raw CarGurus API response + final market value result.
+    Call: GET /debug/vehicle?title=2018+Honda+Accord&zip_code=92101
+    """
+    import traceback
+    import httpx
+    from scoring.vehicle_pricer import parse_vehicle_title, get_vehicle_market_value
+
+    result = {"title": title, "zip_code": zip_code}
+
+    # Step 1: title parsing
+    parsed = parse_vehicle_title(title)
+    result["parsed"] = parsed
+    if not parsed:
+        result["error"] = "title parsing failed"
+        return result
+
+    year, make, model = parsed["year"], parsed["make"], parsed["model"]
+    keyword = f"{year} {make} {model}"
+
+    # Step 2: Raw CarGurus API probe
+    try:
+        url = "https://www.cargurus.com/Cars/searchResults.action"
+        params = {"zip": zip_code, "listingTypes": "USED", "sortDir": "ASC",
+                  "sortType": "PRICE", "keyword": keyword, "offset": 0, "maxResults": 5}
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/121.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "Referer": "https://www.cargurus.com/Cars/new/nl/Cars/",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            resp = await client.get(url, params=params, headers=headers)
+            result["cargurus_status"] = resp.status_code
+            result["cargurus_content_type"] = resp.headers.get("content-type", "")
+            if resp.status_code == 200:
+                try:
+                    data = resp.json()
+                    listings = data if isinstance(data, list) else data.get("listings", [])
+                    result["cargurus_listing_count"] = len(listings)
+                    result["cargurus_sample"] = [
+                        {"year": l.get("carYear"), "title": l.get("listingTitle", "")[:50], "price": l.get("price")}
+                        for l in listings[:5]
+                    ]
+                except Exception as je:
+                    result["cargurus_json_error"] = str(je)
+                    result["cargurus_body_snippet"] = resp.text[:300]
+            else:
+                result["cargurus_body_snippet"] = resp.text[:300]
+    except Exception as e:
+        result["cargurus_error"] = f"{type(e).__name__}: {e}"
+
+    # Step 3: Full pricer pipeline
+    try:
+        vdata = await get_vehicle_market_value(title, zip_code=zip_code)
+        result["vehicle_data"] = vdata
+        result["success"] = vdata is not None
+    except Exception as e:
+        result["vehicle_error"] = f"{type(e).__name__}: {e}"
+        result["vehicle_traceback"] = traceback.format_exc()[-400:]
+
+    return result
+
+
+@app.get("/debug/query")
+async def debug_query(title: str = "Kids pants Boys Size 12", description: str = "bundle of 3"):
+    """
+    Debug endpoint — shows the full query chain for a listing title.
+    Reveals exactly what search_query Haiku generates and what build_search_query
+    produces from it. Use this to catch comp-poisoning bugs before they reach scoring.
+
+    Call: GET /debug/query?title=Kids+pants+Boys+Size+12&description=bundle+of+3
+    """
+    from scoring.product_extractor import extract_product
+    from scoring.ebay_pricer import build_search_query
+
+    product_info = await extract_product(title, description)
+    final_query  = build_search_query(product_info.search_query)
+
+    return {
+        "input": {
+            "title":       title,
+            "description": description,
+        },
+        "haiku_output": {
+            "search_query": product_info.search_query,   # what Haiku generated
+            "amazon_query": product_info.amazon_query,
+            "display_name": product_info.display_name,
+            "category":     product_info.category,
+            "brand":        product_info.brand,
+            "confidence":   product_info.confidence,
+            "method":       product_info.extraction_method,
+        },
+        "final_ebay_query": final_query,   # after build_search_query noise stripping
+        "warning": (
+            "bundle/lot/pack still in haiku query — noise_words fix didn't apply yet"
+            if any(w in product_info.search_query.lower()
+                   for w in ["bundle","lot","pack","set","pcs","pieces"])
+            else None
+        ),
+    }
+
+
+@app.get("/affiliate-status")
+async def affiliate_status():
+    """Shows which affiliate programs are active vs pending credentials."""
+    programs = get_program_status()
+    live     = [p for p in programs if p["has_tag"] and p["status"] == "live"]
+    search   = [p for p in programs if not p["has_tag"] or p["status"] == "search"]
+    return {
+        "live_count":   len(live),
+        "pending_count": len(search),
+        "live":         live,
+        "search_only":  search,
+        "note":         "Add credentials to .env to activate commission earning on search-only programs",
+    }
+
+
 # ── Dev Entry Point ───────────────────────────────────────────────────────────
+
+# ── User Issue Reports ─────────────────────────────────────────────────────────────────────
+
+# On Railway: REPORTS_FILE is ephemeral (container resets on redeploy).
+# That's fine — when DISCORD_WEBHOOK_URL is set, the file is never used.
+# Locally: sits in project root next to .env
+REPORTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "reports.jsonl")
+
+class IssueReport(BaseModel):
+    report: str
+    ts: str = ""
+
+@app.post("/report")
+async def submit_report(body: IssueReport):
+    """
+    Receives bug reports from the extension popup.
+
+    Routing logic:
+      - DISCORD_WEBHOOK_URL set → posts to Discord channel (production)
+      - fallback                → appends to reports.jsonl (local dev)
+
+    To set up Discord:
+      1. In your Discord server: channel settings → Integrations → Webhooks → New Webhook
+      2. Copy the webhook URL
+      3. Add to .env:  DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+      4. Add to Railway dashboard env vars (same key/value)
+    """
+    entry = {
+        "ts":     body.ts or datetime.utcnow().isoformat(),
+        "report": body.report.strip(),
+    }
+
+    discord_url = os.getenv("DISCORD_WEBHOOK_URL")
+    if discord_url:
+        # Discord webhook payload — embeds give us nice formatting in the channel
+        payload = {
+            "embeds": [{
+                "title": "⚠️ Deal Scout — User Report",
+                "description": entry["report"][:4000],  # Discord embed limit
+                "color": 0xF59E0B,  # amber
+                "footer": {"text": entry["ts"]},
+            }]
+        }
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                r = await client.post(discord_url, json=payload, timeout=5.0)
+                r.raise_for_status()
+            logger.info(f"[Report] Sent to Discord: {entry['report'][:60]}")
+        except Exception as e:
+            logger.error(f"[Report] Discord delivery failed: {e}")
+            # Fall through to local file as backup
+            _save_report_local(entry)
+    else:
+        # Local dev fallback
+        _save_report_local(entry)
+
+    return {"ok": True}
+
+
+def _save_report_local(entry: dict):
+    """Append report to local JSONL file. Used when Discord webhook not configured."""
+    try:
+        os.makedirs(os.path.dirname(REPORTS_FILE), exist_ok=True)
+        with open(REPORTS_FILE, "a", encoding="utf-8") as f:
+            f.write(_json.dumps(entry) + "\n")
+        logger.info(f"[Report] Saved locally: {entry['report'][:60]}")
+    except Exception as e:
+        logger.error(f"[Report] Local save failed: {e}")
+
 
 if __name__ == "__main__":
     import uvicorn
@@ -422,6 +760,6 @@ if __name__ == "__main__":
         "api.main:app",
         host="0.0.0.0",
         port=API_PORT,
-        reload=True,  # Auto-restart on code changes during dev
+        reload=True,
         log_level=os.getenv("LOG_LEVEL", "info").lower(),
     )

@@ -1,10 +1,10 @@
 /**
- * content/fbm.js — Facebook Marketplace Content Script v0.4.0
+ * content/fbm.js — Facebook Marketplace Content Script v0.20.0
  *
  * FEATURES:
  *   1. Collapsible deal scoring sidebar (bottom-right tab, draggable)
  *   2. Auto-scores on page load + SPA re-injection
- *   3. Pro gating — full AI analysis requires Pro toggle
+ *   3. Free for all — affiliate + data monetization (v0.19.0)
  *   4. Price history tracking (chrome.storage.local, no server)
  *   5. Search results overlay (score badges on listing thumbnails)
  *   6. Seller trust extraction from DOM
@@ -24,26 +24,39 @@
 (function () {
   "use strict";
 
-  // Prevent double-injection on SPA re-navigations
+  // Prevent double-injection on SPA re-navigations.
+  // WHY: FBM's window context persists across pushState navigations.
+  // __dealScoutInjected stays true, so the background's re-inject lands here.
+  // We dispatch to the right handler based on page type:
+  //   • Listing page  → re-score the listing
+  //   • Search/category → re-run overlay badge injection
   if (window.__dealScoutInjected) {
-    // Already injected — just re-score
-    window.__dealScoutRescore && window.__dealScoutRescore();
+    const onListing = /\/marketplace\/(item\/|\w+\/item\/)/.test(window.location.pathname);
+    if (onListing) {
+      window.__dealScoutRescore && window.__dealScoutRescore();
+    } else {
+      window.__dealScoutReoverlay && window.__dealScoutReoverlay();
+    }
     return;
   }
   window.__dealScoutInjected = true;
 
-  const API_BASE  = "http://localhost:8000";
-  const VERSION   = "0.4.0";
+  // ⚙️  DEPLOYMENT — API base URL
+  //  Reads from chrome.storage.local key "ds_api_base" if set.
+  //  Set it once from the popup or background.js onInstalled:
+  //    chrome.storage.local.set({ ds_api_base: "https://your-app.up.railway.app" })
+  //  Falls back to localhost for local dev with no configuration needed.
+  //  WHY let (not const): storage read is async; resolved before first score
+  //  fires (~1s debounce) but after injection.
+  let API_BASE = "http://localhost:8000";
+  chrome.storage.local.get("ds_api_base").then(s => {
+    if (s.ds_api_base) API_BASE = s.ds_api_base;
+  }).catch(() => {});
+
+  const VERSION   = "0.20.0";
   const LOG_PRE   = "[DealScout]";
 
-  // ── Pro Check ───────────────────────────────────────────────────────────────
-  // Reads from chrome.storage.local — set by popup toggle
-  async function isPro() {
-    try {
-      const r = await chrome.storage.local.get("ds_pro");
-      return r.ds_pro === true;
-    } catch { return false; }
-  }
+  // v0.19.0: Pro gating removed — fully free (affiliate + data monetization)
 
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -57,47 +70,71 @@
    * WHY NOT data-testid: Facebook removed all data-testid attrs in early 2025.
    */
   function findTitle() {
-    const h1s = document.querySelectorAll("h1");
+    const NOISE = new Set(["marketplace", "notifications", "facebook", "search results"]);
+    const _listingDialog = [...document.querySelectorAll('[role="dialog"]')].find(
+      dlg => [...dlg.querySelectorAll('h1')].some(h => !NOISE.has(h.textContent.trim().toLowerCase()) && h.textContent.trim().length > 2)
+    );
+    const _docRoot = _listingDialog || document;
+    const h1s = _docRoot.querySelectorAll("h1");
+    let best = "";
     for (const h1 of h1s) {
       const t = h1.textContent.trim();
-      if (t && t !== "Notifications" && t.length > 2) return t;
+      if (!t || NOISE.has(t.toLowerCase())) continue;
+      if (t.length > best.length) best = t;
     }
-    return document.title.replace(" | Facebook", "").trim();
+    if (best) return best;
+    return document.title
+      .replace(" | Facebook", "")
+      .replace(/^Marketplace\s*[-–]\s*/i, "")
+      .trim();
   }
 
   /**
    * Find the current listing price.
    *
-   * FBM DOM structure for price-reduced listings:
-   *   <span>          ← container
-   *     "$200"        ← text node (CURRENT price) — NOT a child element
-   *     <span style="text-decoration:line-through">$250</span>  ← original
-   *   </span>
+   * v0.19.9 FIX — B-PE4: "$1" price extraction bug.
+   * FBM now renders offer-count badges and rating fragments as "$1" spans at
+   * shallow DOM depth near the listing h1. The old return-first logic grabbed
+   * "$1" before finding the real "$15". Fix uses three strategies in order:
    *
-   * WHY TEXT NODE: querySelectorAll("span") is blind to raw text nodes.
-   * We detect the dual-price container by finding a span whose immediate
-   * children include a line-through span, then walk the container's
-   * childNodes to extract the text node value.
+   *   STRATEGY 0: aria-label exact match (most reliable, FBM-specific)
+   *   STRATEGY 1: line-through dual-price container (price-reduced listings)
+   *   STRATEGY 2: collect ALL $X candidates >= $2, pick shallowest+largest
    *
    * Returns: { price: number, original: number|null }
    */
   function findPrices() {
-    // First try: look for dual-price container (reduced listing)
-    const allSpans = document.querySelectorAll("span");
+    // Scope to the listing dialog only — same fix as findTitle.
+    const _DIALOG_NOISE = new Set(["marketplace", "notifications", "facebook", "search results"]);
+    const _listingDlg = [...document.querySelectorAll('[role="dialog"]')].find(
+      dlg => [...dlg.querySelectorAll('h1')].some(h => !_DIALOG_NOISE.has(h.textContent.trim().toLowerCase()) && h.textContent.trim().length > 2)
+    );
+    const _priceRoot = _listingDlg || document;
+
+    // STRATEGY 0: aria-label price extraction.
+    // WHY FIRST: FBM accessibility labels like aria-label="$15" are the most
+    // reliable signal — set explicitly for the price element, never on ratings
+    // or badge counts. Catches DOM restructures that keep aria attrs intact.
+    for (const el of _priceRoot.querySelectorAll('[aria-label]')) {
+      const label = el.getAttribute('aria-label') || '';
+      if (/^\$[\d,]+(\.\d{2})?$/.test(label.trim())) {
+        const p = parsePrice(label);
+        if (p >= 2) return { price: p, original: null };
+      }
+    }
+
+    // STRATEGY 1: dual-price container (price-reduced listings)
+    // FBM DOM: <span>$15<span style="text-decoration:line-through">$25</span></span>
+    const allSpans = _priceRoot.querySelectorAll("span");
     for (const span of allSpans) {
-      const children = span.children;
-      // Look for a span that has exactly one child with line-through style
-      for (const child of children) {
+      for (const child of span.children) {
         const deco = window.getComputedStyle(child).textDecoration;
         if (deco.includes("line-through")) {
-          // Found the original price span — parent is the dual-price container
           const original = parsePrice(child.textContent);
-
-          // Walk parent's childNodes to find the text node (current price)
           for (const node of span.childNodes) {
             if (node.nodeType === Node.TEXT_NODE) {
               const current = parsePrice(node.textContent);
-              if (current > 0 && current < original) {
+              if (current >= 2 && current < original) {
                 return { price: current, original };
               }
             }
@@ -106,27 +143,54 @@
       }
     }
 
-    // Fallback: find first price-like span near the listing panel
-    // Strategy: find the h1 title, then look for a price in the nearest ancestor
-    const h1 = Array.from(document.querySelectorAll("h1")).find(
-      h => h.textContent.trim() !== "Notifications" && h.textContent.trim().length > 2
+    // STRATEGY 2: h1-anchored ancestor walk — collect ALL candidates, pick best.
+    //
+    // WHY COLLECT-ALL instead of return-first:
+    //   FBM's DOM has "$1" UI elements (offer-count badges, rating fragments)
+    //   at shallow depth from the listing h1. The old return-first logic grabbed
+    //   "$1" before finding the real "$15". Collecting all candidates >= $2 and
+    //   sorting by (shallowest depth, largest price) picks the right one.
+    //
+    // MINIMUM $2 GUARD:
+    //   Legitimate FBM listings under $2 are extremely rare. "$1" is almost
+    //   always a UI element — offer count, star rating digit, badge — not the price.
+    const PRICE_H1_NOISE = new Set(["marketplace", "notifications", "facebook", "search results"]);
+    const h1 = Array.from(_priceRoot.querySelectorAll("h1")).find(
+      h => { const t = h.textContent.trim().toLowerCase(); return t.length > 2 && !PRICE_H1_NOISE.has(t); }
     );
 
     if (h1) {
-      // Walk up to a reasonable ancestor and search downward for a price
+      const listingTitleLower = h1.textContent.trim().toLowerCase();
+      const candidates = [];
       let ancestor = h1.parentElement;
-      for (let depth = 0; depth < 8 && ancestor; depth++, ancestor = ancestor.parentElement) {
-        const spans = ancestor.querySelectorAll("span");
-        for (const span of spans) {
+
+      for (let depth = 0; depth < 20 && ancestor; depth++, ancestor = ancestor.parentElement) {
+        // Contamination guard at depth >= 8: ancestor must contain listing title text
+        if (depth >= 8 && !ancestor.textContent.toLowerCase().includes(listingTitleLower)) continue;
+
+        for (const span of ancestor.querySelectorAll("span")) {
           const txt = span.textContent.trim();
-          if (/^\$[\d,]+$/.test(txt)) {
-            const price = parsePrice(txt);
-            if (price > 0) return { price, original: null };
+          if (!/^\$[\d,]+/.test(txt)) continue;
+          const price = parsePrice(txt);
+          if (price < 2) {
+            console.debug(`[DealScout] findPrices: skipping $${price} UI element at depth ${depth}`);
+            continue;
           }
+          candidates.push({ price, depth });
         }
+      }
+
+      if (candidates.length > 0) {
+        // Shallowest depth = tightest scope to h1 = most likely listing price.
+        // Tie-break: larger price (e.g. $15 beats $5 from a shipping badge).
+        candidates.sort((a, b) => a.depth - b.depth || b.price - a.price);
+        const best = candidates[0];
+        console.log(`[DealScout] findPrices: $${best.price} (depth ${best.depth}, ${candidates.length} candidates)`);
+        return { price: best.price, original: null };
       }
     }
 
+    console.warn('[DealScout] findPrices: no price found — returning 0');
     return { price: 0, original: null };
   }
 
@@ -151,10 +215,6 @@
    * Find shipping cost.
    * FBM shows "Ships for $46.68" near the price section.
    * Returns a float (0 if free/local pickup).
-   *
-   * WHY THIS MATTERS: $275 item + $46 shipping = $321 TRUE COST.
-   * Without shipping, Claude sees a "bad deal" as borderline.
-   * With shipping, Claude correctly identifies it as overpriced.
    */
   function findShippingCost() {
     const patterns = [
@@ -173,9 +233,6 @@
 
   /**
    * Find the item condition.
-   * FBM renders condition options inline. Strategy: find the word near a
-   * "Condition" label. Prefer longer condition strings over short ones
-   * (avoids grabbing bare "New" which appears all over the page).
    */
   function findCondition() {
     const conditions = [
@@ -187,7 +244,6 @@
       "New",
     ];
 
-    // Try to find a label reading "Condition" and extract nearby text
     const allText = document.body.innerText;
     const condBlock = allText.match(/Condition[\s\n:]+(.{3,30})/);
     if (condBlock) {
@@ -197,12 +253,10 @@
       }
     }
 
-    // Fallback: scan the page for full condition strings
     for (const c of conditions.filter(c => c !== "New")) {
       if (allText.includes(c)) return c;
     }
 
-    // Last resort: look for standalone "New"
     if (/\bNew\b/.test(allText)) return "New";
     return "Unknown";
   }
@@ -210,46 +264,85 @@
 
   /**
    * Find the listing description.
-   * FBM renders description in a contenteditable or span[dir=auto] block.
-   * We exclude short social-media noise and navigation strings.
+   *
+   * WHY h2-ANCHORED (not longest-span):
+   *   FBM embeds RELATED LISTING titles inside the same content area as the
+   *   actual listing. Anchoring to h2 section labels gives us clean,
+   *   listing-specific text with zero cross-contamination.
    */
   function findDescription() {
-    const NOISE = [
-      /^marketplace$/i, /^facebook$/i, /^you'll see/i, /^discover/i,
-      /^browse/i, /^search/i, /^notifications$/i, /^messaging/i,
+    const SECTION_PRIORITY = [
+      "seller's description",
+      "about this vehicle",
+      "about this listing",
+      "item details",
+      "details",
     ];
 
-    const candidates = document.querySelectorAll("span[dir=auto]");
-    let best = { text: "", len: 0 };
+    function extractSection(h2el) {
+      let el = h2el;
+      for (let depth = 0; depth < 12; depth++) {
+        const parent = el.parentElement;
+        if (!parent) break;
+        const siblings = Array.from(parent.children).filter(c => c !== el);
+        const contentSibling = siblings.find(s => s.textContent.trim().length > 10);
+        if (contentSibling) {
+          const spanTexts = Array.from(contentSibling.querySelectorAll("span[dir=auto]"))
+            .map(s => s.textContent.trim())
+            .filter(t => t.length > 3);
+          if (spanTexts.length) return spanTexts.join(" \u00b7 ");
+          const raw = contentSibling.textContent.trim();
+          if (raw.length > 10) return raw;
+        }
+        el = parent;
+      }
+      return null;
+    }
 
-    for (const el of candidates) {
-      const text = el.textContent.trim();
-      if (text.length <= 20) continue;
-      if (NOISE.some(re => re.test(text))) continue;
-      // Avoid nav elements
-      const role = el.getAttribute("role");
-      if (role === "navigation" || role === "banner") continue;
-      if (text.length > best.len) {
-        best = { text, len: text.length };
+    const NAV_NOISE = /\b(see more|see translation|location is approximate|see less|report|save|share|message seller)\b/gi;
+
+    function cleanContent(text) {
+      return text
+        .replace(NAV_NOISE, " ")
+        .replace(/\s{2,}/g, " ")
+        .replace(/^\s*[\u00b7·]\s*/g, "")
+        .trim();
+    }
+
+    const collected = [];
+    const seenLabels = new Set();
+
+    for (const targetLabel of SECTION_PRIORITY) {
+      for (const h2 of document.querySelectorAll("h2")) {
+        const label = h2.textContent.trim().toLowerCase();
+        if (!label.includes(targetLabel)) continue;
+        if (seenLabels.has(label)) continue;
+        seenLabels.add(label);
+        const content = extractSection(h2);
+        if (content) {
+          const cleaned = cleanContent(content);
+          if (cleaned.length > 10) collected.push(cleaned);
+        }
       }
     }
 
-    return best.text.slice(0, 800);
+    if (collected.length) {
+      return collected.join(" | ").slice(0, 800);
+    }
+
+    return "";
   }
 
 
   /**
    * Find the listing location (City, ST format).
-   * FBM renders this as "Listed in City, State" or just "City, ST".
    */
   function findLocation() {
     const bodyText = document.body.innerText;
 
-    // Explicit label patterns
     const labeled = bodyText.match(/(?:Listed\s+in|Location)[:\s]+([A-Za-z\s]+,\s*[A-Z]{2})/);
     if (labeled) return labeled[1].trim();
 
-    // Generic "City, ST" anywhere in visible text
     const cityState = bodyText.match(/\b([A-Z][a-zA-Z\s]{2,20}),\s+([A-Z]{2})\b/);
     if (cityState) return cityState[0].trim();
 
@@ -261,7 +354,6 @@
    * Find the seller's name.
    */
   function findSellerName() {
-    // FBM renders seller name in various locations — try multiple patterns
     const links = document.querySelectorAll("a[href*='/user/'], a[href*='/profile/']");
     for (const link of links) {
       const text = link.textContent.trim();
@@ -275,48 +367,88 @@
 
   /**
    * Find listing images.
-   * FBM serves listing photos from fbcdn.net with specific URL patterns.
-   * We filter out profile photos (which also use fbcdn.net) by checking
-   * the CDN tier in the URL (t45. = Marketplace CDN, not t1. profile tier).
    *
-   * Returns array of URLs (first one sent to Claude Vision).
+   * B-I2 + B-I2b FIX: Three-path image scoping strategy.
+   * PATH A: listing dialog overlay → scope to dialog
+   * PATH B: direct URL → walk UP from h1 to find photo gallery container
+   * PATH C: fallback → document + alt-text relevance filter
    */
   function findListingImages() {
-    const images = [];
-    const seen   = new Set();
+    const _IMG_NOISE = new Set(["marketplace", "notifications", "facebook", "search results"]);
 
-    const candidates = document.querySelectorAll("img[src*='fbcdn.net']");
-    for (const img of candidates) {
+    const listingDialog = [...document.querySelectorAll('[role="dialog"]')].find(
+      dlg => [...dlg.querySelectorAll('h1')].some(
+        h => !_IMG_NOISE.has(h.textContent.trim().toLowerCase()) && h.textContent.trim().length > 2
+      )
+    );
+
+    let _imgRoot = null;
+
+    if (listingDialog) {
+      _imgRoot = listingDialog;
+    } else {
+      const listingH1 = [...document.querySelectorAll('h1')]
+        .filter(h => h.textContent.trim().length > 2 && !_IMG_NOISE.has(h.textContent.trim().toLowerCase()))
+        .reduce((best, h) => h.textContent.trim().length > (best?.textContent.trim().length || 0) ? h : best, null);
+
+      if (listingH1) {
+        let el = listingH1.parentElement;
+        for (let depth = 0; depth < 30 && el && el !== document.documentElement; depth++) {
+          const imgs = el.querySelectorAll("img[src*='fbcdn.net'][src*='t39.84726']");
+          if (imgs.length >= 1 && imgs.length <= 8) {
+            _imgRoot = el;
+            break;
+          }
+          el = el.parentElement;
+        }
+      }
+    }
+
+    const usingDocFallback = !_imgRoot;
+    if (usingDocFallback) _imgRoot = document;
+
+    let titleWords = null;
+    if (usingDocFallback) {
+      const h1Text = [...document.querySelectorAll('h1')]
+        .filter(h => !_IMG_NOISE.has(h.textContent.trim().toLowerCase()))
+        .map(h => h.textContent.trim().toLowerCase())
+        .sort((a, b) => b.length - a.length)[0] || '';
+      titleWords = new Set(h1Text.split(/\s+/).filter(w => w.length > 3));
+    }
+
+    const seen       = new Set();
+    const candidates = [];
+
+    for (const img of _imgRoot.querySelectorAll("img[src*='fbcdn.net']")) {
       const src = img.src;
-      // Marketplace listing photos use _n.jpg AND come from t45. tier CDN
-      if (!src.includes("_n.jpg")) continue;
-      if (!src.includes("t45.")) continue;
+      if (!src.includes('_n.jpg'))    continue;
+      if (!src.includes('t39.84726') && !src.includes('t45.84726')) continue;
 
-      // Min size check — listing photos are at least 100×100
       const w = img.naturalWidth  || img.width  || 0;
       const h = img.naturalHeight || img.height || 0;
-      if (w < 100 || h < 100) continue;
+      if (w < 200 || h < 200) continue;
+
+      if (usingDocFallback && titleWords && titleWords.size > 0) {
+        const alt = (img.alt || '').toLowerCase();
+        if (alt.length > 5) {
+          const altWords = new Set(alt.split(/\s+/).filter(w => w.length > 3));
+          const overlap = [...titleWords].some(w => altWords.has(w));
+          if (!overlap) continue;
+        }
+      }
 
       if (!seen.has(src)) {
         seen.add(src);
-        images.push(src);
+        candidates.push({ src, w });
       }
-      if (images.length >= 3) break;
     }
 
-    return images;
+    candidates.sort((a, b) => b.w - a.w);
+    return candidates.slice(0, 3).map(c => c.src);
   }
-
 
   /**
    * Extract seller trust signals from the DOM.
-   * FBM renders:
-   *   "Joined Facebook in 2022"
-   *   "(5)" — review count in parens near seller name
-   *   "Highly rated" — badge text
-   *
-   * WHY NOT scrape star ratings: FBM renders stars as SVG, not a numeric value.
-   * We infer a rating from the presence of "Highly rated" badge.
    */
   function extractSellerTrust() {
     const bodyText = document.body.innerText;
@@ -330,31 +462,34 @@
       trust_tier:       "unknown",
     };
 
-    // Join year
     const joined = bodyText.match(/Joined\s+Facebook\s+in\s+(\d{4})/i);
     if (joined) trust.member_since = `Jan ${joined[1]}`;
 
-    // Review count — "(N)" pattern near seller section
     const reviews = bodyText.match(/\((\d+)\)/g);
     if (reviews && reviews.length > 0) {
-      // Take the smallest number — most likely the review count (not item IDs)
       const nums = reviews.map(r => parseInt(r.replace(/[()]/g, ""))).filter(n => n < 10000);
       if (nums.length > 0) trust.review_count = Math.min(...nums);
     }
 
-    // Highly rated badge
     if (/highly\s+rated/i.test(bodyText)) {
       trust.is_highly_rated = true;
     }
 
-    // Infer numeric rating for prompt context
-    if (trust.is_highly_rated) {
-      trust.seller_rating = 4.8;
-    } else if (trust.review_count && trust.review_count > 0) {
-      trust.seller_rating = 4.0; // assume average if reviews exist but no "highly rated"
+    const starEl = document.querySelector("[aria-label*='out of 5 stars'], [aria-label*='out of 5 star']");
+    if (starEl) {
+      const ariaLabel = starEl.getAttribute("aria-label") || "";
+      const ratingMatch = ariaLabel.match(/(\d+\.?\d*)\s+out of\s+5/);
+      if (ratingMatch) trust.seller_rating = parseFloat(ratingMatch[1]);
     }
 
-    // Compute trust tier
+    if (trust.seller_rating === null) {
+      if (trust.is_highly_rated) {
+        trust.seller_rating = 4.8;
+      } else if (trust.review_count && trust.review_count > 0) {
+        trust.seller_rating = null;
+      }
+    }
+
     trust.trust_tier = computeTrustTier(trust);
 
     return trust;
@@ -372,6 +507,11 @@
       if (age >= 3)      score += 2;
       else if (age >= 1) score += 1;
     }
+    if (trust.seller_rating !== null) {
+      if (trust.seller_rating >= 4.5)      score += 2;
+      else if (trust.seller_rating >= 3.5) score += 1;
+      else if (trust.seller_rating < 3.0)  score -= 2;
+    }
 
     if (score >= 5) return "high";
     if (score >= 2) return "medium";
@@ -381,7 +521,6 @@
 
   /**
    * Detect multi-item / bundle listings.
-   * Returns true for listings containing 3+ items ("6-tool set", "lot of 5").
    */
   function detectMultiItem(title, description) {
     const text  = (title + " " + description).toLowerCase();
@@ -403,29 +542,122 @@
 
 
   /**
-   * Detect vehicle listings (motorcycles, e-bikes, ATVs, etc.)
-   * Suppresses irrelevant flags like "no accessories" and "no packaging".
+   * Detect vehicle listings — cars, trucks, motorcycles, ATVs, e-bikes, etc.
    */
   function detectVehicle(title, description) {
     const text = (title + " " + description).toLowerCase();
+
     const keywords = [
+      " car ", " cars ", " truck ", " trucks ", " suv ", " van ", " minivan ",
+      "sedan", "coupe", "hatchback", "convertible", "station wagon", "pickup truck",
+      "crossover", "4x4", "4wd", "awd",
+      "toyota", "honda", "ford", "chevrolet", "chevy", "dodge", "jeep",
+      "nissan", "subaru", "hyundai", "kia", "mazda", "volkswagen", " vw ",
+      "audi", "bmw", "mercedes", "lexus", "acura", "infiniti", "cadillac",
+      "buick", "gmc", "pontiac", "chrysler", "tesla", "volvo",
+      "lincoln", "mitsubishi",
+      "camry", "corolla", "civic", "accord", "prius", "tacoma", "tundra",
+      "highlander", "rav4", "sienna", "4runner",
+      "f-150", "f150", "f-250", "f250", "mustang",
+      "silverado", "colorado", "equinox", "tahoe", "suburban", "traverse",
+      "impala", "cruze", "trax", "trailblazer",
+      "altima", "sentra", "maxima", "rogue",
+      "forester", "impreza", "crosstrek",
+      "elantra", "sonata", "tucson", "santa fe", "sorento", "sportage",
+      "wrangler", "grand cherokee", "durango", "challenger",
+      "ram 1500", "ram 2500",
+      "3 series", "5 series", "7 series", "x3", "x5",
+      "a4", "a6", "q5", "q7",
+      "c-class", "e-class", "glc",
       "motorcycle", "dirt bike", "motocross", "mx bike", "pit bike",
-      "atv", "quad", "side by side", "utv", "gokart", "go-kart",
-      "moped", "scooter", "vespa",
+      "atv", "quad", "side by side", "utv", "go-kart", "gokart",
+      "moped", "vespa",
       "surron", "sur-ron", "talaria", "super73", "super 73",
       "light bee", "storm bee", "ultra bee",
       "x160", "x260", "electric dirt bike", "electric moto",
-      "kx", "yz", "cr250", "cr500", "rm", "crf", "wr", "ktm",
-      "kawasaki", "yamaha dirtbike", "honda dirt",
-      "volt battery", "v battery", "60v", "72v", "48v",
+      "cr250", "cr500", "crf", "kx250", "kx450", "yz450", "yz250",
+      "rmz250", "rmz450", "ktm", "kawasaki motorcycle", "yamaha motorcycle",
+      "honda dirt", "honda motorcycle",
+      "60v bike", "72v bike", "48v bike",
     ];
-    return keywords.some(kw => text.includes(kw));
+
+    const sanitized = text
+      .replace(/\bcar\s+seat(s)?\b/g, 'CARSEAT')
+      .replace(/\bcar\s+charger(s)?\b/g, 'CARCHARGER')
+      .replace(/\bcar\s+wash(es)?\b/g, 'CARWASH')
+      .replace(/\bcar\s+audio\b/g, 'CARAUDIO')
+      .replace(/\bcar\s+freshener(s)?\b/g, 'CARFRESHENER')
+      .replace(/\b(toy|race|cable|tram|stock)\s+car(s)?\b/g, 'TOYCAR');
+
+    if (keywords.some(kw => sanitized.includes(kw))) return true;
+
+    const MAKES_RE = /toyota|honda|ford|chevy|chevrolet|dodge|jeep|nissan|subaru|hyundai|kia|mazda|vw|volkswagen|audi|bmw|mercedes|benz|lexus|acura|infiniti|cadillac|buick|gmc|pontiac|chrysler|lincoln|mitsubishi|tesla|volvo/i;
+    const yearPattern = /\b(19[5-9]\d|20[0-2]\d|'[5-9]\d)\b/;
+    if (yearPattern.test(text) && MAKES_RE.test(text)) return true;
+
+    return false;
+  }
+
+
+  /**
+   * Extract structured vehicle attributes from FBM's "About this vehicle" section.
+   */
+  function extractVehicleDetails() {
+    const details = {};
+
+    const allText = Array.from(document.querySelectorAll('span[dir=auto]'))
+      .map(s => s.textContent.trim())
+      .filter(t => t.length > 3 && t.length < 120);
+
+    for (const t of allText) {
+      const lower = t.toLowerCase();
+
+      const mileMatch = t.match(/(\d[\d,]*(?:\.\d+)?[Kk]?)\s*miles?/i);
+      if (mileMatch && !details.mileage) {
+        const raw = mileMatch[1].replace(/,/g, "");
+        const num = raw.toLowerCase().endsWith("k")
+          ? parseFloat(raw) * 1000
+          : parseFloat(raw);
+        if (!isNaN(num) && num > 0 && num < 1000000) details.mileage = Math.round(num);
+      }
+
+      if (!details.transmission) {
+        if (lower.includes("automatic")) details.transmission = "Automatic";
+        else if (lower.includes("manual") || lower.includes("6-speed") || lower.includes("5-speed")) details.transmission = "Manual";
+      }
+
+      if (!details.fuel_type) {
+        if (lower.includes("gasoline") || lower.includes("petrol")) details.fuel_type = "Gasoline";
+        else if (lower.includes("diesel")) details.fuel_type = "Diesel";
+        else if (lower.includes("electric") && lower.includes("fuel")) details.fuel_type = "Electric";
+        else if (lower.includes("hybrid")) details.fuel_type = "Hybrid";
+      }
+
+      if (!details.title_status) {
+        if (lower.includes("clean title")) details.title_status = "Clean";
+        else if (lower.includes("salvage")) details.title_status = "Salvage";
+        else if (lower.includes("rebuilt")) details.title_status = "Rebuilt";
+        else if (lower.includes("lien")) details.title_status = "Lien";
+      }
+
+      const ownersMatch = t.match(/(\d+)\s+owner/i);
+      if (ownersMatch && !details.owners) details.owners = parseInt(ownersMatch[1]);
+
+      if (!details.paid_off && lower.includes("paid off")) details.paid_off = true;
+
+      if (!details.drivetrain) {
+        if (lower.includes("all-wheel") || lower.includes("awd")) details.drivetrain = "AWD";
+        else if (lower.includes("four-wheel") || lower.includes("4wd") || lower.includes("4x4")) details.drivetrain = "4WD";
+        else if (lower.includes("front-wheel") || lower.includes("fwd")) details.drivetrain = "FWD";
+        else if (lower.includes("rear-wheel") || lower.includes("rwd")) details.drivetrain = "RWD";
+      }
+    }
+    return Object.keys(details).length ? details : null;
   }
 
 
   /**
    * Master listing extraction — calls all the helpers above.
-   * Returns a flat object ready to POST to /score.
    */
   function extractListing() {
     const title       = findTitle();
@@ -440,6 +672,7 @@
 
     const isMulti   = detectMultiItem(title, description);
     const isVehicle = detectVehicle(title, description);
+    const vehicleDetails = isVehicle ? extractVehicleDetails() : null;
 
     return {
       title,
@@ -456,6 +689,7 @@
       original_price:  originalPrice || 0,
       shipping_cost:   shippingCost,
       image_urls:      images,
+      vehicle_details: vehicleDetails || {},
     };
   }
 
@@ -496,7 +730,6 @@
 
   // ═══════════════════════════════════════════════════════════════════════════
   //  SECTION 3 — SEARCH RESULTS OVERLAY
-  //  Shows score badges on listing thumbnails on FBM browse/search pages
   // ═══════════════════════════════════════════════════════════════════════════
 
   const OVERLAY_SCORES_KEY = "ds_scores";
@@ -513,7 +746,6 @@
     try {
       const scores = await getSavedScores();
       scores[url] = { score, shouldBuy, ts: Date.now() };
-      // Prune old entries to keep storage small
       const keys = Object.keys(scores);
       if (keys.length > 200) {
         keys.sort((a, b) => scores[a].ts - scores[b].ts).slice(0, 50).forEach(k => delete scores[k]);
@@ -526,7 +758,6 @@
     if (isListingPage()) return;
     const scores = await getSavedScores();
 
-    // Badge each listing card that has a saved score
     const cards = document.querySelectorAll("a[href*='/marketplace/item/']");
     for (const card of cards) {
       if (card.dataset.dsOverlay) continue;
@@ -563,7 +794,6 @@
     }
   }
 
-  // Watch for new cards loaded by infinite scroll
   if (!isListingPage()) {
     injectSearchOverlay();
     const overlayObserver = new MutationObserver(() => injectSearchOverlay());
@@ -575,23 +805,28 @@
   //  SECTION 4 — SIDEBAR UI
   // ═══════════════════════════════════════════════════════════════════════════
 
-  // Inject base CSS once
   if (!document.getElementById("ds-styles")) {
     const style = document.createElement("style");
     style.id = "ds-styles";
     style.textContent = `
       #dealscout-root {
         position: fixed;
+        bottom: 0;
+        right: 0;
         z-index: 2147483647;
+        width: 0;
+        height: 0;
+        pointer-events: none;
         font-family: system-ui, -apple-system, sans-serif;
         font-size: 13px;
         line-height: 1.4;
         color: #f1f5f9;
       }
       #ds-tab {
-        position: fixed;
+        position: absolute;
         bottom: 24px;
         right: 0;
+        pointer-events: auto;
         background: #6366f1;
         color: #fff;
         padding: 10px 14px;
@@ -602,16 +837,16 @@
         box-shadow: -2px 2px 10px rgba(0,0,0,0.3);
         user-select: none;
         touch-action: none;
-        z-index: 2147483647;
         display: flex;
         align-items: center;
         gap: 6px;
         transition: background 0.15s;
+        white-space: nowrap;
       }
       #ds-tab:hover { background: #818cf8; }
       #ds-panel {
-        position: fixed;
-        bottom: 0;
+        position: absolute;
+        bottom: 48px;
         right: 0;
         width: 310px;
         max-height: 85vh;
@@ -621,22 +856,38 @@
         overflow-y: auto;
         overflow-x: hidden;
         display: none;
-        z-index: 2147483647;
+        pointer-events: auto;
         scrollbar-width: thin;
         scrollbar-color: #4c1d95 #1e1b2e;
       }
       #ds-panel.open { display: block; }
       .ds-header {
         background: #2d1b69;
-        padding: 10px 14px;
+        padding: 8px 12px;
         display: flex;
         align-items: center;
         justify-content: space-between;
         position: sticky;
         top: 0;
         z-index: 1;
+        gap: 6px;
       }
-      .ds-header-left { display: flex; align-items: center; gap: 8px; font-weight: 700; }
+      .ds-header-left {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-weight: 700;
+        min-width: 0;
+        flex-shrink: 1;
+        white-space: nowrap;
+        overflow: hidden;
+      }
+      .ds-header-badges {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        flex-shrink: 0;
+      }
       .ds-close {
         cursor: pointer; font-size: 18px; opacity: 0.6;
         background: none; border: none; color: #fff; padding: 0;
@@ -709,6 +960,24 @@
         cursor: pointer; border: none; white-space: nowrap;
       }
       .ds-link-btn:hover { background: rgba(255,255,255,0.18); }
+      .ds-affiliate-card {
+        display: flex; align-items: center; gap: 8px;
+        padding: 9px 8px; border-radius: 8px;
+        background: rgba(255,255,255,0.05); margin-bottom: 6px;
+        cursor: pointer; border: 1px solid rgba(255,255,255,0.08);
+        text-decoration: none; color: inherit; transition: background 0.15s;
+      }
+      .ds-affiliate-card:hover { background: rgba(255,255,255,0.11); border-color: rgba(255,255,255,0.18); }
+      .ds-aff-badge {
+        font-size: 10px; padding: 3px 7px; border-radius: 5px;
+        font-weight: 700; flex-shrink: 0; white-space: nowrap; color: #fff;
+        min-width: 52px; text-align: center;
+      }
+      .ds-aff-text { flex: 1; min-width: 0; }
+      .ds-aff-title { font-size: 11px; font-weight: 600; opacity: 0.92; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .ds-aff-sub { font-size: 10px; opacity: 0.55; margin-top: 1px; }
+      .ds-aff-reason { font-size: 10px; opacity: 0.4; font-style: italic; margin-top: 1px; }
+      .ds-aff-arrow { font-size: 14px; opacity: 0.35; flex-shrink: 0; }
       .ds-suggestion-card {
         display: flex; align-items: center; gap: 8px;
         padding: 8px; border-radius: 8px;
@@ -738,11 +1007,6 @@
         padding: 6px 8px; border-radius: 6px;
         background: rgba(255,255,255,0.04); margin: 6px 0;
       }
-      .ds-pro-teaser {
-        background: linear-gradient(135deg, #4c1d95, #1e1b2e);
-        border: 1px solid rgba(124,58,237,0.4);
-        border-radius: 8px; padding: 12px; margin: 8px 0; text-align: center;
-      }
       .ds-version { font-size: 9px; opacity: 0.4; }
       .ds-photo-badge {
         font-size: 10px; background: rgba(99,102,241,0.3);
@@ -755,12 +1019,21 @@
       .ds-shipping-note {
         font-size: 11px; color: #fbbf24; margin: 4px 0;
       }
+      .ds-parity-banner {
+        display: flex; align-items: flex-start; gap: 8px;
+        background: rgba(99,102,241,0.12); border: 1px solid rgba(99,102,241,0.3);
+        border-radius: 8px; padding: 8px 10px; margin-bottom: 8px;
+      }
+      .ds-parity-banner-icon { font-size: 16px; flex-shrink: 0; }
+      .ds-parity-banner-text { flex: 1; min-width: 0; }
+      .ds-parity-banner-title { font-size: 12px; font-weight: 700; color: #a78bfa; }
+      .ds-parity-banner-sub { font-size: 10px; opacity: 0.6; margin-top: 2px; }
+      .ds-section-parity { border-left: 3px solid #6366f1; padding-left: 8px; }
     `;
     document.head.appendChild(style);
   }
 
 
-  // ── Create the tab + panel DOM ──────────────────────────────────────────────
   let root, tab, panel;
 
   function ensureSidebarDOM() {
@@ -778,21 +1051,19 @@
 
     root.appendChild(tab);
     root.appendChild(panel);
-    document.body.appendChild(root);
+
+    document.documentElement.appendChild(root);
 
     makeDraggable(tab, root);
 
-    // Tab click — open/close the panel
     tab.addEventListener("click", () => {
       panel.classList.toggle("open");
     });
 
-    // Restore saved panel position
     restorePosition();
   }
 
 
-  // ── Drag to move ────────────────────────────────────────────────────────────
   function makeDraggable(handle, container) {
     let startX, startY, startTop, startLeft;
     let wasDragged = false;
@@ -801,7 +1072,6 @@
       if (e.button !== 0) return;
       e.preventDefault();
 
-      // Convert bottom/right positioning to top/left for offset math
       const rect = container.getBoundingClientRect();
       container.style.bottom = "auto";
       container.style.right  = "auto";
@@ -814,7 +1084,6 @@
       startLeft = rect.left;
       wasDragged = false;
 
-      // Disable panel pointer events so scroll container doesn't steal capture
       if (panel) panel.style.pointerEvents = "none";
       handle.setPointerCapture(e.pointerId);
     });
@@ -825,8 +1094,8 @@
       const dy = e.clientY - startY;
       if (Math.abs(dx) > 3 || Math.abs(dy) > 3) wasDragged = true;
 
-      const newTop  = Math.max(0, Math.min(startTop  + dy, window.innerHeight - 60));
-      const newLeft = Math.max(0, Math.min(startLeft + dx, window.innerWidth  - 80));
+      const newTop  = Math.max(80, Math.min(startTop  + dy, window.innerHeight));
+      const newLeft = Math.max(0,  Math.min(startLeft + dx, window.innerWidth));
       container.style.top  = newTop  + "px";
       container.style.left = newLeft + "px";
     });
@@ -834,11 +1103,9 @@
     const endDrag = (e) => {
       if (panel) panel.style.pointerEvents = "";
       if (!wasDragged) return;
-      // Save position
       const top  = parseInt(container.style.top  || 0);
       const left = parseInt(container.style.left || 0);
       chrome.storage.local.set({ ds_sidebar_pos: { top, left } }).catch(() => {});
-      // Prevent the click event after drag
       e.preventDefault();
     };
 
@@ -849,16 +1116,23 @@
   async function restorePosition() {
     try {
       const stored = await chrome.storage.local.get("ds_sidebar_pos");
-      if (stored.ds_sidebar_pos) {
-        let { top, left } = stored.ds_sidebar_pos;
-        // Clamp to current viewport — screen may be different size now
-        top  = Math.max(0, Math.min(top,  window.innerHeight - 60));
-        left = Math.max(0, Math.min(left, window.innerWidth  - 80));
-        root.style.top    = top  + "px";
-        root.style.left   = left + "px";
-        root.style.bottom = "auto";
-        root.style.right  = "auto";
+      if (!stored.ds_sidebar_pos) return;
+
+      let { top, left } = stored.ds_sidebar_pos;
+
+      const isValid = (v) => typeof v === "number" && isFinite(v) && v >= 0;
+      if (!isValid(top) || !isValid(left)) {
+        chrome.storage.local.remove("ds_sidebar_pos").catch(() => {});
+        return;
       }
+
+      top  = Math.max(80, Math.min(top,  window.innerHeight));
+      left = Math.max(0,  Math.min(left, window.innerWidth));
+
+      root.style.top    = top  + "px";
+      root.style.left   = left + "px";
+      root.style.bottom = "auto";
+      root.style.right  = "auto";
     } catch { /* ok */ }
   }
 
@@ -876,6 +1150,7 @@
         <button class="ds-close">&#x2715;</button>
       </div>
       <div class="ds-body">
+        <div id="ds-preflight-warnings" style="display:none;padding:4px 0 2px 0"></div>
         <div class="ds-loading">Analyzing deal</div>
       </div>`;
     panel.querySelector(".ds-close").addEventListener("click", () => panel.classList.remove("open"));
@@ -908,7 +1183,7 @@
     const query = encodeURIComponent(title.slice(0, 40));
     const city  = (location || "").toLowerCase().replace(/[^a-z]/g, "");
     const cityMap = {
-      sandiego:"sfbay",sanfrancisco:"sfbay",losangeles:"losangeles",
+      sandiego:"sandiego",sanfrancisco:"sfbay",losangeles:"losangeles",
       chicago:"chicago",newyork:"newyork",seattle:"seattle",
       portland:"portland",denver:"denver",phoenix:"phoenix",
       dallas:"dallas",houston:"houston",austin:"austin",
@@ -920,29 +1195,27 @@
   }
 
 
-  /**
-   * Main render function — called after we receive a score from the API.
-   * Renders:
-   *   - Score circle + verdict + buy/pass badge
-   *   - Price comparison row (with shipping if present)
-   *   - Seller trust info
-   *   - Red/green flags
-   *   - Recommended offer
-   *   - Like Products (eBay cards)
-   *   - Better Options (suggestion cards)
-   *   - Search elsewhere links
-   *   - Product reliability (if available)
-   */
   function renderScore(r, listing) {
     ensureSidebarDOM();
     panel.innerHTML = "";
 
-    const buyLabel  = r.should_buy ? "&#x2705; BUY"  : "&#x274C; PASS";
-    const buyColor  = r.should_buy ? "#22c55e" : "#ef4444";
-    const dataColor = r.data_source === "ebay"   ? "#22c55e" :
-                      r.data_source === "google_shopping" ? "#60a5fa" : "#fbbf24";
-    const dataLabel = r.data_source === "ebay"   ? "&#x1F4CA; Live eBay" :
-                      r.data_source === "google_shopping" ? "&#x1F50D; Google Shopping" :
+    const buyLabel  = r.score >= 7 ? "&#x2705; BUY" : r.score >= 4 ? "&#x26A0;&#xFE0F; CAUTION" : "&#x274C; AVOID";
+    const buyColor  = r.score >= 7 ? "#22c55e"      : r.score >= 4 ? "#f59e0b"                  : "#ef4444";
+    const dataColor = r.data_source === "ebay"                    ? "#22c55e" :
+                      r.data_source === "google_shopping"          ? "#60a5fa" :
+                      r.data_source === "vehicle_not_applicable"   ? "#f59e0b" :
+                      r.data_source === "cargurus"                 ? "#22c55e" :
+                      r.data_source === "craigslist"               ? "#a78bfa" :
+                      r.data_source === "google+ebay"              ? "#60a5fa" :
+                      r.data_source === "ebay_mock"                ? "#94a3b8" :
+                      "#fbbf24";
+    const dataLabel = r.data_source === "ebay"                    ? "&#x1F4CA; Live eBay" :
+                      r.data_source === "google_shopping"          ? "&#x1F50D; Google Shopping" :
+                      r.data_source === "vehicle_not_applicable"   ? "&#x1F697; No data" :
+                      r.data_source === "cargurus"                 ? "&#x1F697; CarGurus" :
+                      r.data_source === "craigslist"               ? "&#x1F697; Craigslist" :
+                      r.data_source === "google+ebay"              ? "&#x1F50D; Google+eBay" :
+                      r.data_source === "ebay_mock"                ? "&#x1F4CA; Est. prices" :
                       "&#x26A0;&#xFE0F; Est. prices";
 
     const photoTag  = r.image_analyzed ? `<span class="ds-photo-badge">&#x1F4F7; photo</span>` : "";
@@ -954,18 +1227,15 @@
       ? `<span class="ds-over">&#x1F534; $${Math.abs(diff).toFixed(0)} over market (+${pct}%)</span>`
       : `<span class="ds-under">&#x1F7E2; $${Math.abs(diff).toFixed(0)} below market (-${pct}%)</span>`;
 
-    // Shipping note
     const shippingNote = r.shipping_cost > 0
       ? `<div class="ds-shipping-note">&#x1F69A; +$${r.shipping_cost.toFixed(2)} shipping = <strong>$${(listing.price + r.shipping_cost).toFixed(2)} total</strong></div>`
       : "";
 
-    // Original price note
     const origNote = r.original_price > 0 && r.original_price > listing.price
       ? `<div style="font-size:11px;opacity:0.6;margin-bottom:4px">
            <del>$${r.original_price.toLocaleString()}</del> &#x25BC; reduced $${(r.original_price - listing.price).toFixed(0)}
          </div>` : "";
 
-    // Trust display
     const trust = listing.seller_trust || {};
     const trustParts = [];
     if (trust.member_since)   trustParts.push(`&#x1F4C5; ${trust.member_since}`);
@@ -976,31 +1246,29 @@
       ? trustParts.join(" &middot; ")
       : "&#x1F464; Limited seller info";
 
-    // Flags HTML
     const greenFlags = (r.green_flags || []).map(f => `<li>&#x2705; ${escHtml(f)}</li>`).join("");
     const redFlags   = (r.red_flags   || []).map(f => `<li>&#x26A0;&#xFE0F; ${escHtml(f)}</li>`).join("");
 
-    // Product scored-as display
     const productInfo   = r.product_info || {};
     const scoredAsLine  = productInfo.display_name && productInfo.display_name !== listing.title
       ? `<div style="font-size:10px;opacity:0.5;margin-top:4px">
            &#x1F50E; Scored as: ${escHtml(productInfo.display_name)} &middot; ${escHtml(productInfo.confidence || "medium")} confidence
          </div>` : "";
 
-    // Build header
     const header = document.createElement("div");
     header.className = "ds-header";
     header.innerHTML = `
       <div class="ds-header-left">
-        &#x1F6D2; Deal Scout
+        &#x1F6D2; <span>Deal Scout</span>
         <span class="ds-version">v${VERSION}</span>
+      </div>
+      <div class="ds-header-badges">
         ${photoTag}${dataTag}
       </div>
-      <button class="ds-close">&#x2715;</button>`;
+      <button class="ds-close" style="flex-shrink:0">&#x2715;</button>`;
     panel.appendChild(header);
     header.querySelector(".ds-close").addEventListener("click", () => panel.classList.remove("open"));
 
-    // Body
     const body = document.createElement("div");
     body.className = "ds-body";
     body.innerHTML = `
@@ -1021,14 +1289,55 @@
 
       <div class="ds-section">
         <div class="ds-section-title">&#x1F4CA; Market Comparison</div>
-        <div class="ds-price-row"><span class="ds-price-label">eBay sold avg</span><span>$${r.sold_avg?.toFixed(0) || 0}</span></div>
-        <div class="ds-price-row"><span class="ds-price-label">eBay active avg</span><span>$${r.active_avg?.toFixed(0) || 0}</span></div>
-        <div class="ds-price-row"><span class="ds-price-label">New retail</span><span>$${r.new_price?.toFixed(0) || 0}</span></div>
-        <div class="ds-price-row"><span class="ds-price-label">Listed price</span><strong>$${listing.price?.toFixed(0) || 0}</strong></div>
-        <div style="margin-top:6px;font-size:12px;">${diffEl}</div>
-        <div style="font-size:10px;opacity:0.4;margin-top:3px">
-          ${escHtml(r.market_confidence || "low")} confidence &middot; ${r.sold_count || 0} eBay comps
-        </div>
+        ${r.data_source === 'vehicle_not_applicable' ? `
+          <div style="font-size:12px;color:#f59e0b;padding:6px 0;line-height:1.5">
+            &#x26A0;&#xFE0F; eBay &amp; Google return <strong>parts prices</strong> for vehicles — not actual vehicle values.
+          </div>
+          <div style="font-size:11px;opacity:0.7;margin-top:4px">Check these for accurate comps:</div>
+          <div style="margin-top:6px;display:flex;flex-direction:column;gap:4px">
+            <a href="https://www.kbb.com/used-cars/" target="_blank" style="color:#818cf8;font-size:12px">&#x1F4B0; KBB &#x2014; Private Party Value</a>
+            <a href="https://www.carfax.com/vehicle-history-reports" target="_blank" style="color:#818cf8;font-size:12px">&#x1F4CB; Carfax &#x2014; Vehicle History</a>
+            <a href="https://www.cargurus.com" target="_blank" style="color:#818cf8;font-size:12px">&#x1F50D; CarGurus &#x2014; Local Comps</a>
+          </div>
+          <div class="ds-price-row" style="margin-top:8px"><span class="ds-price-label">Listed price</span><strong>$${listing.price?.toFixed(0) || 0}</strong></div>
+        ` : (r.data_source === 'cargurus' || r.data_source === 'craigslist') ? `
+          <div style="font-size:11px;opacity:0.6;margin-bottom:6px">
+            ${r.data_source === 'cargurus' ? '&#x1F50D; CarGurus \u2014 comparable listings near you' : '&#x1F50D; Craigslist \u2014 local private-party comps'}
+          </div>
+          <div class="ds-price-row"><span class="ds-price-label">Market avg</span><span>$${r.active_avg?.toFixed(0) || 0}</span></div>
+          <div class="ds-price-row"><span class="ds-price-label">Price range</span><span style="font-size:11px;opacity:0.8">$${r.active_low?.toFixed(0) || 0} &#x2013; $${r.sold_high?.toFixed(0) || 0}</span></div>
+          <div class="ds-price-row"><span class="ds-price-label">Listed price</span><strong>$${listing.price?.toFixed(0) || 0}</strong></div>
+          <div style="margin-top:6px;font-size:12px;">${diffEl}</div>
+          <div style="font-size:10px;opacity:0.4;margin-top:3px">
+            ${escHtml(r.market_confidence || 'low')} confidence &#x00b7; ${r.sold_count || 0} comps
+          </div>
+          <div style="margin-top:7px;display:flex;gap:10px">
+            <a href="https://www.kbb.com/used-cars/" target="_blank" style="color:#818cf8;font-size:10px">&#x1F4B0; KBB</a>
+            <a href="https://www.carfax.com/vehicle-history-reports" target="_blank" style="color:#818cf8;font-size:10px">&#x1F4CB; Carfax</a>
+          </div>
+        ` : `
+          ${(()=>{
+            // Use source-accurate labels — Google Shopping is primary,
+            // so showing "eBay sold avg" when Google won is misleading.
+            const isGoogle   = r.data_source === 'google_shopping' || r.data_source === 'google+ebay';
+            const isEbayMock = r.data_source === 'ebay_mock';
+            const soldLabel   = isGoogle ? 'Market avg (sold)'   : isEbayMock ? 'Est. sold avg'   : 'eBay sold avg';
+            const activeLabel = isGoogle ? 'Market avg (active)' : isEbayMock ? 'Est. active avg' : 'eBay active avg';
+            const compSource  = isGoogle ? 'Google Shopping'     : isEbayMock ? 'estimated'       : 'eBay';
+            const suspectStyle = r.market_confidence === 'suspect' ? 'color:#f59e0b;opacity:1' : 'opacity:0.4';
+            const confLine = r.market_confidence === 'suspect'
+              ? '&#x26A0;&#xFE0F; comps may be inaccurate — verify manually'
+              : `${escHtml(r.market_confidence || 'low')} confidence · ${r.sold_count || 0} ${compSource} comps`;
+            return `
+              <div class="ds-price-row"><span class="ds-price-label">${soldLabel}</span><span>$${r.sold_avg?.toFixed(0) || 0}</span></div>
+              <div class="ds-price-row"><span class="ds-price-label">${activeLabel}</span><span>$${r.active_avg?.toFixed(0) || 0}</span></div>
+              <div class="ds-price-row"><span class="ds-price-label">New retail</span><span>$${r.new_price?.toFixed(0) || 0}</span></div>
+              <div class="ds-price-row"><span class="ds-price-label">Listed price</span><strong>$${listing.price?.toFixed(0) || 0}</strong></div>
+              <div style="margin-top:6px;font-size:12px;">${diffEl}</div>
+              <div style="font-size:10px;margin-top:3px;${suspectStyle}">${confLine}</div>
+            `;
+          })()}
+        `}
       </div>
 
       <div class="ds-seller-trust">&#x1F464; ${trustLine}</div>
@@ -1039,148 +1348,230 @@
 
       <div class="ds-offer">
         <span>Recommended offer</span>
-        <span class="ds-offer-price">$${(r.recommended_offer || 0).toFixed(0)}</span>
+        <span class="ds-offer-price" id="ds-tmp-offer"></span>
       </div>
       ${scoredAsLine}
     `;
+    const _offerEl = body.querySelector('#ds-tmp-offer');
+    if (_offerEl) {
+      if (r.recommended_offer === -1) {
+        _offerEl.textContent = '\uD83D\uDEAB Not recommended';
+      } else {
+        _offerEl.textContent = '$' + Math.round(r.recommended_offer || 0);
+      }
+    }
     panel.appendChild(body);
 
-    // Like Products (eBay cards)
-    renderLikeProducts(r, panel);
-
-    // Better Options (suggestions)
-    renderSuggestions(r, panel);
-
-    // Product reliability
-    renderReliability(r, panel);
-
-    // Search elsewhere links
-    renderSearchLinks(r, listing, panel);
+    renderSecurityScore(r, body);
+    renderBuyNewBanner(r, body);
+    renderAffiliateCards(r, listing, body);
+    renderReliability(r, body);
   }
 
 
-  /**
-   * Render the Like Products eBay cards (Sold / Active tabs).
-   * Each card is an affiliate link — our primary revenue source.
-   *
-   * WHY addEventListener NOT onclick:
-   * Facebook's CSP strips inline onclick from dynamically injected HTML.
-   */
-  function renderLikeProducts(r, container) {
-    const sold   = r.sold_items_sample   || [];
-    const active = r.active_items_sample || [];
-    if (!sold.length && !active.length) return;
+  function renderSecurityScore(r, container) {
+    const sec = r.security_score;
+    if (!sec) return;
+    if (sec.risk_level === "unknown" && !sec.flags?.length && !sec.layer1_flags?.length) return;
+
+    const riskConfig = {
+      low:      { color: "#22c55e", bg: "rgba(34,197,94,0.1)",  border: "rgba(34,197,94,0.3)",  shield: "\uD83D\uDEE1\uFE0F", label: "LOW RISK" },
+      medium:   { color: "#f59e0b", bg: "rgba(245,158,11,0.1)", border: "rgba(245,158,11,0.3)", shield: "\u26A0\uFE0F",    label: "CAUTION" },
+      high:     { color: "#f97316", bg: "rgba(249,115,22,0.12)",border: "rgba(249,115,22,0.4)", shield: "\u26A0\uFE0F",    label: "HIGH RISK" },
+      critical: { color: "#ef4444", bg: "rgba(239,68,68,0.12)", border: "rgba(239,68,68,0.5)",  shield: "\u274C",         label: "LIKELY SCAM" },
+    };
+    const cfg = riskConfig[sec.risk_level] || riskConfig.medium;
 
     const section = document.createElement("div");
-    section.className = "ds-section";
-    section.innerHTML = `
-      <div class="ds-section-title">&#x1F6CD;&#xFE0F; Like Products on eBay</div>
-      <div class="ds-tabs">
-        <button class="ds-tab-btn active" data-tab="sold">&#x1F4B0; Sold (${sold.length})</button>
-        <button class="ds-tab-btn"        data-tab="active">&#x1F4E6; Active (${active.length})</button>
-      </div>
-      <div data-tabcontent="sold"   class="ds-tabpanel"></div>
-      <div data-tabcontent="active" class="ds-tabpanel" style="display:none"></div>`;
+    section.className = "ds-section ds-security";
+    section.style.cssText = [
+      `background:${cfg.bg}`,
+      `border:1px solid ${cfg.border}`,
+      "border-radius:10px",
+      "padding:10px 12px",
+      "margin-bottom:8px",
+    ].join(";");
+
+    const hdr = document.createElement("div");
+    hdr.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:6px";
+    hdr.innerHTML = `
+      <span style="font-size:16px">${cfg.shield}</span>
+      <span style="font-weight:700;font-size:12px;color:${cfg.color};flex:1">${cfg.label}</span>
+      <span style="font-size:11px;font-weight:700;background:${cfg.color};color:#000;padding:2px 7px;border-radius:10px">${sec.score}/10</span>
+    `;
+    section.appendChild(hdr);
+
+    const rec = document.createElement("div");
+    rec.style.cssText = `font-size:11px;color:${cfg.color};font-weight:600;margin-bottom:5px`;
+    rec.textContent = (sec.recommendation || "").replace(/\b\w/g, c => c.toUpperCase());
+    section.appendChild(rec);
+
+    const flags = sec.flags || [];
+    if (flags.length) {
+      const ul = document.createElement("div");
+      ul.style.cssText = "font-size:10.5px;line-height:1.6;opacity:0.85";
+      flags.forEach(flag => {
+        const li = document.createElement("div");
+        li.style.cssText = "display:flex;gap:5px;align-items:flex-start";
+        li.innerHTML = `<span style="color:${cfg.color};flex-shrink:0">•</span><span>${escHtml(flag)}</span>`;
+        ul.appendChild(li);
+      });
+      section.appendChild(ul);
+    }
+
+    const itemRisks = sec.item_risks || [];
+    if (itemRisks.length) {
+      const riskDiv = document.createElement("div");
+      riskDiv.style.cssText = "margin-top:5px;font-size:10px;opacity:0.6;font-style:italic";
+      riskDiv.textContent = "Item risks: " + itemRisks.join(" · ");
+      section.appendChild(riskDiv);
+    }
 
     container.appendChild(section);
-
-    // Build item cards for each tab
-    [["sold", sold], ["active", active]].forEach(([tabId, items]) => {
-      const pane = section.querySelector(`[data-tabcontent="${tabId}"]`);
-      if (!items.length) {
-        pane.innerHTML = `<div style="font-size:11px;opacity:0.4;padding:8px 0">No data</div>`;
-        return;
-      }
-      items.forEach(item => {
-        const card = document.createElement("a");
-        card.className = "ds-ebay-card";
-        card.href      = item.url || "#";
-        card.target    = "_blank";
-        card.rel       = "noopener";
-
-        // Thumbnail
-        const thumb = document.createElement("div");
-        thumb.className = "ds-ebay-thumb";
-        if (item.image_url) {
-          const img = document.createElement("img");
-          img.src = item.image_url;
-          img.alt = "";
-          img.addEventListener("error", () => {
-            thumb.textContent = "&#x1F4E6;";
-            thumb.removeChild(img);
-          });
-          thumb.appendChild(img);
-        } else {
-          thumb.textContent = "&#x1F4E6;";
-        }
-
-        const info = document.createElement("div");
-        info.className = "ds-ebay-info";
-        info.innerHTML = `
-          <div class="ds-ebay-title">${escHtml(item.title)}</div>
-          <div class="ds-ebay-price">&#x24;${item.price?.toFixed(0) || 0}</div>
-          <div class="ds-ebay-cond">${escHtml(item.condition)} ${item.sold ? "SOLD" : ""}</div>`;
-
-        card.appendChild(thumb);
-        card.appendChild(info);
-        pane.appendChild(card);
-      });
-    });
-
-    // Tab switching — use event delegation, CSP-safe
-    section.querySelectorAll(".ds-tab-btn").forEach(btn => {
-      btn.addEventListener("click", () => {
-        section.querySelectorAll(".ds-tab-btn").forEach(b => b.classList.remove("active"));
-        section.querySelectorAll(".ds-tabpanel").forEach(p => p.style.display = "none");
-        btn.classList.add("active");
-        const target = section.querySelector(`[data-tabcontent="${btn.dataset.tab}"]`);
-        if (target) target.style.display = "block";
-      });
-    });
   }
 
 
-  /**
-   * Render Better Options / suggestion cards.
-   * These are affiliate links to eBay and Amazon — generated by suggestion_engine.py.
-   */
-  function renderSuggestions(r, container) {
-    const suggestions = r.suggestions || [];
-    if (!suggestions.length) return;
+  function renderBuyNewBanner(r, container) {
+    if (!r.buy_new_trigger || !r.buy_new_message) return;
+
+    const banner = document.createElement("div");
+    banner.style.cssText = [
+      "background:#fef3c7",
+      "border:1px solid #fbbf24",
+      "border-radius:8px",
+      "padding:8px 10px",
+      "margin:8px 0",
+      "font-size:11px",
+      "color:#92400e",
+      "line-height:1.4",
+    ].join(";");
+    banner.textContent = r.buy_new_message;
+    container.appendChild(banner);
+  }
+
+
+  function fireAffiliateEvent(card, r) {
+    try {
+      chrome.runtime.sendMessage({
+        type:         "AFFILIATE_CLICK",
+        program:      card.program_key   || "",
+        category:     r.category_detected || "",
+        price_bucket: card.price_bucket  || "",
+        card_type:    card.card_type     || "",
+        deal_score:   r.score            || 0,
+      });
+    } catch { /* non-critical */ }
+  }
+
+
+  function renderAffiliateCards(r, listing, container) {
+    const cards = r.affiliate_cards || [];
+
+    const newRetail   = r.new_price   || 0;
+    const listedPrice = listing.price || 0;
+    const parityRatio = (newRetail > 0 && listedPrice > 0) ? listedPrice / newRetail : 0;
+    const isDealParity = parityRatio >= 0.65;
+    const newPremium   = newRetail - listedPrice;
 
     const section = document.createElement("div");
-    section.className = "ds-section";
-    section.innerHTML = `<div class="ds-section-title">&#x1F4A1; Better Options</div>`;
+    section.className = isDealParity ? "ds-section ds-section-parity" : "ds-section";
 
-    suggestions.forEach(s => {
-      const card = document.createElement("a");
-      card.className = "ds-suggestion-card";
-      card.href      = s.url || "#";
-      card.target    = "_blank";
-      card.rel       = "noopener";
-      card.innerHTML = `
-        <span class="ds-suggestion-badge" style="background:${s.badge_color || "#6366f1"}">
-          ${escHtml(s.badge || s.platform)}
-        </span>
-        <div class="ds-suggestion-text">
-          <div class="ds-suggestion-title">${escHtml(s.title)}</div>
-          <div class="ds-suggestion-reason">${escHtml(s.reason)}</div>
+    const titleDiv = document.createElement("div");
+    titleDiv.className = "ds-section-title";
+    titleDiv.innerHTML = "&#x1F6CD;&#xFE0F; Where to Buy";
+    section.appendChild(titleDiv);
+
+    if (isDealParity && newRetail > 0) {
+      const savingsText = newPremium > 0
+        ? `Only $${newPremium.toFixed(0)} more to buy new`
+        : `New price is comparable`;
+      const banner = document.createElement("div");
+      banner.className = "ds-parity-banner";
+      banner.innerHTML = `
+        <span class="ds-parity-banner-icon">&#x1F4A1;</span>
+        <div class="ds-parity-banner-text">
+          <div class="ds-parity-banner-title">${escHtml(savingsText)}</div>
+          <div class="ds-parity-banner-sub">New retail ~$${newRetail.toFixed(0)} &middot; Compare before buying used</div>
         </div>
-        <span class="ds-suggestion-price">${escHtml(s.price_label || "")}</span>`;
-      section.appendChild(card);
-    });
+      `;
+      section.appendChild(banner);
+    }
+
+    if (cards.length === 0) {
+      const q       = encodeURIComponent((r.product_info?.display_name || listing.title || "").slice(0, 60));
+      const amzUrl  = `https://www.amazon.com/s?k=${q}&tag=dealscout03f-20`;
+      const ebayUrl = `https://www.ebay.com/sch/i.html?_nkw=${q}&mkevt=1&mkcid=1&mkrid=711-53200-19255-0&campid=5339144027&toolid=10001`;
+
+      const amzSubtitle = (isDealParity && newRetail > 0)
+        ? `New from ~$${newRetail.toFixed(0)} · Free returns on most items`
+        : "New retail reference";
+      const amzReason = (isDealParity && newPremium > 0)
+        ? `Only $${newPremium.toFixed(0)} more than the used asking price`
+        : "Compare before deciding";
+
+      _appendAffiliateCard(section, {
+        program_key: "amazon", title: "Shop new on Amazon",
+        subtitle: amzSubtitle, reason: amzReason,
+        url: amzUrl, badge_label: "Amazon", badge_color: "#f59e0b",
+        icon: "\u{1F6D2}", card_type: "new_retail", commission_live: true,
+      }, r);
+      _appendAffiliateCard(section, {
+        program_key: "ebay", title: "Search on eBay",
+        subtitle: "Compare used prices", reason: "See what similar items sell for",
+        url: ebayUrl, badge_label: "eBay", badge_color: "#e53e3e",
+        icon: "\u{1F3F7}\uFE0F", card_type: "used_comp", commission_live: true,
+      }, r);
+    } else {
+      if (isDealParity && newRetail > 0) {
+        const firstNew = cards.find(c => c.card_type === "new_retail" || c.program_key === "amazon");
+        if (firstNew && newPremium > 0) {
+          firstNew.subtitle = `New from ~$${newRetail.toFixed(0)}`;
+          firstNew.reason   = `Only $${newPremium.toFixed(0)} more than asking price`;
+        }
+      }
+      cards.forEach(card => _appendAffiliateCard(section, card, r));
+    }
+
+    const note = document.createElement("div");
+    note.style.cssText = "font-size:9px;opacity:0.3;margin-top:6px;text-align:right";
+    note.textContent = "Affiliate links \u00b7 Deal Scout earns on qualifying purchases";
+    section.appendChild(note);
 
     container.appendChild(section);
   }
 
+  function _appendAffiliateCard(section, card, r) {
+    const a = document.createElement("a");
+    a.className = "ds-affiliate-card";
+    a.href      = card.url || "#";
+    a.target    = "_blank";
+    a.rel       = "noopener noreferrer";
 
-  /**
-   * Render product reliability info from product_evaluator.py
-   */
+    a.innerHTML = `
+      <span class="ds-aff-badge" style="background:${card.badge_color || '#6366f1'}">
+        ${escHtml(card.icon || "")} ${escHtml(card.badge_label || "")}
+      </span>
+      <div class="ds-aff-text">
+        <div class="ds-aff-title">${escHtml(card.title || "")}</div>
+        <div class="ds-aff-sub">${escHtml(card.subtitle || "")}${card.price_hint ? " · <b>" + escHtml(card.price_hint) + "</b>" : ""}</div>
+        <div class="ds-aff-reason">${escHtml(card.reason || "")}</div>
+      </div>
+      <span class="ds-aff-arrow">&#x2192;</span>
+    `;
+
+    a.addEventListener("click", () => fireAffiliateEvent(card, r));
+    section.appendChild(a);
+  }
+
+
+  function renderLikeProducts(r, container) { /* @deprecated — replaced by renderAffiliateCards */ }
+  function renderSuggestions(r, container)  { /* @deprecated — no-op */ }
+  function renderSearchLinks(r, listing, container) { /* @deprecated — no-op */ }
+
+
   function renderReliability(r, container) {
     const pe = r.product_evaluation;
     if (!pe || !pe.reliability_tier || pe.reliability_tier === "unknown") return;
-    if (!pe.overall_rating && !pe.known_issues?.length && !pe.strengths?.length) return;
 
     const tierColors = {
       excellent: "#22c55e", good: "#86efac",
@@ -1217,67 +1608,233 @@
   }
 
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  SECTION 5b — LISTING READINESS + PRE-FLIGHT ERROR DETECTION
+  // ═══════════════════════════════════════════════════════════════════════════
+
   /**
-   * Render "Search Elsewhere" external links row (Amazon, OfferUp, Google, Craigslist)
+   * Wait for the listing DOM to fully hydrate using MutationObserver.
+   *
+   * WHY NOT A RETRY LOOP:
+   *   FBM is a React SPA. Fields hydrate at different times:
+   *     - Title:       ~200ms after navigation
+   *     - Price:       ~300-500ms
+   *     - Description: ~500-1500ms (fetched separately, sometimes lazy)
+   *   A fixed retry loop either misses the description (too fast) or wastes
+   *   time (too slow). MutationObserver fires exactly when each node appears.
+   *
+   * READINESS CRITERIA (all must pass):
+   *   1. price > 0
+   *   2. title is non-empty and not a nav label
+   *   3. description is non-empty OR 2 seconds have passed with price+title ready
+   *      (some listings genuinely have no description — don't block on them)
+   *
+   * Returns the extracted listing object, or null on hard timeout.
    */
-  function renderSearchLinks(r, listing, container) {
-    const q    = encodeURIComponent((r.product_info?.display_name || listing.title).slice(0, 50));
-    const amz  = `https://www.amazon.com/s?k=${q}&tag=dealscout03f-20`;
-    const ofrp = `https://offerup.com/search/?q=${q}`;
-    const goog = `https://www.google.com/search?q=${q}+site:shopping.google.com`;
-    const cl   = getCraigslistUrl(listing.location || "", listing.title || "");
+  async function waitForListingReady() {
+    const TITLE_NOISE  = new Set(["marketplace", "notifications", "facebook", "search results", ""]);
+    const HARD_TIMEOUT = 6000;   // never wait more than 6s total
+    const DESC_GRACE   = 2000;   // if price+title ready, allow 2s for description before giving up
 
-    const section = document.createElement("div");
-    section.className = "ds-section";
-    section.innerHTML = `<div class="ds-section-title">Search Elsewhere</div>`;
+    function isReady(listing) {
+      const t = listing.title?.toLowerCase().trim() || "";
+      return listing.price > 0 && t.length > 2 && !TITLE_NOISE.has(t);
+    }
 
-    const links = [
-      { label: "&#x1F6D2; Amazon",  url: amz  },
-      { label: "&#x1F4E6; OfferUp", url: ofrp },
-      { label: "&#x1F50D; Google",  url: goog },
-      { label: "&#x1F4CC; CL",      url: cl   },
-    ];
+    function hasDescription(listing) {
+      return (listing.description || "").trim().length > 5;
+    }
 
-    const row = document.createElement("div");
-    row.className = "ds-search-links";
+    // Fast path — listing may already be fully rendered (e.g. hard refresh)
+    let listing = extractListing();
+    if (isReady(listing) && hasDescription(listing)) {
+      console.log(LOG_PRE, "Listing ready immediately (fast path)");
+      return listing;
+    }
 
-    links.forEach(({ label, url }) => {
-      const btn = document.createElement("a");
-      btn.className = "ds-link-btn";
-      btn.href      = url;
-      btn.target    = "_blank";
-      btn.rel       = "noopener";
-      btn.innerHTML = label;
-      row.appendChild(btn);
+    return new Promise((resolve) => {
+      let priceTitleReadyAt = null;
+      let descGraceTimer    = null;
+      let hardTimer         = null;
+      let observer          = null;
+
+      function done(result) {
+        observer?.disconnect();
+        clearTimeout(descGraceTimer);
+        clearTimeout(hardTimer);
+        resolve(result);
+      }
+
+      function check() {
+        listing = extractListing();
+
+        if (isReady(listing)) {
+          if (hasDescription(listing)) {
+            console.log(LOG_PRE, `Listing fully ready (desc: ${listing.description.length} chars)`);
+            done(listing);
+            return;
+          }
+
+          // Price+title ready but no description yet — start grace timer
+          if (!priceTitleReadyAt) {
+            priceTitleReadyAt = Date.now();
+            console.log(LOG_PRE, "Price+title ready, waiting for description...");
+            descGraceTimer = setTimeout(() => {
+              // Description never appeared — listing may genuinely have none
+              const fresh = extractListing();
+              console.log(LOG_PRE, `Description grace period expired. desc="${fresh.description?.slice(0, 50)}"`);
+              done(fresh.price > 0 ? fresh : null);
+            }, DESC_GRACE);
+          }
+        }
+      }
+
+      // Observe the entire listing content area for any DOM mutations.
+      // WHY subtree+childList+characterData: description text arrives as
+      // new text nodes OR as attribute changes on existing spans depending
+      // on FBM's React version — we need all three to catch every case.
+      const target = document.querySelector('[role="main"]') || document.body;
+      observer = new MutationObserver(check);
+      observer.observe(target, { subtree: true, childList: true, characterData: true });
+
+      // Hard timeout — safety net if FBM changes its structure
+      hardTimer = setTimeout(() => {
+        console.warn(LOG_PRE, "Hard timeout reached in waitForListingReady");
+        const fresh = extractListing();
+        done(isReady(fresh) ? fresh : null);
+      }, HARD_TIMEOUT);
+
+      // Run once immediately in case DOM changed between setup and observe()
+      check();
     });
-
-    section.appendChild(row);
-
-    const note = document.createElement("div");
-    note.style.cssText = "font-size:9px;opacity:0.3;margin-top:6px";
-    note.textContent = "eBay links via Partner Network";
-    section.appendChild(note);
-
-    container.appendChild(section);
   }
 
 
-  // Pro teaser shown when Pro is OFF
-  function renderProTeaser(panel) {
-    const teaser = document.createElement("div");
-    teaser.className = "ds-pro-teaser";
-    teaser.innerHTML = `
-      <div style="font-size:20px;margin-bottom:6px">&#x1F512;</div>
-      <div style="font-weight:700;margin-bottom:4px">Upgrade to Pro</div>
-      <div style="font-size:11px;opacity:0.7">
-        Enable full market comparison, photo analysis &amp; product suggestions
-      </div>
-      <div style="margin-top:8px;font-size:11px;opacity:0.5">
-        Toggle Pro in the extension popup
-      </div>`;
-    panel.appendChild(teaser);
+  /**
+   * Pre-flight listing error detector — runs client-side before API call.
+   *
+   * WHY CLIENT-SIDE (not Claude):
+   *   These are pattern-based checks that don't need AI reasoning. Running
+   *   them here gives instant feedback (0ms latency) and saves API cost.
+   *   Nuanced errors (description contradicts photos, price justification)
+   *   are left to Claude via the score prompt.
+   *
+   * Returns array of warning objects: { code, severity, message }
+   *   severity: "error" | "warning" | "info"
+   */
+  function detectListingErrors(listing) {
+    const warnings = [];
+    const title  = (listing.title  || "").toLowerCase();
+    const desc   = (listing.description || "").toLowerCase();
+    const price  = listing.price || 0;
+    const combined = title + " " + desc;
+
+    // ── Price sanity checks ────────────────────────────────────────────────
+
+    // $1 listings are almost always a badge extraction error or bait price
+    // WHY NOT IN BACKEND: we can catch this before wasting an API call
+    if (price === 1) {
+      warnings.push({
+        code: "PRICE_LIKELY_ERROR",
+        severity: "warning",
+        message: "Price shows $1 — may be a page-read error. Verify before scoring.",
+      });
+    }
+
+    // Price ends in .00 and is suspiciously round for used goods — could be
+    // a placeholder. Not an error, just flag for context.
+    // Only flag if it's also a very low price for a non-trivial item.
+    if (price > 0 && price < 5 && !detectMultiItem(listing.title, listing.description)) {
+      warnings.push({
+        code: "PRICE_VERY_LOW",
+        severity: "info",
+        message: `Price is $${price} — confirm this isn't per-item pricing for a bundle.`,
+      });
+    }
+
+    // ── ISO / Wanted posts ─────────────────────────────────────────────────
+
+    // FBM has "Wanted" listings mixed in with "For Sale". DS should not score them.
+    // WHY REGEX: FBM doesn't expose listing type in the DOM reliably.
+    const ISO_RE = /(iso|in search of|looking for|wtb|want to buy|wanted[:\s])/i;
+    if (ISO_RE.test(combined)) {
+      warnings.push({
+        code: "POSSIBLY_ISO",
+        severity: "error",
+        message: "This may be a 'Wanted' post, not a sale. Deal scoring won't be accurate.",
+      });
+    }
+
+    // ── Per-item vs. bundle price ambiguity ───────────────────────────────
+
+    // "each" or "per item" in description when it's also a bundle listing
+    // is a very common source of buyer confusion and bad AI scores
+    const PER_ITEM_RE = /(\$\d+\s*(each|ea|per\s+(item|piece|pair|unit))|each.*\$\d+)/i;
+    if (PER_ITEM_RE.test(desc) && detectMultiItem(listing.title, listing.description)) {
+      warnings.push({
+        code: "PRICE_AMBIGUITY",
+        severity: "warning",
+        message: "Description mentions per-item pricing — listed price may be for one item only.",
+      });
+    }
+
+    // ── Pickup vs. shipping conflict ──────────────────────────────────────
+
+    // Seller says "local pickup only" but FBM shows a shipping cost.
+    // This often means the shipping cost was read from a different listing.
+    const PICKUP_ONLY_RE = /(local\s+pick\s*up\s+only|no\s+shipping|cash\s+only)/i;
+    if (PICKUP_ONLY_RE.test(desc) && listing.shipping_cost > 0) {
+      warnings.push({
+        code: "SHIPPING_CONFLICT",
+        severity: "info",
+        message: "Seller says pickup only but a shipping cost was detected — verify delivery option.",
+      });
+    }
+
+    // ── Clearly broken description ────────────────────────────────────────
+
+    // Description is just the title repeated, or a single word, or nav noise
+    const descTrimmed = (listing.description || "").trim();
+    if (descTrimmed.length > 0 && descTrimmed.length < 15 && !listing.is_vehicle) {
+      warnings.push({
+        code: "SPARSE_DESCRIPTION",
+        severity: "info",
+        message: "Description is very short — score may have less context than usual.",
+      });
+    }
+
+    return warnings;
   }
 
+
+  /**
+   * Render pre-flight warnings in the sidebar immediately (before score loads).
+   * They stay visible and get merged with the score output.
+   *
+   * WHY SEPARATE FROM SCORE RENDER:
+   *   Pre-flight fires before the API call. Score render fires after (~2-4s).
+   *   Showing warnings immediately feels snappy. We don't want to wait.
+   */
+  function showPreflightWarnings(warnings) {
+    const container = document.getElementById("ds-preflight-warnings");
+    if (!container) return;
+
+    const errorWarnings   = warnings.filter(w => w.severity === "error");
+    const normalWarnings  = warnings.filter(w => w.severity === "warning");
+    const infoWarnings    = warnings.filter(w => w.severity === "info");
+
+    const rows = [
+      ...errorWarnings.map(w =>
+        `<li style="color:#f87171">&#x26D4; ${escHtml(w.message)}</li>`),
+      ...normalWarnings.map(w =>
+        `<li style="color:#fbbf24">&#x26A0;&#xFE0F; ${escHtml(w.message)}</li>`),
+      ...infoWarnings.map(w =>
+        `<li style="color:#94a3b8">&#x2139;&#xFE0F; ${escHtml(w.message)}</li>`),
+    ].join("\n");
+
+    container.innerHTML = `<ul class="ds-flags" style="margin-bottom:8px">${rows}</ul>`;
+    container.style.display = "block";
+  }
 
   // ═══════════════════════════════════════════════════════════════════════════
   //  SECTION 6 — SCORING PIPELINE
@@ -1294,22 +1851,38 @@
       ensureSidebarDOM();
       showLoading();
 
-      const listing = extractListing();
+      // Wait for listing DOM to fully hydrate using MutationObserver.
+      // WHY MUTATIONOBSERVER OVER RETRY LOOP:
+      //   The old retry loop (8×800ms) had two failure modes:
+      //     1. Fires too early — description still empty, Claude gets no context
+      //     2. Fires too late — wastes up to 6.4s on fast connections
+      //   MutationObserver fires the instant React renders each field,
+      //   so we get the description as soon as it's available, not 800ms after.
+      //   Hard timeout (6s) prevents hanging if FBM changes its DOM structure.
+      let listing = await waitForListingReady();
+
+      if (!listing) {
+        console.warn(LOG_PRE, "Listing DOM not ready after timeout — aborting score");
+        showError("Could not read listing — try refreshing the page");
+        return;
+      }
+
+      // Pre-flight: catch obvious listing errors before the API call.
+      // WHY CLIENT-SIDE: instant feedback, no latency, no API cost.
+      // Errors that need AI reasoning go to the backend in the score prompt.
+      const preflightWarnings = detectListingErrors(listing);
+      if (preflightWarnings.length) {
+        console.log(LOG_PRE, "Pre-flight warnings:", preflightWarnings);
+        // Surface warnings in sidebar immediately, then continue scoring.
+        // We don't abort — Claude may have more context from the full listing.
+        showPreflightWarnings(preflightWarnings);
+      }
+
       console.log(LOG_PRE, "Scoring:", listing.title, "@", listing.price, `+shipping:${listing.shipping_cost}`);
 
-      // Record price for history
       await recordPriceHistory(listing.listing_url, listing.price);
 
-      const pro = await isPro();
-
-      // For non-pro users: only send basic fields (no image, no extras)
-      const payload = pro
-        ? listing
-        : { title: listing.title, price: listing.price, raw_price_text: listing.raw_price_text,
-            description: listing.description, condition: listing.condition,
-            location: listing.location, seller_name: listing.seller_name,
-            listing_url: listing.listing_url, is_vehicle: listing.is_vehicle,
-            shipping_cost: listing.shipping_cost, original_price: listing.original_price };
+      const payload = listing;
 
       let r;
       try {
@@ -1320,30 +1893,35 @@
         });
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({}));
-          throw new Error(err.detail || `API error ${resp.status}`);
+          const detail = err.detail;
+          let msg;
+          if (Array.isArray(detail)) {
+            msg = detail.map(e => `${(e.loc || []).slice(-1)[0]}: ${e.msg}`).join('; ');
+          } else {
+            msg = detail || `API error ${resp.status}`;
+          }
+          console.error(LOG_PRE, `API ${resp.status} — full detail:`, JSON.stringify(err));
+          throw new Error(msg);
         }
         r = await resp.json();
       } catch (fetchErr) {
-        showError(fetchErr.message);
+        const isNetworkErr = fetchErr instanceof TypeError;
+        showError(
+          isNetworkErr
+            ? `API not reachable — is it running?\n\nStart it:\n  uvicorn api.main:app --reload --port 8000`
+            : fetchErr.message
+        );
         return;
       }
 
-      // Save score for search overlay
       await saveScore(listing.listing_url, r.score, r.should_buy);
 
-      // Update badge
       try {
         const color = r.score >= 7 ? "#22c55e" : r.score >= 5 ? "#fbbf24" : "#ef4444";
         chrome.runtime.sendMessage({ type: "SET_BADGE", score: r.score, color });
       } catch { /* ok */ }
 
-      if (!pro) {
-        // Show basic info only for free users
-        renderScore(r, listing);
-        renderProTeaser(panel);
-      } else {
-        renderScore(r, listing);
-      }
+      renderScore(r, listing);
 
     } finally {
       currentlyScoring = false;
@@ -1355,7 +1933,6 @@
   //  SECTION 7 — INIT & MESSAGE LISTENER
   // ═══════════════════════════════════════════════════════════════════════════
 
-  // Listen for rescore requests from popup or background
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg.type === "RESCORE") {
       currentlyScoring = false;
@@ -1364,15 +1941,16 @@
     }
   });
 
-  // Expose rescore for the double-injection guard at the top
   window.__dealScoutRescore = () => {
     currentlyScoring = false;
     scoreListing();
   };
 
-  // Auto-score on listing pages
+  window.__dealScoutReoverlay = () => {
+    injectSearchOverlay();
+  };
+
   if (isListingPage()) {
-    // Small delay — FBM needs a moment to finish hydrating the listing DOM
     setTimeout(scoreListing, 1200);
   } else {
     injectSearchOverlay();

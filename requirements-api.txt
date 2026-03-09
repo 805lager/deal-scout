@@ -1,0 +1,9 @@
+# API-only requirements for cloud deployment (Railway/Render)
+# Playwright is intentionally excluded — it's 200MB+ and only needed
+# for the local POC scraper, not the FastAPI backend
+fastapi>=0.111.0
+uvicorn>=0.30.0
+anthropic>=0.28.0
+python-dotenv>=1.0.0
+httpx>=0.27.0
+pydantic>=2.7.0
