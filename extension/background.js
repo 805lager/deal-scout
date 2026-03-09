@@ -17,9 +17,18 @@
  */
 
 // ── Config ────────────────────────────────────────────────────────────────────
-// In production this points to your hosted API.
-// During dev it points to your local FastAPI server.
-const API_BASE = "http://localhost:8000";
+// WHY ASYNC: background.js can't read chrome.storage.local synchronously.
+// Every caller that needs API_BASE must await getApiBase().
+const API_BASE_DEFAULT = "https://deal-scout-production.up.railway.app";
+
+async function getApiBase() {
+  try {
+    const stored = await chrome.storage.local.get("ds_api_base");
+    return stored.ds_api_base || API_BASE_DEFAULT;
+  } catch {
+    return API_BASE_DEFAULT;
+  }
+}
 
 // Affiliate IDs — these live in the background script, never exposed to the page
 // WHY HERE: If these were in the content script, savvy users could extract them.
@@ -127,6 +136,7 @@ async function callScoringAPI(listing) {
    * This is the same endpoint the React UI uses — extension
    * and web UI share the same backend.
    */
+  const API_BASE = await getApiBase();
   const response = await fetch(`${API_BASE}/score`, {
     method:  "POST",
     headers: { "Content-Type": "application/json" },
@@ -310,6 +320,7 @@ async function _flushAnalytics() {
   try {
     // Send each event — /event accepts one at a time (simple server)
     // For production: add a /events bulk endpoint
+    const API_BASE = await getApiBase();
     for (const evt of batch) {
       await fetch(`${API_BASE}/event`, {
         method:  "POST",

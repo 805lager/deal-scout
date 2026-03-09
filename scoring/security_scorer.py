@@ -314,6 +314,7 @@ async def run_layer2(
     category: str,
     layer1_flags: list,
     client: anthropic.Anthropic,
+    effective_title: str = "",  # normalized title from product_extractor — fixes NameError
 ) -> dict:
     """
     Claude Haiku security analysis. Returns parsed JSON dict or raises.
@@ -328,8 +329,10 @@ async def run_layer2(
     seller_trust_dict = (getattr(listing, "seller_trust", None) or {})
     seller_joined = seller_trust_dict.get("member_since", "unknown") or "unknown"
 
+    # Use effective_title if passed, fall back to raw listing title
+    title_for_prompt = (effective_title or listing.title or "")[:100]
     prompt = SECURITY_PROMPT.format(
-        title         = effective_title[:100],  # normalized title, not raw seller text
+        title         = title_for_prompt,  # normalized title, not raw seller text
         price         = listing.price,
         description   = (listing.description or "")[:600],
         condition     = listing.condition or "unknown",
@@ -417,7 +420,7 @@ async def score_security(
     if anthropic_client is not None:
         try:
             ai_result = await asyncio.wait_for(
-                run_layer2(listing, category, l1_flags, anthropic_client),
+                run_layer2(listing, category, l1_flags, anthropic_client, effective_title),
                 timeout=8.0,
             )
             log.info(f"[Security] Layer 2: score={ai_result.get('score')} risk={ai_result.get('risk_level')}")
@@ -429,6 +432,7 @@ async def score_security(
             log.warning(f"[Security] Layer 2 failed: {type(e).__name__}: {e}")
     else:
         log.info("[Security] Skipping Layer 2 (no API client)")
+
 
     # Merge scores: average Layer 1 and Layer 2, weighted toward AI when available
     ai_score = ai_result.get("score")

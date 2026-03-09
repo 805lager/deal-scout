@@ -30,11 +30,12 @@ import os
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from typing import Optional
+from collections import defaultdict
 
 load_dotenv()
 
@@ -81,6 +82,28 @@ app = FastAPI(
     description="AI-powered deal scoring for second-hand marketplace listings",
     version="0.1.0-poc",
 )
+
+# ── Rate Limiting ─────────────────────────────────────────────────────────────
+# Simple in-memory IP rate limiter — no Redis needed for POC.
+# Protects Claude API credits from abuse if someone discovers the Railway URL.
+# Limits: 30 scores/hour per IP (generous for a real user, blocks scrapers).
+_rate_limit_store: dict = defaultdict(list)
+RATE_LIMIT_REQUESTS = 30
+RATE_LIMIT_WINDOW   = 3600  # seconds (1 hour)
+
+def _check_rate_limit(client_ip: str):
+    now = _time.time()
+    window_start = now - RATE_LIMIT_WINDOW
+    # Prune timestamps outside window
+    _rate_limit_store[client_ip] = [
+        t for t in _rate_limit_store[client_ip] if t > window_start
+    ]
+    if len(_rate_limit_store[client_ip]) >= RATE_LIMIT_REQUESTS:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit: {RATE_LIMIT_REQUESTS} scores per hour. Try again later."
+        )
+    _rate_limit_store[client_ip].append(now)
 
 # CORS — configurable via CORS_ORIGINS env var
 #
@@ -213,7 +236,7 @@ async def root():
 
 
 @app.post("/score", response_model=DealScoreResponse)
-async def score_listing(listing: ListingRequest):
+async def score_listing(listing: ListingRequest, request: Request):
     """
     Main endpoint — runs the full 5-step product intelligence pipeline.
 
@@ -223,6 +246,10 @@ async def score_listing(listing: ListingRequest):
     Step 4: Suggestion engine — affiliate buy cards (same_cheaper / better_model / amazon)
     Step 5: Serialize and return
     """
+    # Rate limit by IP — protects Claude API credits from abuse
+    client_ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown").split(",")[0].strip()
+    _check_rate_limit(client_ip)
+
     log.info(f"Scoring request: '{listing.title}' @ ${listing.price}")
 
     # ── Step 1: Extract product identity ────────────────────────────────────────
