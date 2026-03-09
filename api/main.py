@@ -749,9 +749,9 @@ def _save_report_local(entry: dict):
         os.makedirs(os.path.dirname(REPORTS_FILE), exist_ok=True)
         with open(REPORTS_FILE, "a", encoding="utf-8") as f:
             f.write(_json.dumps(entry) + "\n")
-        logger.info(f"[Report] Saved locally: {entry['report'][:60]}")
+        log.info(f"[Report] Saved locally: {entry['report'][:60]}")
     except Exception as e:
-        logger.error(f"[Report] Local save failed: {e}")
+        log.error(f"[Report] Local save failed: {e}")
 
 
 if __name__ == "__main__":

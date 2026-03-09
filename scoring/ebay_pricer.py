@@ -1,12 +1,30 @@
 """
-eBay Price Comparison Module
+Market Value Module — Google Shopping PRIMARY, eBay FALLBACK
 
-WHY EBAY SPECIFICALLY:
-  eBay is the best single source for used item market valuation because:
-  1. Sold listings = what people ACTUALLY paid (not just asking price)
-  2. Active listings = current competition / market asking price
-  3. Both new and used items exist on eBay — gives us a full price spectrum
-  4. Free API with generous rate limits for POC
+PRICING PRIORITY (v0.5.0):
+  1. Google Shopping (PRIMARY)
+     - No API key required — Playwright scrapes real retail + used prices
+     - Broad coverage across retailers, not just eBay sellers
+     - Fast with persistent browser (~0.3s after warm-up)
+     - Caveat: skews toward NEW retail prices, no completed/sold data
+     - Claude is told the source and adjusts confidence accordingly
+
+  2. eBay Finding API (FALLBACK — when Google returns < 3 prices)
+     - Best source for SOLD/completed listings (what people actually paid)
+     - Rate limit: 5,000 calls/day on free tier
+     - Requires EBAY_APP_ID in .env
+     - Falls back to mock data if rate limited (error 10001)
+
+  3. eBay Mock Data (LAST RESORT)
+     - Keyword-derived price range estimates
+     - Confidence is always "low" — Claude will flag this explicitly
+     - Better than returning 0 and crashing the scoring pipeline
+
+WHY GOOGLE FIRST:
+  During POC, eBay rate-limits after ~50 calls/day in practice.
+  Google Shopping is available on every score with no quota.
+  eBay stays available as the high-quality fallback when we need
+  sold/completed data (better signal for unusual or niche items).
 
 THREE DATA POINTS WE PULL:
   1. sold_avg    — average price of recently COMPLETED sales (ground truth)
@@ -19,10 +37,6 @@ HOW TO GET YOUR EBAY APP ID:
   3. My Account -> Application Access Keys
   4. Create new app -> select Production
   5. Copy the App ID (Client ID) into .env as EBAY_APP_ID
-
-API USED: eBay Finding API (v1.13)
-  Simple REST-style JSON API. No OAuth needed for search queries.
-  Rate limit: 5,000 calls/day on free tier — more than enough for POC.
 
 RUN STANDALONE:
   python scoring/ebay_pricer.py
@@ -55,8 +69,8 @@ EBAY_FINDING_API = "https://svcs.ebay.com/services/search/FindingService/v1"
 DATA_DIR         = Path(__file__).parent.parent / "data"
 
 # In-memory cache: (query, operation) -> (timestamp, results)
-# WHY: eBay Finding API has a per-minute burst limit. Repeated scoring of
-# the same item during a session would burn through it. Cache for 10 min.
+# WHY: prevents hammering either Google or eBay on repeated scoring of the
+# same item during a session. 10 min TTL keeps prices fresh enough.
 import time as _time
 _ebay_cache: dict = {}
 EBAY_CACHE_TTL_SECONDS = 600  # 10 minutes
@@ -92,10 +106,10 @@ class EbayListingItem:
 class MarketValue:
     """
     Full market value estimate for an item.
-    This object gets passed directly to Claude for deal scoring in Week 3.
+    This object gets passed directly to Claude for deal scoring.
     Every field here becomes context the AI uses to justify its score.
     """
-    query_used:      str    # What we searched on eBay
+    query_used:      str    # What we searched
     sold_avg:        float  # Average of recent completed sales (ground truth)
     sold_low:        float  # Lowest recent sold price
     sold_high:       float  # Highest recent sold price
@@ -107,25 +121,24 @@ class MarketValue:
     estimated_value: float  # Our best single-number estimate (weighted avg)
     confidence:      str    # "high" / "medium" / "low" based on data quality
     # Top matching eBay listings — shown as "Like Products" cards in the sidebar
-    # WHY HERE: Passing real listings lets users click through to buy/compare,
-    # generating affiliate revenue. The sidebar becomes a shopping tool, not
-    # just a score display.
-    sold_items_sample:   list = None  # top 3 recent sold listings
-    active_items_sample: list = None  # top 3 currently active listings
-    # Which pricing source produced this data — shown in sidebar for transparency
-    # and used by Claude to calibrate confidence in its analysis.
-    data_source: str = "ebay"  # "ebay" | "ebay_mock" | "google_shopping" | "google+ebay_mock"
+    # Clicking through to buy generates affiliate revenue
+    sold_items_sample:   list = None  # top 4 recent sold listings
+    active_items_sample: list = None  # top 4 currently active listings
+    # Which pricing source produced this data — surfaced in sidebar and used
+    # by Claude to calibrate how much to trust the market comps.
+    data_source: str = "google_shopping"  # "google_shopping" | "ebay" | "google+ebay" | "ebay_mock"
 
 
 # ── Search Query Builder ──────────────────────────────────────────────────────
 
 def build_search_query(title: str) -> str:
     """
-    Strip noise from a FBM listing title to build a clean eBay search query.
+    Strip noise from a FBM listing title to build a clean search query.
 
     WHY THIS MATTERS:
     FBM titles contain fluff ("Awesome!!", location names, emoji) that confuses
-    eBay's keyword search. Cleaning the query dramatically improves result quality.
+    both Google Shopping and eBay search. Cleaning the query dramatically
+    improves result quality.
 
     Example:
       "AMAZING Orion SkyQuest XT8 telescope Poway CA must sell OBO"
@@ -137,21 +150,48 @@ def build_search_query(title: str) -> str:
         "cheap", "deal", "steal", "price", "reduced", "moving", "sale",
         "used", "new", "like", "condition", "works", "working", "tested",
         "please", "offer", "asking", "willing", "posting",
+        # Bundle/lot qualifiers: confuse eBay into returning multi-item bundle
+        # pricing instead of per-item pricing. "boys pants bundle lot" pulls
+        # adult Wrangler lots at $148 avg instead of kids shorts at $8-12 each.
+        # Strip these so we get clean per-item comps for market comparison.
+        "bundle", "lot", "lots", "pack", "pcs", "pieces", "set", "sets",
+        "items", "listing", "collection",
     }
 
-    # Strip special characters
     cleaned = re.sub(r"[^\w\s]", " ", title)
-
-    # Remove noise words
-    words = [w for w in cleaned.split() if w.lower() not in noise_words]
-
-    # Cap at 8 keywords — eBay search degrades with too many terms
-    query = " ".join(words[:8])
+    words   = [w for w in cleaned.split() if w.lower() not in noise_words]
+    query   = " ".join(words[:8])  # Cap at 8 — more hurts search quality
     log.debug(f"Query: '{title}' -> '{query}'")
     return query
 
 
-# ── eBay API ──────────────────────────────────────────────────────────────────
+# ── Google Shopping (PRIMARY) ─────────────────────────────────────────────────
+
+async def _try_google_shopping(query: str, listing_price: float = 0.0) -> Optional[dict]:
+    """
+    Attempt Google Shopping price scrape.
+    Returns a stats dict on success, None if insufficient data.
+
+    WHY THIS IS THE PRIMARY SOURCE:
+      No API quota to burn. Works on every score without rate-limit anxiety.
+      At POC scale (one listing at a time), Google won't trigger bot detection.
+    """
+    try:
+        from scoring.google_pricer import get_google_shopping_prices, prices_to_market_stats
+        google_prices = await get_google_shopping_prices(query, max_results=12, min_price=listing_price)
+        stats = prices_to_market_stats(google_prices)
+        if stats and stats["count"] >= 3:
+            log.info(f"[Google PRIMARY] '{query}' → avg=${stats['avg']:.0f} ({stats['count']} prices)")
+            return stats
+        else:
+            log.info(f"[Google PRIMARY] Too few results for '{query}' ({stats['count'] if stats else 0}) — trying eBay")
+            return None
+    except Exception as e:
+        log.warning(f"[Google PRIMARY] Failed for '{query}': {e} — falling back to eBay")
+        return None
+
+
+# ── eBay API (FALLBACK) ───────────────────────────────────────────────────────
 
 async def search_ebay(
     query: str,
@@ -160,7 +200,7 @@ async def search_ebay(
     condition_filter: Optional[list] = None,
 ) -> list[dict]:
     """
-    Core eBay Finding API call.
+    eBay Finding API call — used as fallback when Google Shopping has < 3 results.
 
     operation options:
       findCompletedItems — sold/ended listings (best for valuation)
@@ -170,7 +210,6 @@ async def search_ebay(
         log.warning("No eBay API key — using mock data. Get your key at developer.ebay.com")
         return _mock_ebay_response(query, operation)
 
-    # Cache check — avoid burning eBay rate limit on repeat queries
     cache_key = (query.lower().strip(), operation)
     cached = _ebay_cache.get(cache_key)
     if cached and (_time.time() - cached[0]) < EBAY_CACHE_TTL_SECONDS:
@@ -188,12 +227,10 @@ async def search_ebay(
         "sortOrder":              "BestMatch",
     }
 
-    # Sold items filter — only applies to findCompletedItems
     if operation == "findCompletedItems":
         params["itemFilter(0).name"]  = "SoldItemsOnly"
         params["itemFilter(0).value"] = "true"
 
-    # Optional condition filter — e.g. New only for retail price lookup
     if condition_filter:
         offset = 1 if operation == "findCompletedItems" else 0
         for i, cond_id in enumerate(condition_filter):
@@ -210,31 +247,26 @@ async def search_ebay(
         ack = result.get("ack", [""])[0]
 
         if ack != "Success":
-            # Check specifically for rate limit error
-            errors = result.get("errorMessage", [{}])[0].get("error", [])
+            errors   = result.get("errorMessage", [{}])[0].get("error", [])
             error_ids = [e.get("errorId", ["0"])[0] for e in errors]
             if "10001" in error_ids:
-                log.warning(f"eBay rate limited — falling back to mock data for '{query}'")
+                log.warning(f"eBay rate limited — falling back to mock for '{query}'")
                 result = _mock_ebay_response(query, operation)
                 for item in result:
                     item["_is_mock"] = True
                 return result
-            log.warning(f"eBay API non-success ack={ack}: {result.get('errorMessage', 'unknown')}")
+            log.warning(f"eBay API non-success ack={ack}")
             return []
 
         items = result.get("searchResult", [{}])[0].get("item", [])
-        log.info(f"eBay {operation}: found {len(items)} results for '{query}'")
-
-        # Cache the successful result
+        log.info(f"[eBay FALLBACK] {operation}: {len(items)} results for '{query}'")
         _ebay_cache[cache_key] = (_time.time(), items)
-        return items  # no _is_mock tag — real data
+        return items
 
     except httpx.HTTPStatusError as e:
-        log.error(f"eBay HTTP error {e.response.status_code}: {e.response.text[:200]}")
+        log.error(f"eBay HTTP error {e.response.status_code}")
         if e.response.status_code >= 500:
-            log.warning("eBay 5xx — falling back to mock data")
             result = _mock_ebay_response(query, operation)
-            # Tag results so get_market_value knows to try Google fallback
             for item in result:
                 item["_is_mock"] = True
             return result
@@ -245,24 +277,18 @@ async def search_ebay(
 
 
 def parse_ebay_items(items: list[dict], sold: bool) -> list[PricePoint]:
-    """
-    Parse raw eBay API response items into PricePoint objects.
-    Filters out sub-$5 items — those are parts/junk, not real comps.
-    """
+    """Parse raw eBay API response items into PricePoint objects."""
     points = []
     for item in items:
         try:
-            selling = item.get("sellingStatus", [{}])[0]
+            selling   = item.get("sellingStatus", [{}])[0]
             price_str = (
                 selling.get("convertedCurrentPrice", [{}])[0].get("__value__")
-                or selling.get("currentPrice",        [{}])[0].get("__value__", "0")
+                or selling.get("currentPrice", [{}])[0].get("__value__", "0")
             )
             price = float(price_str)
-
-            # WHY $5 floor: auction starting bids skew averages badly
             if price < 5:
                 continue
-
             points.append(PricePoint(
                 title     = item.get("title",  ["Unknown"])[0],
                 price     = price,
@@ -275,7 +301,7 @@ def parse_ebay_items(items: list[dict], sold: bool) -> list[PricePoint]:
     return points
 
 
-# ── Affiliate URL Builder ────────────────────────────────────────────────────
+# ── Affiliate URL Builder ─────────────────────────────────────────────────────
 
 EBAY_AFFILIATE_PARAMS = (
     "mkevt=1"
@@ -289,9 +315,8 @@ EBAY_AFFILIATE_PARAMS = (
 def build_item_affiliate_url(item_url: str, campaign_id: str) -> str:
     """
     Append eBay Partner Network params to a direct item URL.
-    WHY PER-ITEM: Linking directly to the matching product (not a search page)
-    has a much higher conversion rate. User sees the exact item, clicks,
-    buys — we earn. Generic search page links have ~10x lower conversion.
+    WHY PER-ITEM (not search page): direct item links convert ~10x better.
+    User sees the exact product → clicks → buys → we earn commission.
     """
     if not item_url:
         return ""
@@ -299,21 +324,117 @@ def build_item_affiliate_url(item_url: str, campaign_id: str) -> str:
     return item_url + sep + EBAY_AFFILIATE_PARAMS.format(campaign_id=campaign_id or "0")
 
 
+# ── Relevance Filtering ───────────────────────────────────────────────────────
+
+def _title_relevance_score(ebay_title: str, search_query: str) -> float:
+    """
+    Token-overlap similarity between an eBay result title and our search query.
+
+    WHY THIS EXISTS:
+    eBay's BestMatch returns results that match the query keywords individually
+    but may not be the same product. A search for "Ryobi 40V chainsaw 10 inch"
+    can return Ryobi batteries, Ryobi drills, generic chains, etc.
+
+    We score each result by what fraction of the search query's meaningful tokens
+    appear in the eBay title. Tokens under 2 chars and generic stop-words are
+    excluded so "the", "in", "a" don't inflate the score.
+
+    Threshold guidance:
+      >= 0.50  Strong match — same product, possibly different variant
+      >= 0.35  Reasonable match — probably same category/brand
+      <  0.35  Likely mismatch — filter out
+
+    Returns 0.0-1.0.
+    """
+    STOP = {
+        "the", "a", "an", "in", "on", "of", "for", "to", "and", "or",
+        "is", "it", "with", "this", "that", "new", "used", "like",
+        "good", "great", "nice", "set", "lot", "item", "oem", "obo",
+    }
+
+    def tokenize(text: str) -> set:
+        tokens = re.sub(r"[^\w\s]", " ", text.lower()).split()
+        return {t for t in tokens if len(t) > 2 and t not in STOP}
+
+    query_tokens = tokenize(search_query)
+    if not query_tokens:
+        return 1.0  # nothing to filter against — let it through
+
+    title_tokens = tokenize(ebay_title)
+    if not title_tokens:
+        return 0.0
+
+    # Jaccard-style: intersect / query (not union — we care about query coverage)
+    overlap = query_tokens & title_tokens
+    score   = len(overlap) / len(query_tokens)
+
+    # Bonus: if model number tokens (all-digit or alphanumeric) match, boost score
+    # WHY: "40V" or "XT8" appearing in both is a very strong signal of same product
+    model_tokens = {t for t in query_tokens if re.search(r"\d", t)}
+    if model_tokens and model_tokens.issubset(title_tokens):
+        score = min(1.0, score + 0.25)
+
+    return score
+
+
+def _filter_by_relevance(
+    items: list[dict],
+    search_query: str,
+    threshold: float = 0.35,
+    max_items: int = 4,
+) -> list[dict]:
+    """
+    Filter raw eBay API items by title relevance to the search query.
+    Returns up to max_items items that score above threshold.
+
+    WHY FILTER BEFORE PARSING (not after):
+    Scoring is done on raw title strings — cheaper than fully parsing each item.
+    We preserve the raw dict so parse_ebay_items_with_images() can still do
+    all its normal image/url/condition extraction on the filtered set.
+    """
+    scored = []
+    for item in items:
+        title = item.get("title", [""])[0] if isinstance(item.get("title"), list) else ""
+        if not title:
+            continue
+        score = _title_relevance_score(title, search_query)
+        log.debug(f"  relevance {score:.2f}: {title[:60]}")
+        if score >= threshold:
+            scored.append((score, item))
+
+    # Sort by relevance DESC so highest matches surface first
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [item for _, item in scored[:max_items]]
+
+
 def parse_ebay_items_with_images(
     items: list[dict],
     sold: bool,
     campaign_id: str,
     max_items: int = 4,
+    search_query: str = "",  # used for relevance filtering — pass product_info.search_query
 ) -> list[EbayListingItem]:
     """
-    Parse raw eBay API response into EbayListingItem objects with affiliate URLs.
-    Returns up to max_items, sorted by price relevance (sold: newest first, active: lowest first).
+    Parse eBay items into sidebar-ready EbayListingItem objects with affiliate URLs.
+
+    WHY search_query param:
+    Without it we return the first N results eBay gives us, which are often
+    mismatched (same brand, wrong product). With it we filter to only items
+    whose title meaningfully overlaps with what we actually searched for.
+    Falls back to no filtering when search_query is empty.
     """
+    # Apply relevance filter first — removes mismatched items before we parse
+    filtered = _filter_by_relevance(items, search_query, threshold=0.35, max_items=max_items * 2) \
+               if search_query else items
+
+    if search_query and len(filtered) < len(items):
+        log.info(f"[eBay relevance] {len(filtered)}/{len(items)} items passed filter for '{search_query}'")
+
     result = []
-    for item in items:
+    for item in filtered:
         try:
-            selling    = item.get("sellingStatus", [{}])[0]
-            price_str  = (
+            selling   = item.get("sellingStatus", [{}])[0]
+            price_str = (
                 selling.get("convertedCurrentPrice", [{}])[0].get("__value__")
                 or selling.get("currentPrice", [{}])[0].get("__value__", "0")
             )
@@ -322,11 +443,10 @@ def parse_ebay_items_with_images(
                 continue
 
             raw_url   = item.get("viewItemURL", [""])[0]
-            title     = item.get("title",  ["Unknown"])[0]
+            title     = item.get("title", ["Unknown"])[0]
             condition = item.get("condition", [{}])[0].get("conditionDisplayName", ["Used"])[0]
 
-            # eBay Finding API returns gallery images in galleryInfoContainer or galleryURL
-            gallery = item.get("galleryInfoContainer", [{}])[0]
+            gallery   = item.get("galleryInfoContainer", [{}])[0]
             image_url = (
                 gallery.get("hostedImgUrl", [""])[0]
                 or item.get("galleryURL", [""])[0]
@@ -334,133 +454,177 @@ def parse_ebay_items_with_images(
             )
 
             result.append(EbayListingItem(
-                title     = title[:80],  # truncate for display
+                title     = title[:80],
                 price     = round(price, 2),
                 condition = condition,
                 url       = build_item_affiliate_url(raw_url, campaign_id),
                 sold      = sold,
                 image_url = image_url,
             ))
-
             if len(result) >= max_items:
                 break
-
         except (KeyError, IndexError, ValueError) as e:
             log.debug(f"Skipping item in sample parse: {e}")
 
     return result
 
 
-# ── Market Value Calculator ───────────────────────────────────────────────────
+# ── Main Entry Point ──────────────────────────────────────────────────────────
 
-async def get_market_value(listing_title: str, listing_condition: str = "Used") -> MarketValue:
+async def get_market_value(listing_title: str, listing_condition: str = "Used", is_vehicle: bool = False, listing_price: float = 0.0) -> MarketValue:
     """
     Main entry point. Given a listing title, return a full MarketValue estimate.
 
-    Fires three eBay searches concurrently:
-      1. Completed/sold listings  — ground truth
-      2. Active listings          — current market
-      3. Active new-only listings — retail ceiling
-    """
-    query = build_search_query(listing_title)
-    log.info(f"Fetching market value for: '{listing_title}'")
+    FLOW (v0.5.0 — Google first):
+      1. Try Google Shopping → fast, no quota
+      2. If Google < 3 results → try eBay (sold + active + new-only in parallel)
+      3. If eBay rate-limited → eBay mock data
+      4. If both available → use Google for pricing, eBay items for sidebar cards
 
-    # Run all three searches at the same time — no reason to do them sequentially
+    WHY BOTH IN STEP 4:
+      Google gives us better price signal (broader market).
+      eBay gives us clickable affiliate cards for "Like Products" sidebar section.
+      Running eBay in parallel means we get both with no extra latency.
+    """
+    query       = build_search_query(listing_title)
+    campaign_id = os.getenv("EBAY_CAMPAIGN_ID", "")
+    log.info(f"Fetching market value for: '{listing_title}' → query: '{query}'")
+
+    # ── Vehicle pricing — CarGurus/Craigslist instead of eBay ────────────────
+    # WHY: eBay returns parts prices for vehicle searches (spark plugs not cars).
+    # vehicle_pricer.py scrapes CarGurus for real comps by year/make/model/zip,
+    # falls back to Craigslist if CarGurus returns < 3 results, and falls back
+    # to the stub below if scraping fails entirely — never blocks the pipeline.
+    if is_vehicle:
+        try:
+            from scoring.vehicle_pricer import get_vehicle_market_value
+            vdata = await get_vehicle_market_value(
+                listing_title = listing_title,
+                zip_code      = "92101",  # TODO: pass real zip from listing.location
+            )
+            if vdata:
+                return MarketValue(
+                    query_used      = vdata["query_used"],
+                    sold_avg        = vdata["sold_avg"],
+                    sold_low        = vdata["sold_low"],
+                    sold_high       = vdata["sold_high"],
+                    sold_count      = vdata["sold_count"],
+                    active_avg      = vdata["active_avg"],
+                    active_low      = vdata["active_low"],
+                    active_count    = vdata["active_count"],
+                    new_price       = 0.0,
+                    estimated_value = vdata["estimated_value"],
+                    confidence      = vdata["confidence"],
+                    data_source     = vdata["data_source"],  # "cargurus" | "craigslist"
+                )
+        except Exception as e:
+            log.warning(f"[Vehicle] vehicle_pricer failed: {e} — using stub")
+
+        # Stub fallback — pipeline never breaks even if scraping is down
+        log.info("[Vehicle] vehicle_not_applicable stub")
+        return MarketValue(
+            query_used=query,
+            sold_avg=0.0, sold_low=0.0, sold_high=0.0, sold_count=0,
+            active_avg=0.0, active_low=0.0, active_count=0,
+            new_price=0.0, estimated_value=0.0,
+            confidence="none", data_source="vehicle_not_applicable",
+        )
+
+    # ── Step 1: Try Google Shopping first ─────────────────────────────────────
+    google_stats = await _try_google_shopping(query, listing_price=listing_price)
+
+    # ── Step 2: Always fetch eBay in parallel for affiliate sidebar cards ──────
+    # WHY ALWAYS: Even when Google succeeds, we want eBay listing cards for
+    # the "Like Products" sidebar section. Running them in parallel means
+    # zero extra latency — we just may not use the eBay price data itself.
     sold_raw, active_raw, new_raw = await asyncio.gather(
         search_ebay(query, "findCompletedItems", max_results=20),
         search_ebay(query, "findItemsAdvanced",  max_results=20),
         search_ebay(query, "findItemsAdvanced",  max_results=10, condition_filter=["1000"]),
     )
 
-    # Detect whether eBay returned mock data (rate limit fallback)
-    # _is_mock tag is set by search_ebay() when it falls back to _mock_ebay_response()
     ebay_is_mock = any(item.get("_is_mock") for item in sold_raw + active_raw)
-
     sold_items   = parse_ebay_items(sold_raw,   sold=True)
     active_items = parse_ebay_items(active_raw, sold=False)
     new_items    = parse_ebay_items(new_raw,    sold=False)
 
-    # Sold stats
-    sold_prices = [p.price for p in sold_items]
-    sold_avg    = statistics.mean(sold_prices) if sold_prices else 0.0
-    sold_low    = min(sold_prices)             if sold_prices else 0.0
-    sold_high   = max(sold_prices)             if sold_prices else 0.0
+    # ── Step 3: Build market stats from whichever source won ──────────────────
+    if google_stats:
+        # Google Shopping is primary — use its price data
+        # eBay active/sold averages are derived approximations, not direct data
+        sold_avg        = google_stats["avg"]
+        sold_low        = google_stats["low"]
+        sold_high       = google_stats["high"]
+        sold_count      = google_stats["count"]
+        # Estimate "active asking" as ~5% above Google average
+        # WHY: Google Shopping typically shows asking/retail prices, so we
+        # use eBay's active data if available, otherwise approximate.
+        if active_items and not ebay_is_mock:
+            active_prices = [p.price for p in active_items]
+            active_avg    = statistics.mean(active_prices)
+            active_low    = min(active_prices)
+            active_count  = len(active_items)
+        else:
+            active_avg   = round(google_stats["avg"] * 1.05, 2)
+            active_low   = google_stats["low"]
+            active_count = 0
 
-    # Active stats
-    active_prices = [p.price for p in active_items]
-    active_avg    = statistics.mean(active_prices) if active_prices else 0.0
-    active_low    = min(active_prices)             if active_prices else 0.0
+        new_price       = min(p.price for p in new_items) if new_items else 0.0
+        estimated_value = google_stats["avg"]
+        confidence      = "medium" if google_stats["count"] >= 6 else "low"
+        # Google Shopping is primarily retail/new prices — cap confidence
+        # at medium even with many results since we lack sold/completed data
+        data_source     = "google_shopping" if ebay_is_mock else "google+ebay"
 
-    # New retail price
-    new_price = min(p.price for p in new_items) if new_items else 0.0
-
-    # Estimated value — sold data weighted 2x over active asking prices
-    # WHY: Active listings are wishful thinking. Sold = reality.
-    if sold_avg > 0 and active_avg > 0:
-        estimated_value = (sold_avg * 2 + active_avg) / 3
-    elif sold_avg > 0:
-        estimated_value = sold_avg
-    elif active_avg > 0:
-        estimated_value = active_avg * 0.85  # Discount asking prices ~15%
     else:
-        estimated_value = 0.0
+        # eBay fallback — use its data directly
+        sold_prices  = [p.price for p in sold_items]
+        sold_avg     = statistics.mean(sold_prices) if sold_prices else 0.0
+        sold_low     = min(sold_prices)             if sold_prices else 0.0
+        sold_high    = max(sold_prices)             if sold_prices else 0.0
+        sold_count   = len(sold_items)
 
-    # Confidence based on how many sold comps we found
-    if len(sold_items) >= 10 and not ebay_is_mock:
-        confidence = "high"
-    elif len(sold_items) >= 3 and not ebay_is_mock:
-        confidence = "medium"
-    else:
-        confidence = "low"
+        active_prices = [p.price for p in active_items]
+        active_avg    = statistics.mean(active_prices) if active_prices else 0.0
+        active_low    = min(active_prices)             if active_prices else 0.0
+        active_count  = len(active_items)
 
-    # ── Google Shopping fallback ───────────────────────────────────────────────
-    # When eBay is rate-limited, try Google Shopping for real prices.
-    # WHY ONLY ON MOCK: Google Shopping is slower (Playwright) and we don't
-    # want to add 3-5s latency when eBay is working fine.
-    data_source = "ebay"
-    if ebay_is_mock:
-        data_source = "ebay_mock"
-        try:
-            from scoring.google_pricer import get_google_shopping_prices, prices_to_market_stats
-            google_prices = await get_google_shopping_prices(query, max_results=12)
-            stats = prices_to_market_stats(google_prices)
-            if stats and stats["count"] >= 3:
-                log.info(f"Google Shopping override: avg=${stats['avg']:.0f} ({stats['count']} prices)")
-                # Replace mock eBay stats with real Google prices
-                sold_avg        = stats["avg"]
-                sold_low        = stats["low"]
-                sold_high       = stats["high"]
-                estimated_value = stats["avg"]
-                # Use price spread as proxy for active market
-                active_avg = round(stats["avg"] * 1.05, 2)  # asking prices ~5% above sold
-                active_low = stats["low"]
-                confidence  = "medium" if stats["count"] >= 6 else "low"
-                data_source = "google_shopping"
-            else:
-                log.info("Google Shopping returned too few results, keeping mock data")
-                data_source = "google+ebay_mock"
-        except Exception as e:
-            log.warning(f"Google Shopping fallback failed: {e}")
-            data_source = "ebay_mock"
+        new_price = min(p.price for p in new_items) if new_items else 0.0
 
-    campaign_id = os.getenv("EBAY_CAMPAIGN_ID", "")
+        # Sold data weighted 2x — sold = reality, active = wishful thinking
+        if sold_avg > 0 and active_avg > 0:
+            estimated_value = (sold_avg * 2 + active_avg) / 3
+        elif sold_avg > 0:
+            estimated_value = sold_avg
+        elif active_avg > 0:
+            estimated_value = active_avg * 0.85
+        else:
+            estimated_value = 0.0
 
-    # Build item sample lists for the sidebar's "Like Products" section
-    # WHY 4 ITEMS: 3 would fit cleanly but 4 gives scroll depth without
-    # overwhelming a 310px sidebar. Sold items are more credible proof
-    # of value; active items show what the buyer could switch to instead.
-    sold_items_sample   = parse_ebay_items_with_images(sold_raw,   sold=True,  campaign_id=campaign_id, max_items=4)
-    active_items_sample = parse_ebay_items_with_images(active_raw, sold=False, campaign_id=campaign_id, max_items=4)
+        if len(sold_items) >= 10 and not ebay_is_mock:
+            confidence = "high"
+        elif len(sold_items) >= 3 and not ebay_is_mock:
+            confidence = "medium"
+        else:
+            confidence = "low"
+
+        data_source = "ebay_mock" if ebay_is_mock else "ebay"
+
+    # ── Step 4: Build sidebar affiliate cards from eBay items ─────────────────
+    # WHY pass search_query: filters out mismatched results (e.g. "Ryobi battery"
+    # appearing in results for "Ryobi 40V chainsaw") before building sidebar cards.
+    sold_items_sample   = parse_ebay_items_with_images(sold_raw,   sold=True,  campaign_id=campaign_id, max_items=4, search_query=query)
+    active_items_sample = parse_ebay_items_with_images(active_raw, sold=False, campaign_id=campaign_id, max_items=4, search_query=query)
 
     return MarketValue(
         query_used           = query,
         sold_avg             = round(sold_avg,        2),
         sold_low             = round(sold_low,         2),
         sold_high            = round(sold_high,        2),
-        sold_count           = len(sold_items),
+        sold_count           = sold_count,
         active_avg           = round(active_avg,       2),
         active_low           = round(active_low,       2),
-        active_count         = len(active_items),
+        active_count         = active_count,
         new_price            = round(new_price,        2),
         estimated_value      = round(estimated_value,  2),
         confidence           = confidence,
@@ -470,22 +634,23 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used") 
     )
 
 
-# ── Mock Data (no API key needed for testing) ─────────────────────────────────
+# ── Mock Data ─────────────────────────────────────────────────────────────────
 
 def _mock_ebay_response(query: str, operation: str) -> list[dict]:
     """
     Returns plausible mock eBay data scaled to the item's likely price range.
-    Used when: no API key set, rate limited, or eBay returns a 5xx error.
-
-    WHY PRICE ESTIMATION:
-    We derive a rough price range from keywords in the query so mock comps
-    are at least in the right ballpark. Claude's score will still be marked
-    low-confidence, but won't be absurd (bike scored against telescope prices).
+    Used as last resort when both Google and eBay are unavailable.
+    Confidence is always "low" — Claude will note this in its analysis.
     """
     q = query.lower()
 
-    # Rough category price anchors — median used price estimate
-    if any(w in q for w in ["iphone", "samsung galaxy", "pixel"]):
+    # Phone sub-tiers: modern flagships sell for much more than older/budget models
+    # iPhone 15 Pro / 14 Pro / 13 Pro = $600-900 used; base iPhone = $250-400
+    if any(w in q for w in ["iphone 15 pro", "iphone 14 pro", "iphone 13 pro", "iphone 15 plus", "iphone 15 max"]):
+        base = 700
+    elif any(w in q for w in ["iphone 15", "iphone 14", "galaxy s24", "galaxy s23", "pixel 8", "pixel 7"]):
+        base = 500
+    elif any(w in q for w in ["iphone", "samsung galaxy", "pixel"]):
         base = 350
     elif any(w in q for w in ["ipad", "tablet"]):
         base = 300
@@ -494,7 +659,6 @@ def _mock_ebay_response(query: str, operation: str) -> list[dict]:
     elif any(w in q for w in ["ps5", "xbox", "playstation", "nintendo switch"]):
         base = 350
     elif any(w in q for w in ["surron", "sur-ron", "talaria", "super73", "super 73", "light bee", "storm bee", "ultra bee", "x160", "x260"]):
-        # Premium electric powersports — $2k-5k used range
         base = 3000
     elif any(w in q for w in ["electric bike", "electric dirt bike", "electric moto", "ebike", "e-bike"]):
         base = 2000
@@ -509,23 +673,18 @@ def _mock_ebay_response(query: str, operation: str) -> list[dict]:
     elif any(w in q for w in ["sofa", "couch", "desk", "chair", "table", "furniture"]):
         base = 250
     else:
-        base = 150  # Generic fallback
+        base = 150
 
-    # Generate realistic price spread around the base
     import random
-    random.seed(hash(query) % 10000)  # Deterministic per query
+    random.seed(hash(query) % 10000)
     spread = 0.25
     sold_prices   = [int(base * random.uniform(1 - spread, 1 + spread)) for _ in range(10)]
-    active_prices = [int(base * random.uniform(1.0,         1 + spread * 1.5)) for _ in range(10)]
+    active_prices = [int(base * random.uniform(1.0, 1 + spread * 1.5)) for _ in range(10)]
     prices = sold_prices if operation == "findCompletedItems" else active_prices
 
-    # WHY NO THUMBNAIL: eBay's placeholder paths 404 for mock IDs.
-    # The frontend's data-img-card handler will replace broken images with a 📦 emoji.
-    # Using a real eBay static asset as fallback thumb to avoid 404 flash.
     items = []
     for i, price in enumerate(prices):
-        is_new = (operation == "findItemsAdvanced" and i == 0)
-        # Unique mock item ID per (query, index) — gives each card a distinct URL
+        is_new      = (operation == "findItemsAdvanced" and i == 0)
         mock_item_id = abs(hash(f"{query}{i}{operation}")) % 999999999
         items.append({
             "title":         [f"{query[:40]} {'New' if is_new else 'Used'} (estimated comp)"],
@@ -547,12 +706,13 @@ def print_market_report(mv: MarketValue, listing_price: float):
     label = "OVERPRICED" if diff > 0 else "GOOD DEAL"
 
     print("\n" + "="*60)
-    print("  EBAY MARKET VALUE REPORT")
+    print("  MARKET VALUE REPORT")
     print("="*60)
+    print(f"  Source:          {mv.data_source.upper()}")
     print(f"  Search query:    '{mv.query_used}'")
-    print(f"  Confidence:      {mv.confidence.upper()} ({mv.sold_count} sold comps)")
+    print(f"  Confidence:      {mv.confidence.upper()} ({mv.sold_count} comps)")
     print()
-    print(f"  Sold avg:        ${mv.sold_avg:.2f}  (range: ${mv.sold_low:.2f} - ${mv.sold_high:.2f})")
+    print(f"  Price avg:       ${mv.sold_avg:.2f}  (range: ${mv.sold_low:.2f} - ${mv.sold_high:.2f})")
     print(f"  Active ask avg:  ${mv.active_avg:.2f}  (lowest: ${mv.active_low:.2f})")
     if mv.new_price:
         print(f"  New retail:      ${mv.new_price:.2f}")
@@ -565,7 +725,7 @@ def print_market_report(mv: MarketValue, listing_price: float):
 
 
 def save_market_value(mv: MarketValue, listing_title: str) -> Path:
-    """Save market value to /data — consumed by Claude scoring in Week 3."""
+    """Save market value to /data — consumed by Claude scoring."""
     safe  = "".join(c for c in listing_title if c.isalnum() or c in " _-")[:40]
     fpath = DATA_DIR / f"market_value_{safe.strip().replace(' ', '_')}.json"
     fpath.write_text(json.dumps(asdict(mv), indent=2))
@@ -577,15 +737,13 @@ def save_market_value(mv: MarketValue, listing_title: str) -> Path:
 
 async def main():
     """
-    Test the eBay pricer against the most recently scraped listing in /data.
-    Works with or without an eBay API key (uses mock data if no key is set).
+    Test the market pricer against the most recently scraped listing in /data.
     """
     listing_files = list(DATA_DIR.glob("listing_*.json"))
     if not listing_files:
         log.error("No listing files in /data — run the scraper first")
         return
 
-    # Pick the most recently modified listing file
     listing_file = max(listing_files, key=lambda f: f.stat().st_mtime)
     log.info(f"Using listing: {listing_file.name}")
     listing = json.loads(listing_file.read_text())
@@ -603,7 +761,7 @@ async def main():
     print_market_report(mv, listing["price"])
     output = save_market_value(mv, listing["title"])
     print(f"\n  Data saved to: {output}")
-    print(f"  Ready for Week 3 — Claude deal scoring")
+    print(f"  Data source: {mv.data_source}")
 
 
 if __name__ == "__main__":

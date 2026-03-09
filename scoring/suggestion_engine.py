@@ -97,6 +97,7 @@ async def get_suggestions(
     market_value,           # MarketValue dataclass from ebay_pricer
     deal_score,             # DealScore dataclass from deal_scorer
     listing_price: float,
+    shipping_cost: float = 0.0,  # Extracted from listing — adds to true cost
 ) -> list:
     """
     Generate actionable buy suggestions based on deal score and market data.
@@ -108,8 +109,10 @@ async def get_suggestions(
     suggestions = []
 
     try:
-        ebay_task   = _find_ebay_alternatives(product_info, listing_price, market_value)
-        claude_task = _get_claude_recommendation(product_info, deal_score, listing_price)
+        # True cost = listed price + shipping. Suggestions compare against this.
+        true_cost   = listing_price + shipping_cost
+        ebay_task   = _find_ebay_alternatives(product_info, listing_price, true_cost, market_value)
+        claude_task = _get_claude_recommendation(product_info, deal_score, listing_price, true_cost)
         amazon_task = _build_amazon_suggestion(product_info, deal_score)
 
         ebay_suggs, claude_sugg, amazon_sugg = await asyncio.gather(
@@ -145,6 +148,7 @@ async def get_suggestions(
 async def _find_ebay_alternatives(
     product_info,
     listing_price: float,
+    true_cost: float,       # listing_price + shipping_cost
     market_value,
 ) -> list:
     """
@@ -158,15 +162,38 @@ async def _find_ebay_alternatives(
     """
     suggestions = []
 
-    # Check active_items_sample for listings cheaper than current price
+    # ── Relevance helper (local import to avoid circular dep) ────────────────────────
+    # WHY import here not top-level:
+    #   suggestion_engine is imported by main.py which also imports ebay_pricer.
+    #   A module-level import of ebay_pricer from suggestion_engine would create
+    #   a circular dependency at startup. Local import avoids this.
+    from scoring.ebay_pricer import _title_relevance_score
+    search_query = getattr(product_info, "search_query", "") or ""
+
+    # Check active_items_sample for listings cheaper than true_cost (includes shipping).
+    # WHY compare against true_cost not listing_price:
+    #   A $187 eBay listing vs $275 listed price looks like $88 savings.
+    #   But if the listing ships for $46.68, true cost is $321.68 —
+    #   the real saving is $134. Using listing_price understates the deal quality.
+    # WHY relevance check: active_items_sample is already filtered by ebay_pricer,
+    #   but suggestion cards need to be high-confidence matches because they show
+    #   a specific "Save $X vs this listing" claim. We use a stricter threshold (0.50)
+    #   so we only make that claim when we're confident it's the same product.
     if market_value and market_value.active_items_sample:
         for item in market_value.active_items_sample:
-            if item.price < listing_price * 0.92:  # At least 8% cheaper = meaningful savings
-                savings = listing_price - item.price
+            # Skip if title doesn't look like the same product
+            if search_query:
+                relevance = _title_relevance_score(item.title, search_query)
+                if relevance < 0.50:
+                    log.debug(f"[Suggestions] Skipping low-relevance active item ({relevance:.2f}): {item.title[:50]}")
+                    continue
+            if item.price < true_cost * 0.92:  # At least 8% cheaper than total cost
+                savings = true_cost - item.price
+                cost_note = f" (incl. ${true_cost - listing_price:.0f} shipping)" if true_cost > listing_price else ""
                 suggestions.append(Suggestion(
                     suggestion_type = "same_cheaper",
                     title           = item.title[:65],
-                    reason          = f"Save ${savings:.0f} vs this listing",
+                    reason          = f"Save ${savings:.0f} vs this listing's total cost{cost_note}",
                     price_label     = f"${item.price:.0f}",
                     url             = item.url,  # affiliate params already embedded by ebay_pricer
                     platform        = "ebay",
@@ -180,21 +207,28 @@ async def _find_ebay_alternatives(
 
     # If no cheaper active listings, check sold items as "what it should sell for"
     if not suggestions and market_value and market_value.sold_items_sample:
-        sold = market_value.sold_items_sample[0]
-        if sold.price < listing_price * 0.88:
-            diff = listing_price - sold.price
-            suggestions.append(Suggestion(
-                suggestion_type = "same_cheaper",
-                title           = sold.title[:65],
-                reason          = f"Similar recently sold for ${diff:.0f} less — use as leverage",
-                price_label     = f"Sold: ${sold.price:.0f}",
-                url             = sold.url,
-                platform        = "ebay",
-                badge           = "Recent Sale",
-                badge_color     = "#0369a1",
-                image_url       = sold.image_url or "",
-                price           = sold.price,
-            ))
+        for sold in market_value.sold_items_sample[:3]:
+            if search_query:
+                relevance = _title_relevance_score(sold.title, search_query)
+                if relevance < 0.50:
+                    log.debug(f"[Suggestions] Skipping low-relevance sold item ({relevance:.2f}): {sold.title[:50]}")
+                    continue
+            if sold.price < true_cost * 0.88:
+                diff = true_cost - sold.price
+                cost_note = f" (vs ${true_cost:.0f} total with shipping)" if true_cost > listing_price else ""
+                suggestions.append(Suggestion(
+                    suggestion_type = "same_cheaper",
+                    title           = sold.title[:65],
+                    reason          = f"Similar recently sold for ${diff:.0f} less{cost_note} — use as leverage",
+                    price_label     = f"Sold: ${sold.price:.0f}",
+                    url             = sold.url,
+                    platform        = "ebay",
+                    badge           = "Recent Sale",
+                    badge_color     = "#0369a1",
+                    image_url       = sold.image_url or "",
+                    price           = sold.price,
+                ))
+                break  # one sold comp is enough
 
     # Append a Browse eBay search link as the lowest-priority fallback.
     # WHY "browse_ebay" TYPE (not "same_cheaper"):
@@ -234,6 +268,7 @@ async def _get_claude_recommendation(
     product_info,
     deal_score,
     listing_price: float,
+    true_cost: float = 0.0,  # listing + shipping
 ) -> Optional[Suggestion]:
     """
     Ask Claude Haiku to recommend one specific better alternative product.
@@ -262,9 +297,12 @@ async def _get_claude_recommendation(
     if not product_name or len(product_name) < 4:
         return None
 
+    effective_price = true_cost if true_cost > listing_price else listing_price
+    shipping_note   = f" (plus ${true_cost - listing_price:.0f} shipping = ${true_cost:.0f} total)" if true_cost > listing_price else ""
+
     prompt = f"""You are a product recommendation expert.
 
-A buyer is evaluating a used "{product_name}" ({product_info.category}) listed at ${listing_price:.0f}.
+A buyer is evaluating a used "{product_name}" ({product_info.category}) listed at ${listing_price:.0f}{shipping_note}.
 The deal score indicates this is overpriced or a poor value.
 
 Recommend exactly ONE specific alternative product that:

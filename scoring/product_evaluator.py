@@ -339,89 +339,95 @@ async def _single_reddit_search(client: httpx.AsyncClient, query: str) -> list:
 
 async def _fetch_google_rating(product_name: str) -> dict:
     """
-    Extract aggregate star rating from the Google Shopping page.
+    Extract aggregate star rating from Google Shopping via httpx (no Playwright).
 
-    Reuses the persistent Playwright browser from google_pricer.py —
-    the browser is already running, so this is just a new tab open/close.
+    WHY REWRITTEN (v2 — httpx):
+      Original used _ensure_browser from google_pricer.py (Playwright).
+      google_pricer.py was rewritten to httpx, removing _ensure_browser.
+      Importing a non-existent function corrupts the asyncio event loop on
+      Windows and crashes uvicorn after every request (same as B-V5).
 
-    Google aggregates ratings from Amazon, Best Buy, Walmart, etc. into a
-    single star score. This is a broad, retailer-neutral signal that
-    correlates well with actual product quality for consumer goods.
-
-    WHY ARIA-LABELS:
-    Google's class names are obfuscated and change frequently. The aria-label
-    attributes ("Rated 4.5 out of 5 stars") are semantic and stable.
+    STRATEGY:
+      1. JSON-LD aggregateRating (schema.org/Product) — most stable
+      2. HTML text regex fallback ("4.3 out of 5 stars")
     """
-    try:
-        from scoring.google_pricer import _ensure_browser
-        import urllib.parse
+    import json as _json
+    import re as _re
+    import urllib.parse
 
-        browser = await _ensure_browser()
-        context = await browser.new_context(
-            user_agent=(
+    try:
+        encoded = urllib.parse.quote_plus(product_name)
+        url = f"https://www.google.com/search?udm=28&q={encoded}&hl=en&gl=us&num=10"
+        headers = {
+            "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/122.0.0.0 Safari/537.36"
             ),
-            locale="en-US",
-            viewport={"width": 1280, "height": 800},
-        )
-        page = await context.new_page()
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.google.com/",
+        }
+        async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=6.0) as client:
+            resp = await client.get(url)
+            html = resp.text
 
-        try:
-            encoded = urllib.parse.quote_plus(product_name)
-            await page.goto(
-                f"https://www.google.com/search?tbm=shop&q={encoded}&hl=en&gl=us",
-                wait_until="domcontentloaded",
-                timeout=12000,
-            )
-            await page.wait_for_timeout(1000)
+        rating, count = None, 0
 
-            rating_data = await page.evaluate("""
-                () => {
-                    const ratingPatterns = [
-                        /([0-9]\\.?[0-9]?)\\s*out\\s*of\\s*5/i,
-                        /rated\\s*([0-9]\\.?[0-9]?)/i,
-                    ];
+        # Strategy 1: JSON-LD aggregateRating
+        for block in _re.findall(
+            r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+            html, _re.DOTALL | _re.I
+        ):
+            try:
+                r, c = _extract_rating_from_jsonld(_json.loads(block))
+                if r and not rating:
+                    rating, count = r, c
+            except Exception:
+                continue
 
-                    let rating = null;
-                    let count  = 0;
+        # Strategy 2: HTML text patterns
+        if not rating:
+            m = _re.search(r'([0-9](?:\.[0-9])?)\s*(?:out\s*of\s*5|stars?|/5)', html, _re.I)
+            if m:
+                val = float(m.group(1))
+                if 1.0 <= val <= 5.0:
+                    rating = round(val, 1)
+            cm = _re.search(r'([\d,]{3,})\s*(?:reviews?|ratings?)', html, _re.I)
+            if cm:
+                count = int(cm.group(1).replace(",", "")) or 0
 
-                    // aria-labels are the most stable selector on Google Shopping
-                    document.querySelectorAll('[aria-label]').forEach(el => {
-                        const label = el.getAttribute('aria-label') || '';
-                        for (const pat of ratingPatterns) {
-                            const m = label.match(pat);
-                            if (m) {
-                                const r = parseFloat(m[1]);
-                                if (r >= 1 && r <= 5 && !rating) rating = r;
-                            }
-                        }
-                    });
-
-                    // Review count from text like "(1,234 reviews)"
-                    const countMatch = (document.body.innerText || '').match(
-                        /\\(([\\d,]+)\\s*(reviews?|ratings?)\\)/i
-                    );
-                    if (countMatch) {
-                        count = parseInt(countMatch[1].replace(/,/g, ''), 10) || 0;
-                    }
-
-                    return { rating, count };
-                }
-            """)
-
-            return rating_data or {"rating": None, "count": 0}
-
-        finally:
-            await context.close()
+        log.debug(f"[Evaluator] Google rating for '{product_name}': {rating} ({count} reviews)")
+        return {"rating": rating, "count": count}
 
     except Exception as e:
-        log.debug(f"[Evaluator] Google rating scrape failed: {e}")
+        log.debug(f"[Evaluator] Google rating fetch failed: {e}")
         return {"rating": None, "count": 0}
 
 
-# ── Tier & Confidence Logic ───────────────────────────────────────────────────
+def _extract_rating_from_jsonld(data) -> tuple:
+    """Recursively extract (rating, count) from a JSON-LD object."""
+    if isinstance(data, list):
+        for item in data:
+            r, c = _extract_rating_from_jsonld(item)
+            if r: return r, c
+        return None, 0
+    if not isinstance(data, dict):
+        return None, 0
+    if data.get("@type") == "AggregateRating":
+        try:
+            r = float(data.get("ratingValue", 0) or 0)
+            c = int(data.get("reviewCount", 0) or data.get("ratingCount", 0) or 0)
+            if 1.0 <= r <= 5.0:
+                return round(r, 1), c
+        except (ValueError, TypeError):
+            pass
+    for val in data.values():
+        if isinstance(val, (dict, list)):
+            r, c = _extract_rating_from_jsonld(val)
+            if r: return r, c
+    return None, 0
+
 
 def _determine_tier(
     rating: Optional[float],

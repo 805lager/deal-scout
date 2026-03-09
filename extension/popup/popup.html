@@ -8,7 +8,6 @@
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       width: 320px;
-      min-height: 200px;
       font-family: 'Segoe UI', system-ui, sans-serif;
       font-size: 14px;
       color: #111827;
@@ -21,183 +20,134 @@
       justify-content: space-between;
       align-items: center;
     }
+    .header-left { display: flex; align-items: center; gap: 8px; }
+    .header-logo { width: 24px; height: 24px; border-radius: 5px; }
     .header h1 { color: #fff; font-size: 16px; font-weight: 700; }
     .header .version { color: rgba(255,255,255,0.6); font-size: 11px; }
     .body { padding: 16px; }
     .status-card {
-      background: #f8fafc;
-      border-radius: 8px;
-      padding: 12px;
-      margin-bottom: 12px;
-      font-size: 13px;
-      color: #6b7280;
+      background: #f8fafc; border-radius: 8px;
+      padding: 12px; margin-bottom: 12px;
+      font-size: 13px; color: #6b7280;
     }
     .status-card.active { background: #f0fdf4; color: #15803d; }
     .status-card.error  { background: #fef2f2; color: #dc2626; }
-
-    /* Pro toggle card */
-    .pro-card {
-      background: linear-gradient(135deg, #f8f7ff, #fdf4ff);
-      border: 1px solid #e9d5ff;
-      border-radius: 10px;
-      padding: 12px 14px;
-      margin-bottom: 12px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-    .pro-card .pro-label {
-      font-size: 13px;
-      font-weight: 700;
-      color: #7c3aed;
-    }
-    .pro-card .pro-hint {
-      font-size: 11px;
-      color: #9ca3af;
-      margin-top: 2px;
-    }
-    /* Toggle switch */
-    .toggle-wrap {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 12px;
-      color: #6b7280;
-    }
-    .toggle {
-      position: relative;
-      width: 40px;
-      height: 22px;
-    }
-    .toggle input { opacity: 0; width: 0; height: 0; }
-    .toggle-slider {
-      position: absolute;
-      inset: 0;
-      background: #d1d5db;
-      border-radius: 22px;
-      cursor: pointer;
-      transition: background 0.2s;
-    }
-    .toggle-slider::before {
-      content: '';
-      position: absolute;
-      left: 3px;
-      top: 3px;
-      width: 16px;
-      height: 16px;
-      background: #fff;
-      border-radius: 50%;
-      transition: transform 0.2s;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.2);
-    }
-    .toggle input:checked + .toggle-slider { background: #7c3aed; }
-    .toggle input:checked + .toggle-slider::before { transform: translateX(18px); }
-
     .platform-list { margin-bottom: 16px; }
+    .platform-heading {
+      font-weight: 600; font-size: 12px; color: #6b7280;
+      margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.04em;
+    }
     .platform {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 8px 0;
-      border-bottom: 1px solid #f3f4f6;
-      font-size: 13px;
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 8px 0; border-bottom: 1px solid #f3f4f6; font-size: 13px;
     }
-    .platform .dot {
-      width: 8px; height: 8px;
-      border-radius: 50%;
-      background: #22c55e;
-    }
-    .platform .dot.off { background: #d1d5db; }
+    .badge { font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 99px; }
+    .badge-live   { background: #dcfce7; color: #16a34a; }
+    .badge-soon   { background: #f3f4f6; color: #9ca3af; }
+    .badge-anchor { background: #eff6ff; color: #3b82f6; }
     .btn {
-      display: block;
-      width: 100%;
-      padding: 10px;
+      display: block; width: 100%; padding: 10px;
       background: linear-gradient(135deg, #667eea, #764ba2);
-      color: #fff;
-      border: none;
-      border-radius: 8px;
-      font-weight: 600;
-      font-size: 14px;
-      cursor: pointer;
-      text-align: center;
-      text-decoration: none;
-      margin-bottom: 8px;
+      color: #fff; border: none; border-radius: 8px;
+      font-weight: 600; font-size: 14px;
+      cursor: pointer; text-align: center; margin-bottom: 8px;
     }
-    .btn.secondary {
-      background: #f3f4f6;
-      color: #374151;
-    }
+    .btn:hover { opacity: 0.92; }
     .footer {
-      padding: 10px 16px;
-      font-size: 11px;
-      color: #9ca3af;
-      text-align: center;
-      border-top: 1px solid #f3f4f6;
+      padding: 10px 16px; font-size: 11px; color: #9ca3af;
+      text-align: center; border-top: 1px solid #f3f4f6; line-height: 1.8;
     }
+    .footer a { color: #7c3aed; text-decoration: none; }
+    .footer a:hover { text-decoration: underline; }
+    /* Report Modal */
+    #report-modal {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.45); z-index: 100;
+      align-items: center; justify-content: center;
+    }
+    #report-modal.open { display: flex; }
+    .modal-box {
+      background: #fff; border-radius: 12px;
+      padding: 18px; width: 280px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+    }
+    .modal-box h2 { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+    .modal-box p  { font-size: 12px; color: #6b7280; margin-bottom: 10px; }
+    .modal-box textarea {
+      width: 100%; height: 80px; border: 1px solid #e5e7eb; border-radius: 6px;
+      padding: 8px; font-size: 12px; font-family: inherit;
+      resize: none; margin-bottom: 10px;
+    }
+    .modal-box textarea:focus { outline: none; border-color: #7c3aed; }
+    .modal-actions { display: flex; gap: 8px; }
+    .modal-actions button {
+      flex: 1; padding: 8px; border: none; border-radius: 6px;
+      font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    #modal-send   { background: linear-gradient(135deg,#667eea,#764ba2); color: #fff; }
+    #modal-cancel { background: #f3f4f6; color: #374151; }
+    #modal-sent   { display: none; text-align: center; padding: 12px 0; font-size: 13px; color: #16a34a; }
   </style>
 </head>
 <body>
+
   <div class="header">
-    <h1>🛒 Deal Scout</h1>
-    <span class="version">v0.3.0</span>
+    <div class="header-left">
+      <img class="header-logo" src="../icons/icon48.png" alt="Deal Scout">
+      <h1>Deal Scout</h1>
+    </div>
+    <span class="version">v0.20.0</span>
   </div>
 
   <div class="body">
-    <!-- API Status -->
+
     <div id="api-status" class="status-card">
-      ⏳ Checking API connection...
+      ⏳ Checking connection...
     </div>
 
-    <!-- Pro Toggle
-         WHY A POPUP TOGGLE (not Stripe for POC):
-         In production, Pro status is verified server-side against a Stripe
-         subscription. For the POC, we just flip chrome.storage.local.ds_pro
-         so we can demo the full Pro feature set without a payment flow.
-         The content script's isPro() reads this same key.
-    -->
-    <div class="pro-card">
-      <div>
-        <div class="pro-label">✨ Pro Mode</div>
-        <div class="pro-hint" id="pro-hint">Enables eBay comps &amp; photo analysis</div>
-      </div>
-      <label class="toggle" title="Toggle Pro mode (POC demo only)">
-        <input type="checkbox" id="pro-toggle">
-        <span class="toggle-slider"></span>
-      </label>
-    </div>
-
-    <!-- Supported Platforms -->
     <div class="platform-list">
-      <div style="font-weight:600;font-size:12px;color:#6b7280;margin-bottom:6px">SUPPORTED PLATFORMS</div>
+      <div class="platform-heading">Supported Platforms</div>
       <div class="platform">
         <span>📘 Facebook Marketplace</span>
-        <div class="dot" title="Active"></div>
+        <span class="badge badge-live">Live</span>
+      </div>
+      <div class="platform">
+        <span>🛒 Amazon</span>
+        <span class="badge badge-anchor">Retail anchor</span>
       </div>
       <div class="platform">
         <span>📋 Craigslist</span>
-        <div class="dot" title="Active"></div>
-      </div>
-      <div class="platform">
-        <span>🛒 Amazon (retail anchor)</span>
-        <div class="dot" title="Active"></div>
+        <span class="badge badge-soon">Coming soon</span>
       </div>
       <div class="platform">
         <span>🏷️ OfferUp</span>
-        <div class="dot off" title="Coming soon"></div>
+        <span class="badge badge-soon">Coming soon</span>
       </div>
     </div>
 
-    <!-- Actions -->
-    <a id="open-scorer" class="btn" href="http://localhost:3000" target="_blank">
-      Open Full Scorer
-    </a>
-    <button id="score-current" class="btn secondary">
-      Score Current Page
-    </button>
+    <button id="score-current" class="btn">🔍 Score Current Listing</button>
+
   </div>
 
   <div class="footer">
-    Browse any listing — Deal Scout scores it automatically
+    Navigate to any FBM listing — Deal Scout scores it automatically<br>
+    <a id="report-link" href="#">⚠️ Report an issue</a>
+  </div>
+
+  <!-- Report Issue Modal -->
+  <div id="report-modal">
+    <div class="modal-box">
+      <h2>⚠️ Report an Issue</h2>
+      <p>Describe what went wrong — listing URL, what you expected, and what happened.</p>
+      <textarea id="report-text" placeholder="e.g. Guitar listing showed car prices. URL: https://..."></textarea>
+      <div id="modal-form">
+        <div class="modal-actions">
+          <button id="modal-cancel">Cancel</button>
+          <button id="modal-send">Send Report</button>
+        </div>
+      </div>
+      <div id="modal-sent">✅ Report sent — thanks!</div>
+    </div>
   </div>
 
   <script src="popup.js"></script>

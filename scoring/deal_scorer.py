@@ -348,11 +348,19 @@ async def score_deal(
             {
                 "type": "text",
                 "text": (
-                    "You have been shown the main listing photo above. "
-                    "Factor the photo into your analysis: "
-                    "Does the visible condition match the seller's claims? "
-                    "Are there signs of damage, wear, or missing parts not mentioned? "
-                    "Are any included accessories visible?\n\n"
+                    # CRITICAL: Tell Claude exactly what item is for sale and to ignore background objects.
+                    # Without this, Claude sees background items (bikes in a room, decor, etc.) and
+                    # flags them as mismatches with the listing title. This caused a couch listing to
+                    # score 2/10 because Claude saw a bike in the background bookshelf area.
+                    f"This photo is for a listing titled: '{listing.get('title', 'unknown item')}'\n\n"
+                    "IMPORTANT: Focus ONLY on the PRIMARY SUBJECT of this photo (the item being sold). "
+                    "Background objects, room decor, and other items visible in the environment are "
+                    "INCIDENTAL — they are NOT the listing item and should NOT affect your analysis. "
+                    "If you see multiple objects, the item matching the listing title is the one being sold.\n\n"
+                    "Analyze the primary item (the one being sold):\n"
+                    "- Is the visible condition consistent with the seller's claimed condition?\n"
+                    "- Are there signs of damage, wear, or missing parts not mentioned?\n"
+                    "- Are any included accessories visible?\n\n"
                     + prompt
                 )
             }
@@ -398,15 +406,30 @@ async def score_deal(
             log.error(f"JSON parse failed: {e}\nRaw text was:\n{raw_text}")
             return None
 
+        # WHY `or 0` not default=0:
+        #   data.get("recommended_offer", 0) returns None when the key EXISTS
+        #   but has JSON value null — the default only fires when the key is absent.
+        #   float(None) → TypeError. Using `or 0` collapses both None and 0 correctly.
+        raw_offer = data.get("recommended_offer")
+        # Use 0.0 when Claude returns null/None (signal: don't score, fallback to 85% of price)
+        # Use -1.0 when Claude explicitly returns 0 (signal: do not buy / listing is a scam)
+        # The UI reads -1 as 'Not recommended' instead of displaying '$0.00'
+        if raw_offer is None:
+            safe_offer = float(listing.get("price", 0) * 0.85)
+        elif float(raw_offer) == 0.0:
+            safe_offer = -1.0  # Sentinel: tells UI to display 'Not recommended'
+        else:
+            safe_offer = float(raw_offer)
+
         return DealScore(
             score             = int(data.get("score", 5)),
             verdict           = data.get("verdict", "No verdict"),
             summary           = data.get("summary", ""),
             value_assessment  = data.get("value_assessment", ""),
             condition_notes   = data.get("condition_notes", ""),
-            red_flags         = data.get("red_flags", []),
-            green_flags       = data.get("green_flags", []),
-            recommended_offer = float(data.get("recommended_offer", 0)),
+            red_flags         = data.get("red_flags") or [],
+            green_flags       = data.get("green_flags") or [],
+            recommended_offer = safe_offer,
             should_buy        = bool(data.get("should_buy", False)),
             confidence        = data.get("confidence", "medium"),
             model_used        = response.model,

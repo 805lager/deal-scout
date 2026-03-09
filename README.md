@@ -132,7 +132,8 @@ python scraper/fbm_scraper.py --mode text
 | Search results overlay badges | ✅ |
 | Seller trust scoring | ✅ |
 | Strikethrough / price reduction detection | ✅ |
-| eBay real API data | ⏳ Pending eBay API approval |
+| Google Shopping pricing (primary) | ✅ |
+| eBay real API data (fallback) | ⏳ Pending eBay API approval |
 | Amazon price anchor | 🔲 Not started |
 | eBay affiliate link activation | 🔲 Needs campaign ID in .env |
 | Amazon affiliate link activation | 🔲 Needs associate tag in .env |
@@ -142,6 +143,29 @@ python scraper/fbm_scraper.py --mode text
 ---
 
 ## Changelog
+
+### v0.5.0 — Positioning Fix + CORS + Pricing Inversion (Mar 2026)
+- ✅ **CORS fix** — FastAPI `allow_origins` changed from `[localhost:3000]` to `["*"]`; content script requests from `facebook.com` were being rejected even with correct `host_permissions`
+- ✅ **Sidebar positioning fix** — `#ds-tab` and `#ds-panel` changed from `position:fixed` (viewport-relative) to `position:absolute` (root-relative); previous architecture made `makeDraggable()` move an invisible container while tab/panel stayed put
+- ✅ **Facebook transform fix** — root now appended to `document.documentElement` instead of `document.body`; Facebook applies CSS `transform` to body ancestors for scroll animations which breaks child `position:fixed` by repositioning them relative to the transformed element instead of the viewport
+- ✅ **Drag now works** — tab and panel follow root correctly because they are absolute children, not independent fixed elements
+- ✅ **Better error message** — network-level failures (`TypeError`) now show actionable "API not reachable" hint with the uvicorn start command
+- ✅ **Pricing priority inversion** — Google Shopping is now PRIMARY, eBay is FALLBACK (see below)
+
+
+
+### v0.4.0 — Extraction Fixes + Full Pipeline (Mar 2026)
+- ✅ **Price extraction fix** — FBM current price is a text node, not a `<span>`; `childNodes` walk correctly extracts it and ignores strikethrough original
+- ✅ **Shipping cost extraction** — regex `/ships? for $X/i`; passed to Claude as `shipping_cost`; sidebar shows `+$X.XX shipping = $XXX total` in orange; Claude factors true total cost into scoring
+- ✅ **Seller rating extraction** — no longer fabricated from trust tier; reads `(N)` review count + "Highly Rated" badge; infers 4.8 if badge, 4.0 if reviews exist, null otherwise
+- ✅ **Strikethrough original price detection** — identifies seller price reductions; shown in sidebar and passed to Claude as context
+- ✅ **CSP compliance** — Facebook strips inline `onclick` from injected HTML; all handlers converted to `addEventListener` post-insertion; fixes tab switching and card clicks
+- ✅ Claude Vision integration — first listing photo sent to Claude Haiku for condition mismatch detection
+- ✅ Suggestion engine — 3 affiliate cards per score (`same_cheaper`, `better_model`, `same_amazon`)
+- ✅ Pro gating — `isPro()` reads `ds_pro` toggle written by popup via `chrome.storage.local`
+- ✅ SPA navigation handler in background.js — debounced re-injection on `history.pushState` (800ms)
+- ✅ Search results overlay — deal score badges injected on FBM listing thumbnails
+- ✅ Multi-item / vehicle detection in Claude prompt — suppresses false flags on bundles and ATVs
 
 ### v0.2.0 — Extension (Mar 2026)
 - ✅ Chrome extension with FBM + Craigslist content scripts

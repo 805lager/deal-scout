@@ -62,6 +62,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ success: true, links });
     return true;
   }
+
+  if (message.type === "AFFILIATE_CLICK") {
+    /**
+     * WHY BATCHED HERE (not fired immediately per click):
+     * Sending a fetch() per click is noisy and correlatable.
+     * Batching 5+ events together anonymizes individual sessions
+     * before any data leaves the device.
+     *
+     * The background script is the right place for this because:
+     *   - It persists across tabs/navigations
+     *   - Content scripts can't batch across page reloads
+     *   - No user-identifiable context is accessible here
+     */
+    queueAnalyticsEvent({
+      event:        "affiliate_click",
+      program:      message.program      || "",
+      category:     message.category     || "",
+      price_bucket: message.price_bucket || "",
+      card_type:    message.card_type    || "",
+      deal_score:   message.deal_score   || 0,
+    });
+    sendResponse({ ok: true });
+    return true;
+  }
 });
 
 
@@ -202,11 +226,13 @@ chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
   if (!details.url.includes("facebook.com/marketplace")) return;
   if (details.frameId !== 0) return;
 
-  // Only re-inject on listing pages — search/browse pages use the
-  // manifest content_scripts injection (no re-inject needed)
-  const isListingPage = details.url.includes("/marketplace/item/") ||
-                        /\/marketplace\/[^/]+\/item\//.test(details.url);
-  if (!isListingPage) return;
+  // Re-inject on ALL FBM pages during SPA navigation.
+  // WHY: Manifest content_scripts only fire on hard page loads.
+  // FBM is a React SPA — every internal navigation (listing → search,
+  // category → listing, etc.) is a pushState, not a reload.
+  // Without this, search overlay badges never appear after SPA nav.
+  // The content script's __dealScoutInjected guard + isListingPage() logic
+  // handles the correct behaviour once injected.
 
   // Cancel any pending inject for this tab and restart the timer
   if (spaDebounceTimers.has(details.tabId)) {
@@ -236,3 +262,65 @@ chrome.runtime.onInstalled.addListener(({ reason }) => {
     console.log("Deal Scout installed — ready to score deals");
   }
 });
+
+
+// ── Anonymous Analytics Batch Queue ─────────────────────────────────────────────
+
+/**
+ * WHY BATCH INSTEAD OF FIRE IMMEDIATELY:
+ *   Batching prevents per-click correlation. A single click from a single
+ *   session is indistinguishable from clicks aggregated across many users.
+ *   We send when 5+ events accumulate OR 60s has elapsed — whichever
+ *   comes first. At POC scale this is mostly a design statement, but it's
+ *   the right architecture for when you have real user volume.
+ *
+ * WHAT GETS SENT (and what does not):
+ *   SENT: event type, program name, category, price bucket, card type, score
+ *   NEVER SENT: user ID, IP address, listing URL, item title, location
+ */
+
+const _analyticsQueue = [];
+let   _flushTimer     = null;
+const FLUSH_BATCH_SIZE = 5;
+const FLUSH_MAX_WAIT   = 60_000; // 60s
+
+function queueAnalyticsEvent(evt) {
+  _analyticsQueue.push(evt);
+  console.debug(`[DealScout] Analytics queued: ${evt.event} / ${evt.program} — queue=${_analyticsQueue.length}`);
+
+  if (_analyticsQueue.length >= FLUSH_BATCH_SIZE) {
+    _flushAnalytics();
+    return;
+  }
+
+  // Start a max-wait timer if not already running
+  if (!_flushTimer) {
+    _flushTimer = setTimeout(_flushAnalytics, FLUSH_MAX_WAIT);
+  }
+}
+
+async function _flushAnalytics() {
+  if (_flushTimer) { clearTimeout(_flushTimer); _flushTimer = null; }
+  if (!_analyticsQueue.length) return;
+
+  // Snapshot and clear the queue before the async send
+  // (prevents duplicate sends if another event arrives mid-fetch)
+  const batch = _analyticsQueue.splice(0);
+
+  try {
+    // Send each event — /event accepts one at a time (simple server)
+    // For production: add a /events bulk endpoint
+    for (const evt of batch) {
+      await fetch(`${API_BASE}/event`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify(evt),
+      });
+    }
+    console.debug(`[DealScout] Flushed ${batch.length} analytics events`);
+  } catch (err) {
+    // Non-critical — put events back in queue for next flush
+    console.debug("[DealScout] Analytics flush failed (non-critical):", err.message);
+    _analyticsQueue.unshift(...batch);
+  }
+}

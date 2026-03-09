@@ -60,7 +60,7 @@ def _get_client() -> anthropic.Anthropic:
     return _client
 
 
-# ── Data Model ────────────────────────────────────────────────────────────────
+# ── Data Model ────────────────────────────────────────────────────────────────────
 
 @dataclass
 class ProductInfo:
@@ -84,7 +84,7 @@ class ProductInfo:
     extraction_method: str   # "claude" | "fallback" — for diagnostics
 
 
-# ── Main Entry Point ──────────────────────────────────────────────────────────
+# ── Main Entry Point ─────────────────────────────────────────────────────────────
 
 async def extract_product(title: str, description: str = "") -> ProductInfo:
     """
@@ -104,6 +104,15 @@ async def extract_product(title: str, description: str = "") -> ProductInfo:
     # Cap description — we don't need the whole listing essay for extraction
     desc_snippet = description[:600].strip() if description else ""
 
+    # Pre-normalize: fix common seller malapropisms before Haiku sees the text.
+    # WHY BEFORE PROMPT: if the title reaches Haiku as "electrostatic guitar",
+    # Haiku faithfully echoes it into search_query, producing 0 search results.
+    # Correcting it here means the prompt gets "acoustic electric guitar" and
+    # Haiku generates a query that actually returns comps.
+    title, desc_snippet, term_corrections = _normalize_terminology(title, desc_snippet)
+    if term_corrections:
+        log.info(f"[ProductExtractor] Terminology normalized: {term_corrections}")
+
     prompt = f"""You are a product identification expert for a marketplace deal scoring app.
 Your output drives eBay and Amazon search queries — accuracy directly affects deal score quality.
 
@@ -118,6 +127,15 @@ Extract the product identity. Rules:
 - confidence: "high" if brand+model clearly identifiable; "medium" if probable; "low" if guessing
 - Do NOT hallucinate model numbers. If unsure of the model, omit it and use category terms
 - brand/model can be empty strings if genuinely unknown
+- CRITICAL: search_query must NEVER include quantity/bundle words: bundle, lot, pack, set, pcs,
+  pieces, items, collection. These corrupt eBay results with multi-item lot pricing instead
+  of individual item comps. For "kids pants bundle of 3" write "boys pants size 12", not
+  "boys pants bundle". For a clothing listing with no brand, use: [gender] [item] [size].
+- TERMINOLOGY: correct seller misuse of technical terms in search_query and display_name.
+  Common patterns: "electrostatic guitar" → "acoustic electric guitar", "base guitar" →
+  "bass guitar", "labtop" → "laptop". Use the technically correct term a buyer would
+  search — not the seller's incorrect wording. If a term seems wrong for the category,
+  use your knowledge of the product to substitute the correct searchable term.
 
 Respond ONLY with valid JSON, no preamble, no fences:
 {{
@@ -167,6 +185,12 @@ Respond ONLY with valid JSON, no preamble, no fences:
             extraction_method = "claude",
         )
 
+        # Post-process: inject clothing size if query is missing it.
+        # WHY HERE not in the prompt: Haiku reliably omits sizes for generic
+        # titles like "Kids pants" because the title has no size. Regex is
+        # more reliable than prompt engineering for this narrow task.
+        info = _inject_clothing_size(info, desc_snippet)
+
         log.info(f"[ProductExtractor] '{info.display_name}' (confidence={info.confidence})")
         log.info(f"  eBay:   '{info.search_query}'")
         log.info(f"  Amazon: '{info.amazon_query}'")
@@ -180,7 +204,164 @@ Respond ONLY with valid JSON, no preamble, no fences:
         return _fallback_extraction(title)
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Seller Terminology Normalizer ─────────────────────────────────────────────────
+
+# Common seller malapropisms mapped to correct searchable terms.
+#
+# WHY A LOOKUP TABLE (not just prompt):
+#   When a seller writes "electrostatic guitar", Haiku faithfully extracts
+#   "Taylor electrostatic guitar" as the search_query. Google Shopping and
+#   eBay return 0 results for that term, triggering mock pricing data.
+#   The lookup table fires BEFORE Haiku sees the title, so the prompt
+#   receives clean input and produces a good search query.
+#
+# WHY ALSO IN THE PROMPT:
+#   Novel malapropisms we haven't seen yet fall through the table. The
+#   prompt instruction catches them by reasoning about context.
+#
+# ADD NEW ENTRIES here when you see bad comps traced to query corruption.
+
+_TERM_CORRECTIONS: list[tuple[str, str]] = [
+    # ── Instruments ──────────────────────────────────────────────────────────────
+    # "electrostatic guitar" — seller means "electro-acoustic" (acoustic + pickup)
+    (r"\belectro\s*static\b",        "acoustic electric"),
+    (r"\belectrostatic\b",            "acoustic electric"),
+    # "acustic" / "acoutic" / "acoustik" — common misspellings
+    (r"\bacou?s[tic]{2,4}\b",        "acoustic"),
+    # "semi-hollow body" often written as "semi hollow" or "semihollow"
+    (r"\bsemi\s*hollow\b",            "semi-hollow"),
+    # "base guitar" — seller means "bass guitar"
+    (r"\bbase\s+guitar\b",            "bass guitar"),
+
+    # ── Electronics ──────────────────────────────────────────────────────────────
+    # Bluetooth misspellings (extremely common)
+    (r"\bblu\s*tooth\b",              "bluetooth"),
+    (r"\bblue\s*tooth\b",             "bluetooth"),
+    (r"\bblutooth\b",                 "bluetooth"),
+    (r"\bblootooth\b",                "bluetooth"),
+    # Wireless misspellings
+    (r"\bwirless\b",                  "wireless"),
+    (r"\bwirelss\b",                  "wireless"),
+    # "head fones" / "head phone" / "earfones"
+    (r"\bhead\s+fon[es]+\b",          "headphones"),
+    (r"\bear\s*fon[es]+\b",           "earphones"),
+    # "lap top" / "labtop" (very common)
+    (r"\blab\s*top\b",                "laptop"),
+    (r"\blap\s+top\b",                "laptop"),
+    # "eye pad"
+    (r"\beye\s*pad\b",                "iPad"),
+    # "play station" / "x box"
+    (r"\bplay\s+station\b",           "PlayStation"),
+    (r"\bx\s+box\b",                  "Xbox"),
+
+    # ── Vehicles ─────────────────────────────────────────────────────────────────
+    (r"\btransmision\b",              "transmission"),
+    (r"\bfour\s*wheel\s*drive\b",     "4WD"),
+    (r"\bfour\s*by\s*four\b",         "4x4"),
+
+    # ── Furniture ────────────────────────────────────────────────────────────────
+    (r"\blether\b",                   "leather"),
+    (r"\bdinning\b",                  "dining"),
+    (r"\bdinnig\b",                   "dining"),
+    (r"\bchesterfeild\b",             "chesterfield"),
+
+    # ── Clothing ─────────────────────────────────────────────────────────────────
+    (r"\bkacki\b",                    "khaki"),
+    (r"\bkaki\b",                     "khaki"),
+    (r"\bdungaree\b",                 "dungarees"),
+]
+
+# Pre-compiled for performance — compiled once at module load, not per-call
+_TERM_CORRECTION_RES: list[tuple[re.Pattern, str]] = [
+    (re.compile(pattern, re.IGNORECASE), replacement)
+    for pattern, replacement in _TERM_CORRECTIONS
+]
+
+
+def _normalize_terminology(title: str, description: str = "") -> tuple[str, str, list[str]]:
+    """
+    Apply malapropism corrections to title and description before extraction.
+
+    Returns:
+      (corrected_title, corrected_description, list_of_corrections_made)
+      The corrections list is for logging — empty means nothing was changed.
+    """
+    corrections = []
+    new_title = title
+    new_desc  = description
+
+    for pattern, replacement in _TERM_CORRECTION_RES:
+        corrected = pattern.sub(replacement, new_title)
+        if corrected != new_title:
+            corrections.append(f"title: '{pattern.pattern}' → '{replacement}'")
+            new_title = corrected
+        corrected = pattern.sub(replacement, new_desc)
+        if corrected != new_desc:
+            corrections.append(f"desc: '{pattern.pattern}' → '{replacement}'")
+            new_desc = corrected
+
+    return new_title, new_desc, corrections
+
+
+# ── Clothing Size Injector ────────────────────────────────────────────────────────
+
+_CLOTHING_KEYWORDS = {
+    "pants", "jeans", "shorts", "shirt", "shirts", "dress", "dresses",
+    "skirt", "skirts", "leggings", "hoodie", "hoodies", "jacket", "jackets",
+    "sweater", "sweaters", "onesie", "onesies", "romper", "rompers",
+    "top", "tops", "blouse", "coat", "clothes", "clothing", "outfit",
+    "outfits", "bodysuit", "swimsuit", "pajamas", "pjs",
+}
+
+_CHILD_SIZE_RE = re.compile(
+    r"""(?xi)
+    \b(
+        (?:size[s]?\s+)?(\d{1,2}[Tt]?)   # 4T, 5T, size 8, size 10-12
+        (?:\s*[-/]\s*\d{1,2}[Tt]?)?       # optional range: 10-12
+    |   (?:youth|kids?|girls?|boys?)\s+(?:size[s]?\s+)?([xXsSmMlL]{1,2}|\d{1,2})
+    |   (?:newborn|infant|toddler)
+    )\b
+    """,
+    re.IGNORECASE
+)
+
+
+def _inject_clothing_size(info: ProductInfo, description: str) -> ProductInfo:
+    """
+    Post-processes Claude's search_query for clothing listings.
+    Appends a child's size token if missing, to avoid adult pricing comps.
+    """
+    query_lower = info.search_query.lower()
+    category_lower = info.category.lower()
+    is_clothing = any(kw in query_lower or kw in category_lower for kw in _CLOTHING_KEYWORDS)
+    if not is_clothing:
+        return info
+
+    already_has_size = bool(re.search(r'\b(\d{1,2}[Tt]?|[xXsSmlML]{1,2})\b', query_lower))
+    if already_has_size:
+        return info
+
+    combined_text = f"{info.raw_title} {description}"
+    match = _CHILD_SIZE_RE.search(combined_text)
+    if not match:
+        return info
+
+    size_token = re.sub(r'\s+', ' ', match.group(0).strip())
+    tokens = info.search_query.split()
+    if len(tokens) < 7:
+        new_query = f"{info.search_query} {size_token}"
+        log.info(f"[ProductExtractor] Clothing size injected: '{info.search_query}' → '{new_query}'")
+        return ProductInfo(
+            brand=info.brand, model=info.model, category=info.category,
+            search_query=new_query, amazon_query=info.amazon_query,
+            display_name=info.display_name, confidence=info.confidence,
+            raw_title=info.raw_title, extraction_method=info.extraction_method,
+        )
+
+    return info
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────────
 
 # Noise words commonly found in FBM listing titles — remove before searching
 _NOISE_WORDS = {
@@ -190,14 +371,11 @@ _NOISE_WORDS = {
     "used", "new", "like", "condition", "works", "working", "tested",
     "please", "offer", "asking", "willing", "posting", "make", "offer",
     "take", "home", "today", "quick", "fast", "cash", "only", "local",
+    "bundle", "lot", "lots", "pack", "pcs", "pieces", "set", "sets",
+    "items", "listing", "collection",
 }
 
 def _clean_title(title: str) -> str:
-    """
-    Fallback title cleaner — strips noise words and caps at 8 terms.
-    Same logic as ebay_pricer.build_search_query() — kept here so
-    product_extractor has no circular dependency on ebay_pricer.
-    """
     cleaned = re.sub(r"[^\w\s]", " ", title)
     words = [w for w in cleaned.split() if w.lower() not in _NOISE_WORDS and len(w) > 1]
     return " ".join(words[:8])
