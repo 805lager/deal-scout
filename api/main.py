@@ -579,11 +579,15 @@ async def record_event(evt: AnalyticsEvent):
     # Flush to JSONL file every 10 events
     if len(_event_buffer) >= 10:
         try:
+            # Snapshot first — don't clear until write succeeds.
+            # If we cleared before writing and the write failed,
+            # all buffered events would be silently lost.
+            snapshot = list(_event_buffer)
             with open(_event_file, "a") as f:
-                for r in list(_event_buffer):
+                for r in snapshot:
                     f.write(_json.dumps(r) + "\n")
             _event_buffer.clear()
-            log.debug(f"Flushed {len(_event_buffer)} events to {_event_file.name}")
+            log.debug(f"Flushed {len(snapshot)} events to {_event_file.name}")
         except Exception as e:
             log.warning(f"Event flush failed: {e}")
 

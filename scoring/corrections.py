@@ -1,35 +1,34 @@
 """
 Query Correction System — Manual Training Loop for Market Comparisons
 
-WHY THIS EXISTS:
-  The #1 cause of bad market comparisons is a bad eBay search query.
-  "Taylor acoustic electric guitar" → eBay query "Taylor acoustic electric"
-  returns Taylor acoustic guitars at $800 avg instead of the $200 beginner
-  model that was actually listed. One bad query = completely wrong score.
+TWO FAILURE MODES THIS SYSTEM FIXES:
 
-  This module provides a simple correction layer:
-    1. `/feedback` endpoint accepts: bad_query, corrected_query, correct_price
-    2. Corrections saved to corrections.jsonl (flat file, no database)
-    3. ebay_pricer.py checks corrections BEFORE searching — overrides bad queries
-    4. /admin page shows recent scores + lets you click to correct them
+  MODE A — Wrong query:
+    eBay/Google returned mismatched results because the auto-generated query
+    pulled accessories, parts, or a different product tier.
+    Fix: save a better query → used on next score for similar listings.
+    Example: "Taylor acoustic electric guitar" → "Taylor 114ce acoustic guitar"
 
-  After 10-20 corrections, the most common item types are locked in and
-  market comparisons become dramatically more accurate.
+  MODE B — Mock data fallback (query was right, but live sources failed):
+    Both Google Shopping and eBay rate-limited/failed. Mock price guessed wrong
+    category (e.g. Celestron NexStar 6SE → $150 base instead of ~$800).
+    Fix: lock in a real price range → used instead of mock when both fail again.
+    Example: NexStar 6SE → price_range=[600, 950]
 
 CORRECTION FILE FORMAT (one JSON per line):
   {
     "ts": "2026-03-10T12:00:00",
-    "listing_title": "Taylor 114ce acoustic electric guitar",
-    "bad_query": "Taylor acoustic electric guitar",
-    "good_query": "Taylor 114ce guitar",
-    "correct_price_range": [150, 350],
-    "notes": "114ce is entry-level, not pro — eBay was returning Artist series"
+    "listing_title": "Celestron NexStar 6SE telescope bundle",
+    "bad_query": "Celestron NexStar 6SE telescope",
+    "good_query": "Celestron NexStar 6SE telescope",   ← same = query was fine
+    "correct_price_range": [600, 950],                 ← this is the real fix
+    "notes": "from sidebar · source=ebay_mock"
   }
 
 LOOKUP STRATEGY:
-  Token overlap between listing title and correction's listing_title.
-  If >= 60% of meaningful tokens match, use that correction's good_query.
-  This handles minor title variations without requiring exact matches.
+  Token overlap between incoming listing title and stored correction title.
+  >= 60% overlap → use that correction's query and/or price range.
+  One correction generalizes to many similar listings without exact matching.
 """
 
 import json
@@ -43,13 +42,13 @@ log = logging.getLogger(__name__)
 
 CORRECTIONS_FILE = Path(__file__).parent.parent / "data" / "corrections.jsonl"
 
-# In-memory cache — reloaded when file changes
+# In-memory cache — reloaded when file changes on disk
 _corrections_cache: list = []
 _corrections_mtime: float = 0.0
 
 
 def _load_corrections() -> list:
-    """Load corrections from disk, using cache if file hasn't changed."""
+    """Load corrections from disk, using in-memory cache if unchanged."""
     global _corrections_cache, _corrections_mtime
 
     if not CORRECTIONS_FILE.exists():
@@ -75,7 +74,7 @@ def _load_corrections() -> list:
 
 
 def _tokenize(text: str) -> set:
-    """Extract meaningful tokens for fuzzy matching."""
+    """Extract meaningful tokens for fuzzy title matching."""
     STOP = {
         "the", "a", "an", "in", "on", "of", "for", "to", "and", "or",
         "is", "it", "with", "this", "that", "new", "used", "like",
@@ -86,13 +85,19 @@ def _tokenize(text: str) -> set:
     return {t for t in tokens if len(t) > 2 and t not in STOP}
 
 
-def lookup_correction(listing_title: str, current_query: str) -> Optional[str]:
+def lookup_correction(listing_title: str, current_query: str) -> Optional[dict]:
     """
     Check if we have a manual correction for this listing type.
-    Returns the corrected search query if found, None otherwise.
 
-    Uses fuzzy title matching (>= 60% token overlap) so corrections
-    generalize to similar listings without requiring exact matches.
+    Returns a dict with:
+      good_query  (str)            — corrected search query (may equal current)
+      price_low   (float)          — locked-in price range low  (0 = not set)
+      price_high  (float)          — locked-in price range high (0 = not set)
+
+    Returns None if no match found.
+
+    Uses fuzzy title matching (>= 60% token overlap) so one correction
+    generalizes to similar listings without requiring exact title matches.
     """
     corrections = _load_corrections()
     if not corrections:
@@ -102,27 +107,36 @@ def lookup_correction(listing_title: str, current_query: str) -> Optional[str]:
     if not title_tokens:
         return None
 
-    best_score   = 0.0
-    best_query   = None
+    best_score      = 0.0
+    best_correction = None
 
     for c in corrections:
         corr_tokens = _tokenize(c.get("listing_title", ""))
         if not corr_tokens:
             continue
 
-        # Bidirectional overlap: both titles should agree
         overlap = title_tokens & corr_tokens
         score   = len(overlap) / max(len(title_tokens), len(corr_tokens))
 
         if score > best_score:
-            best_score = score
-            best_query = c.get("good_query")
+            best_score      = score
+            best_correction = c
 
-    MATCH_THRESHOLD = 0.60  # 60% token overlap required
+    MATCH_THRESHOLD = 0.60
 
-    if best_score >= MATCH_THRESHOLD and best_query:
-        log.info(f"[Corrections] Match (score={best_score:.2f}): '{listing_title}' → '{best_query}'")
-        return best_query
+    if best_score >= MATCH_THRESHOLD and best_correction:
+        price_range = best_correction.get("correct_price_range") or []
+        result = {
+            "good_query":  best_correction.get("good_query", current_query),
+            "price_low":   float(price_range[0]) if len(price_range) >= 1 else 0.0,
+            "price_high":  float(price_range[1]) if len(price_range) >= 2 else 0.0,
+        }
+        log.info(
+            f"[Corrections] Match (score={best_score:.2f}): '{listing_title}' → "
+            f"query='{result['good_query']}' "
+            f"price_range=[{result['price_low']}, {result['price_high']}]"
+        )
+        return result
 
     return None
 
@@ -134,10 +148,7 @@ def save_correction(
     correct_price_range: Optional[list] = None,
     notes: str = "",
 ) -> bool:
-    """
-    Save a new correction to disk.
-    Returns True on success, False on failure.
-    """
+    """Save a correction to disk. Returns True on success."""
     try:
         CORRECTIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
         entry = {
@@ -151,11 +162,11 @@ def save_correction(
         with open(CORRECTIONS_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")
 
-        # Invalidate cache so next lookup reads fresh data
+        # Invalidate cache so next lookup re-reads
         global _corrections_mtime
         _corrections_mtime = 0.0
 
-        log.info(f"[Corrections] Saved: '{bad_query}' → '{good_query}'")
+        log.info(f"[Corrections] Saved: '{bad_query}' → '{good_query}' range={correct_price_range}")
         return True
     except Exception as e:
         log.error(f"[Corrections] Save failed: {e}")
@@ -163,5 +174,5 @@ def save_correction(
 
 
 def get_all_corrections() -> list:
-    """Return all corrections — used by /admin endpoint."""
-    return list(reversed(_load_corrections()))  # newest first
+    """Return all corrections newest-first — used by /admin endpoint."""
+    return list(reversed(_load_corrections()))

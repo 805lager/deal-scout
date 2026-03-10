@@ -930,8 +930,10 @@ def should_trigger_buy_new(
         return False, ""
 
     # Mock data: prices are estimates, not real market data — never trigger
-    # this banner on mock because the "new" price will be wrong for most items
-    if data_source == "ebay_mock":
+    # this banner on mock because the "new" price will be wrong for most items.
+    # correction_range = user locked in a price range for the used value, but
+    # new_price still comes from mock eBay — suppress here too.
+    if data_source in ("ebay_mock", "correction_range"):
         return False, ""
 
     ratio = listing_price / new_price

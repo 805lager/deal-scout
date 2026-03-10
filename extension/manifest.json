@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Deal Scout — AI Deal Scorer",
-  "version": "0.24.0",
+  "version": "0.24.1",
   "description": "AI-powered deal scoring for Facebook Marketplace, Craigslist, and Amazon. Scores deals instantly using real market data.",
 
   "permissions": [

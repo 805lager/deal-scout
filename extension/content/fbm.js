@@ -1,5 +1,5 @@
 /**
- * content/fbm.js — Facebook Marketplace Content Script v0.24.0
+ * content/fbm.js — Facebook Marketplace Content Script v0.24.1
  *
  * FEATURES:
  *   1. Collapsible deal scoring sidebar (bottom-right tab, draggable)
@@ -53,7 +53,7 @@
     if (s.ds_api_base) API_BASE = s.ds_api_base;
   }).catch(() => {});
 
-  const VERSION   = "0.24.0";
+  const VERSION   = "0.24.1";
   const LOG_PRE   = "[DealScout]";
 
   // v0.19.0: Pro gating removed — fully free (affiliate + data monetization)
@@ -1259,6 +1259,7 @@
                       r.data_source === "craigslist"               ? "#a78bfa" :
                       r.data_source === "google+ebay"              ? "#60a5fa" :
                       r.data_source === "ebay_mock"                ? "#94a3b8" :
+                      r.data_source === "correction_range"         ? "#67e8f9" :  // teal — user-validated estimate
                       "#fbbf24";
     const dataLabel = r.data_source === "ebay"                    ? "&#x1F4CA; Live eBay" :
                       r.data_source === "google_shopping"          ? "&#x1F50D; Google Shopping" :
@@ -1267,6 +1268,7 @@
                       r.data_source === "craigslist"               ? "&#x1F697; Craigslist" :
                       r.data_source === "google+ebay"              ? "&#x1F50D; Google+eBay" :
                       r.data_source === "ebay_mock"                ? "&#x1F4CA; Est. prices" :
+                      r.data_source === "correction_range"         ? "&#x1F4CC; Pinned range" :  // 📌 user-locked
                       "&#x26A0;&#xFE0F; Est. prices";
 
     const photoTag  = r.image_analyzed ? `<span class="ds-photo-badge">&#x1F4F7; photo</span>` : "";
@@ -1439,52 +1441,80 @@
     // Don't show for vehicles — they use a different pricing pipeline
     if (!r.query_used || r.data_source === 'vehicle_not_applicable') return;
 
+    // Two distinct failure modes this button handles:
+    //   MODE A — wrong query:  eBay/Google returned mismatched results.
+    //             Fix: change the search query.
+    //   MODE B — mock fallback: both real sources failed, mock price was wrong.
+    //             Fix: lock in a known-good price range so mock uses it next time.
+    //             Detected by data_source === 'ebay_mock' or confidence === 'suspect'.
+    // The form shows both fields always, but highlights the relevant one.
+    const isMockData = r.data_source === 'ebay_mock' || r.market_confidence === 'suspect';
+
     const wrap = document.createElement('div');
     wrap.style.cssText = 'margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.07)';
 
     // ── Collapsed state: just the Fix button ──────────────────────────────
     const fixBtn = document.createElement('button');
-    fixBtn.textContent = '📊 Fix market comps';
+    fixBtn.textContent = isMockData ? '⚠️ Fix estimated comps' : '📊 Fix market comps';
     fixBtn.style.cssText = [
-      'background:none',
-      'border:none',
-      'color:rgba(255,255,255,0.35)',
-      'font-size:10px',
-      'cursor:pointer',
-      'padding:0',
-      'text-decoration:underline',
-      'text-underline-offset:2px',
+      'background:none', 'border:none', 'cursor:pointer', 'padding:0',
+      'text-decoration:underline', 'text-underline-offset:2px', 'font-size:10px',
+      // Amber when mock so it's more visible — this is a data quality warning
+      `color:${isMockData ? 'rgba(245,158,11,0.7)' : 'rgba(255,255,255,0.35)'}`,
     ].join(';');
 
     // ── Expanded state: inline correction form ────────────────────────────
+    const mockWarning = isMockData ? `
+      <div style="background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);
+        border-radius:6px;padding:6px 8px;margin-bottom:8px;font-size:10px;color:#fbbf24;line-height:1.5">
+        ⚠️ <strong>Estimated data</strong> — real pricing sources unavailable for this score.
+        Adding a price range below locks it in as a fallback for future scores.
+      </div>` : '';
+
     const form = document.createElement('div');
     form.style.cssText = 'display:none;margin-top:8px';
     form.innerHTML = `
+      ${mockWarning}
       <div style="font-size:10px;opacity:0.5;margin-bottom:6px;line-height:1.5">
-        Tell Deal Scout a better eBay search query for this item.<br>
-        Applies immediately — no redeploy needed.
+        Fix the eBay search query and/or lock in a real price range.<br>
+        Takes effect on the next score — no redeploy needed.
       </div>
+
       <div style="font-size:10px;opacity:0.4;margin-bottom:3px">Current query used:</div>
-      <div style="font-size:11px;color:#f59e0b;margin-bottom:8px;word-break:break-all">${escHtml(r.query_used)}</div>
-      <div style="font-size:10px;opacity:0.4;margin-bottom:3px">Better eBay search query:</div>
+      <div style="font-size:11px;color:#f59e0b;margin-bottom:6px;word-break:break-all">${escHtml(r.query_used)}</div>
+
+      <div style="font-size:10px;opacity:0.4;margin-bottom:3px">Better eBay search query: <span style="opacity:0.6">(optional if query is right)</span></div>
       <input id="ds-fix-query"
-        placeholder="e.g. Taylor 114ce acoustic guitar"
-        style="
-          width:100%;box-sizing:border-box;background:rgba(255,255,255,0.07);
+        placeholder="e.g. Celestron NexStar 6SE Schmidt-Cassegrain"
+        style="width:100%;box-sizing:border-box;background:rgba(255,255,255,0.07);
           border:1px solid rgba(255,255,255,0.15);border-radius:6px;
-          color:#e0e0e0;font-size:11px;padding:6px 8px;outline:none;
-          font-family:inherit;
-        "
+          color:#e0e0e0;font-size:11px;padding:6px 8px;outline:none;font-family:inherit;margin-bottom:8px;"
       />
-      <div style="display:flex;gap:6px;margin-top:6px">
-        <button id="ds-fix-save" style="
-          flex:1;background:#6366f1;color:#fff;border:none;border-radius:6px;
-          padding:6px;font-size:11px;cursor:pointer;font-weight:600;
-        ">Save correction</button>
-        <button id="ds-fix-cancel" style="
-          background:rgba(255,255,255,0.07);color:rgba(255,255,255,0.5);
-          border:none;border-radius:6px;padding:6px 10px;font-size:11px;cursor:pointer;
-        ">Cancel</button>
+
+      <div style="font-size:10px;margin-bottom:3px;
+        color:${isMockData ? '#fbbf24' : 'rgba(255,255,255,0.4)'}">
+        ${isMockData ? '🔒 Lock in real price range (used when live data fails):' : 'Real price range: <span style="opacity:0.6">(optional)</span>'}
+      </div>
+      <div style="display:flex;gap:6px;margin-bottom:6px">
+        <input id="ds-fix-low" type="number" placeholder="Low $"
+          style="flex:1;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.15);
+            border-radius:6px;color:#e0e0e0;font-size:11px;padding:6px 8px;outline:none;font-family:inherit;"
+        />
+        <span style="align-self:center;opacity:0.4;font-size:11px">–</span>
+        <input id="ds-fix-high" type="number" placeholder="High $"
+          style="flex:1;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.15);
+            border-radius:6px;color:#e0e0e0;font-size:11px;padding:6px 8px;outline:none;font-family:inherit;"
+        />
+      </div>
+
+      <div style="display:flex;gap:6px">
+        <button id="ds-fix-save" style="flex:1;background:#6366f1;color:#fff;border:none;
+          border-radius:6px;padding:6px;font-size:11px;cursor:pointer;font-weight:600;"
+        >Save correction</button>
+        <button id="ds-fix-cancel" style="background:rgba(255,255,255,0.07);
+          color:rgba(255,255,255,0.5);border:none;border-radius:6px;
+          padding:6px 10px;font-size:11px;cursor:pointer;"
+        >Cancel</button>
       </div>
       <div id="ds-fix-status" style="font-size:10px;margin-top:5px;min-height:14px"></div>
     `;
@@ -1495,29 +1525,43 @@
 
     // ── Event handlers ─────────────────────────────────────────────────────
     fixBtn.addEventListener('click', () => {
-      form.style.display = 'block';
+      form.style.display   = 'block';
       fixBtn.style.display = 'none';
       const inp = form.querySelector('#ds-fix-query');
-      inp.value = r.query_used; // pre-fill with what was used
-      inp.focus();
-      inp.select();
+      inp.value = r.query_used;
+      // For mock data, focus the price low field — that's the critical input
+      if (isMockData) {
+        form.querySelector('#ds-fix-low').focus();
+      } else {
+        inp.focus();
+        inp.select();
+      }
     });
 
     form.querySelector('#ds-fix-cancel').addEventListener('click', () => {
-      form.style.display = 'none';
+      form.style.display   = 'none';
       fixBtn.style.display = 'inline';
     });
 
     form.querySelector('#ds-fix-save').addEventListener('click', async () => {
-      const goodQuery  = form.querySelector('#ds-fix-query').value.trim();
-      const statusEl   = form.querySelector('#ds-fix-status');
-      const saveBtn    = form.querySelector('#ds-fix-save');
+      const goodQuery = form.querySelector('#ds-fix-query').value.trim();
+      const priceLow  = parseFloat(form.querySelector('#ds-fix-low').value)  || 0;
+      const priceHigh = parseFloat(form.querySelector('#ds-fix-high').value) || 0;
+      const statusEl  = form.querySelector('#ds-fix-status');
+      const saveBtn   = form.querySelector('#ds-fix-save');
 
-      if (!goodQuery || goodQuery === r.query_used) {
+      // Need at least one of: a different query, or a price range
+      const hasQueryChange = goodQuery && goodQuery !== r.query_used;
+      const hasPriceRange  = priceLow > 0 && priceHigh > priceLow;
+
+      if (!hasQueryChange && !hasPriceRange) {
         statusEl.style.color = '#f59e0b';
-        statusEl.textContent = goodQuery === r.query_used
-          ? '⚠️ Query is the same — enter a different search term'
-          : '⚠️ Please enter a query first';
+        statusEl.textContent = '⚠️ Change the query or enter a price range (or both)';
+        return;
+      }
+      if (priceHigh > 0 && priceHigh <= priceLow) {
+        statusEl.style.color = '#f59e0b';
+        statusEl.textContent = '⚠️ High price must be greater than low price';
         return;
       }
 
@@ -1530,23 +1574,29 @@
           method:  'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            listing_title: listing.title || '',
-            bad_query:     r.query_used,
-            good_query:    goodQuery,
-            notes:         'submitted from sidebar',
+            listing_title:      listing.title || '',
+            bad_query:          r.query_used,
+            // If user didn't change the query, send the same one — backend
+            // still saves the price range which is the useful part here
+            good_query:         goodQuery || r.query_used,
+            correct_price_low:  priceLow,
+            correct_price_high: priceHigh,
+            notes:              `from sidebar · source=${r.data_source}`,
           }),
         });
 
         if (resp.ok) {
+          const parts = [];
+          if (hasQueryChange) parts.push('query updated');
+          if (hasPriceRange)  parts.push(`price range ${priceLow}–${priceHigh} locked in`);
           statusEl.style.color = '#22c55e';
-          statusEl.textContent  = '✅ Saved! Next score for similar items will use the new query.';
-          saveBtn.textContent   = '✓ Saved';
-          // Collapse after 3 seconds
+          statusEl.textContent = `✅ Saved! ${parts.join(' · ')}.`;
+          saveBtn.textContent  = '✓ Saved';
           setTimeout(() => {
-            form.style.display  = 'none';
+            form.style.display   = 'none';
             fixBtn.style.display = 'inline';
-            fixBtn.textContent  = '✅ Comp fixed';
-            fixBtn.style.color  = 'rgba(34,197,94,0.6)';
+            fixBtn.textContent   = '✅ Comp fixed';
+            fixBtn.style.color   = 'rgba(34,197,94,0.6)';
           }, 3000);
         } else {
           throw new Error(`HTTP ${resp.status}`);
@@ -1559,8 +1609,8 @@
       }
     });
 
-    // Submit on Enter key in the input
-    form.querySelector('#ds-fix-query').addEventListener('keydown', (e) => {
+    // Enter on query field submits
+    form.querySelector('#ds-fix-query').addEventListener('keydown', e => {
       if (e.key === 'Enter') form.querySelector('#ds-fix-save').click();
     });
   }
@@ -1666,8 +1716,14 @@
 
     const newRetail   = r.new_price   || 0;
     const listedPrice = listing.price || 0;
-    const parityRatio = (newRetail > 0 && listedPrice > 0) ? listedPrice / newRetail : 0;
-    const isDealParity = parityRatio >= 0.65;
+    // isDealParity: fires when used price is >= 65% of new retail.
+    // GUARD: also require newRetail >= listedPrice * 0.5 — if new retail is
+    // less than half the listed price, the comp data is clearly garbage
+    // (e.g. eBay returned accessories instead of the full item). Don't show
+    // the banner when the data itself is nonsensical.
+    const parityRatio  = (newRetail > 0 && listedPrice > 0) ? listedPrice / newRetail : 0;
+    const dataLooksValid = newRetail >= listedPrice * 0.5;
+    const isDealParity = parityRatio >= 0.65 && parityRatio <= 3.0 && dataLooksValid;
     const newPremium   = newRetail - listedPrice;
 
     const section = document.createElement("div");

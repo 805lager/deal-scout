@@ -489,15 +489,26 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
     query       = build_search_query(listing_title)
     campaign_id = os.getenv("EBAY_CAMPAIGN_ID", "")
 
-    # Check manual corrections first — overrides the auto-generated query
-    # when we know it produces bad comps for this item type.
-    # See scoring/corrections.py for the correction format and lookup logic.
+    # Check manual corrections — may fix the query AND/OR provide a locked
+    # price range to use when live data fails (mock fallback override).
+    # See scoring/corrections.py for the full format.
+    _locked_price_low  = 0.0
+    _locked_price_high = 0.0
     try:
         from scoring.corrections import lookup_correction
-        corrected = lookup_correction(listing_title, query)
-        if corrected and corrected != query:
-            log.info(f"[Corrections] Query override: '{query}' → '{corrected}'")
-            query = corrected
+        _corr = lookup_correction(listing_title, query)
+        if _corr:
+            if _corr["good_query"] and _corr["good_query"] != query:
+                log.info(f"[Corrections] Query override: '{query}' → '{_corr['good_query']}'"
+                )
+                query = _corr["good_query"]
+            _locked_price_low  = _corr.get("price_low",  0.0)
+            _locked_price_high = _corr.get("price_high", 0.0)
+            if _locked_price_low and _locked_price_high:
+                log.info(
+                    f"[Corrections] Locked price range: "
+                    f"${_locked_price_low}–${_locked_price_high}"
+                )
     except Exception as e:
         log.debug(f"[Corrections] Lookup skipped: {e}")
 
@@ -623,6 +634,42 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
 
         data_source = "ebay_mock" if ebay_is_mock else "ebay"
 
+    # ── Locked price range override (when mock fired) ───────────────────────────
+    # WHY data_source == "ebay_mock" (not just ebay_is_mock):
+    #   ebay_is_mock is True whenever eBay sidebar cards are mock — including
+    #   the case where Google Shopping SUCCEEDED but eBay failed. In that case
+    #   data_source = "google_shopping" and we have real Google pricing.
+    #   We must not clobber that with the locked range. Only override when the
+    #   pricing source itself is mock (i.e. both Google AND eBay failed).
+    if data_source == "ebay_mock" and _locked_price_low > 0 and _locked_price_high > _locked_price_low:
+        locked_mid      = (_locked_price_low + _locked_price_high) / 2
+        sold_avg        = locked_mid
+        sold_low        = _locked_price_low
+        sold_high       = _locked_price_high
+        active_avg      = locked_mid * 1.05
+        active_low      = _locked_price_low
+        active_count    = 0   # not real eBay data — avoid showing misleading count
+        sold_count      = 0   # not real sold comps — sidebar will show "correction range"
+        estimated_value = locked_mid
+        confidence      = "medium"   # better than mock, but still not live data
+        data_source     = "correction_range"
+        log.info(
+            f"[Corrections] Using locked price range ${_locked_price_low}–"
+            f"${_locked_price_high} (mid=${locked_mid:.0f}) instead of mock"
+        )
+
+    # ── Suspect flag: mock data + price far outside mock range ────────────────
+    # Only fires when: (a) both live sources failed, AND (b) no locked range.
+    if data_source == "ebay_mock" and estimated_value > 0:
+        ratio = listing_price / estimated_value if listing_price > 0 else 1.0
+        if ratio > 3.0 or ratio < 0.3:
+            confidence = "suspect"
+            log.warning(
+                f"[Market] Suspect comps: listing=${listing_price:.0f} vs "
+                f"mock_est=${estimated_value:.0f} (ratio={ratio:.1f}x) — "
+                f"query='{query}' likely returned wrong category"
+            )
+
     # ── Step 4: Build sidebar affiliate cards from eBay items ─────────────────
     # WHY pass search_query: filters out mismatched results (e.g. "Ryobi battery"
     # appearing in results for "Ryobi 40V chainsaw") before building sidebar cards.
@@ -685,6 +732,24 @@ def _mock_ebay_response(query: str, operation: str) -> list[dict]:
         base = 400
     elif any(w in q for w in ["sofa", "couch", "desk", "chair", "table", "furniture"]):
         base = 250
+    # Optics / astronomy — NexStar 6SE ~$800, 8SE ~$1100, small refractors ~$200
+    # Without this, all telescopes fall to $150 base which is wildly wrong
+    elif any(w in q for w in ["nexstar 8", "nexstar 9", "nexstar 11", "celestron 8", "orion xt8", "orion xt10"]):
+        base = 900
+    elif any(w in q for w in ["telescope", "nexstar", "celestron", "orion skyquest", "meade", "dobsonian", "reflector", "refractor", "schmidt"]):
+        base = 650
+    elif any(w in q for w in ["binoculars", "spotting scope", "rangefinder"]):
+        base = 200
+    # Power tools
+    elif any(w in q for w in ["dewalt", "milwaukee", "makita", "ryobi", "bosch"]):
+        base = 200
+    elif any(w in q for w in ["drill", "saw", "sander", "grinder", "compressor"]):
+        base = 150
+    # Fitness
+    elif any(w in q for w in ["peloton", "treadmill", "elliptical", "rowing machine"]):
+        base = 800
+    elif any(w in q for w in ["weights", "dumbbells", "barbell", "kettlebell"]):
+        base = 100
     else:
         base = 150
 

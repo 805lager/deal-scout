@@ -5,6 +5,36 @@ Format: `vX.Y.Z — Description (Date)`
 
 ---
 
+## v0.24.1 — Fix comps button: mock fallback mode + locked price ranges (Mar 2026)
+
+### New Features
+- **Two-mode “Fix market comps” button** (`extension/content/fbm.js`)
+  - MODE A (wrong query): dim white button, changes query field as before
+  - MODE B (mock data fallback): amber `⚠️ Fix estimated comps` button, exposes Low/High price fields
+  - Success message confirms what was saved: “query updated · price range $600–$950 locked in”
+- **`correction_range` data source** (`scoring/ebay_pricer.py`)
+  - When both Google and eBay fail and a locked range exists, uses midpoint instead of mock
+  - Sets `data_source = "correction_range"`, `confidence = "medium"`
+  - Suspect flag guard updated: only fires when `data_source == "ebay_mock"` (not correction_range)
+- **`corrections.py` return type changed to dict**
+  - Was: `Optional[str]` (query only)
+  - Now: `Optional[dict]` with keys `good_query`, `price_low`, `price_high`
+- **`/feedback` endpoint** accepts `correct_price_low` / `correct_price_high`
+
+### Bugs Fixed (pre-push audit)
+- **Version mismatch** — `manifest.json` and `fbm.js` both stuck at `0.24.0`; bumped to `0.24.1`
+- **`correction_range` missing from badge switch** (`fbm.js`)
+  - Was falling through to amber `⚠️ Est. prices`; now shows teal `📄 Pinned range`
+- **`should_trigger_buy_new()` didn’t guard `correction_range`** (`scoring/affiliate_router.py`)
+  - `new_price` on correction_range listings still comes from mock eBay data
+  - Added `correction_range` to the `ebay_mock` suppression guard
+- **`_event_buffer.clear()` before log count** (`api/main.py`)
+  - `len(_event_buffer)` logged after `.clear()` — always logged 0
+  - Worse: events lost if file write failed halfway through
+  - Fix: snapshot buffer before writing, clear after success, log `len(snapshot)`
+
+---
+
 ## v0.22.0 — Chrome Web Store + Railway Launch (Mar 2026)
 
 ### Summary
