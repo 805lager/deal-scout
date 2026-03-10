@@ -62,7 +62,10 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 # Used when the primary model hits quota (429) or billing isn't set up.
 # No search grounding on free tier, but knowledge pricing still beats mock data.
 # Override with GEMINI_FALLBACK_MODEL env var if needed.
-GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-1.5-flash")
+# Use the "-latest" alias — bare "gemini-1.5-flash" is not registered on the
+# v1beta endpoint that the SDK defaults to, causing a 404. "-latest" always
+# resolves to the current stable 1.5-flash release on both v1 and v1beta.
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-1.5-flash-latest")
 
 # In-memory cache: cache_key → (timestamp, result_dict)
 # WHY 10 MIN: used prices don't change meaningfully in 10 minutes.
