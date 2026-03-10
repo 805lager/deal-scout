@@ -781,6 +781,171 @@ def _save_report_local(entry: dict):
         log.error(f"[Report] Local save failed: {e}")
 
 
+# ── Feedback + Admin ─────────────────────────────────────────────────────────────────────
+
+class FeedbackRequest(BaseModel):
+    """
+    Manual query correction submitted via the sidebar or /admin page.
+    Tells the system: "for listings like this, use THIS query instead."
+    """
+    listing_title:       str
+    bad_query:           str
+    good_query:          str
+    correct_price_low:   float = 0.0
+    correct_price_high:  float = 0.0
+    notes:               str   = ""
+
+
+@app.post("/feedback")
+async def submit_feedback(body: FeedbackRequest, request: Request):
+    """
+    Accepts a manual query correction from the sidebar or admin page.
+    Saves to corrections.jsonl and immediately affects future scores.
+
+    Example: GoPro listing gets compared to GoPro accessories instead of cameras.
+    Submit: bad_query="GoPro accessories" good_query="GoPro HERO 12 Black camera"
+    Next GoPro listing will use the corrected query automatically.
+    """
+    from scoring.corrections import save_correction
+    price_range = [body.correct_price_low, body.correct_price_high] if body.correct_price_low else []
+    ok = save_correction(
+        listing_title       = body.listing_title,
+        bad_query           = body.bad_query,
+        good_query          = body.good_query,
+        correct_price_range = price_range,
+        notes               = body.notes,
+    )
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to save correction")
+    log.info(f"[Feedback] Correction saved: '{body.bad_query}' → '{body.good_query}'")
+    return {"ok": True, "message": f"Correction saved. Future scores for similar listings will use: '{body.good_query}'"}
+
+
+@app.get("/admin")
+async def admin_page():
+    """
+    Simple HTML admin page for reviewing and correcting market comparison queries.
+    Visit: https://deal-scout-production.up.railway.app/admin
+
+    Shows the correction log and a form to add new corrections.
+    No auth (obscurity only) — add HTTP Basic Auth before sharing publicly.
+    """
+    from scoring.corrections import get_all_corrections
+    corrections = get_all_corrections()
+
+    rows = ""
+    for c in corrections:
+        rows += f"""
+        <tr>
+            <td style='color:#aaa;font-size:11px'>{c.get('ts','')[:16]}</td>
+            <td style='max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' title='{c.get("listing_title","")}'>{c.get('listing_title','')[:40]}</td>
+            <td style='color:#ef4444'>{c.get('bad_query','')}</td>
+            <td style='color:#22c55e'>{c.get('good_query','')}</td>
+            <td style='color:#aaa;font-size:11px'>{c.get('notes','')[:40]}</td>
+        </tr>"""
+
+    html = f"""<!DOCTYPE html>
+<html><head><title>Deal Scout — Admin</title>
+<style>
+  body {{ font-family: monospace; background: #0f0f1a; color: #e0e0e0; padding: 32px; }}
+  h1 {{ color: #7c8cf8; }} h2 {{ color: #a0a0c0; margin-top:32px; }}
+  table {{ border-collapse: collapse; width: 100%; margin-top: 16px; }}
+  th {{ background:#1e1e38; color:#7c8cf8; padding:8px 12px; text-align:left; }}
+  td {{ padding:8px 12px; border-bottom:1px solid #2a2a44; vertical-align:top; }}
+  tr:hover td {{ background:#1a1a2e; }}
+  input, textarea {{ background:#1e1e38; border:1px solid #3a3a5c; color:#e0e0e0;
+    padding:8px; border-radius:4px; font-family:monospace; }}
+  input {{ width:100%; margin-bottom:8px; }}
+  button {{ background:#6366f1; color:white; border:none; padding:10px 24px;
+    border-radius:4px; cursor:pointer; font-size:14px; margin-top:8px; }}
+  button:hover {{ background:#4f52d4; }}
+  .success {{ color:#22c55e; margin-top:8px; display:none; }}
+  label {{ color:#a0a0c0; font-size:12px; display:block; margin-bottom:2px; }}
+  .grid {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }}
+  .hint {{ color:#6b7280; font-size:11px; margin-top:4px; }}
+</style></head>
+<body>
+  <h1>🔍 Deal Scout — Market Comparison Admin</h1>
+  <p style='color:#6b7280'>Fix bad eBay search queries to improve market comparison accuracy.<br>
+  Corrections apply immediately to future scores — no redeploy needed.</p>
+
+  <h2>Add Correction</h2>
+  <div style='max-width:700px'>
+    <label>Listing title (copy from FBM)</label>
+    <input id='title' placeholder='e.g. Taylor 114ce acoustic electric guitar like new' />
+    <div class='grid'>
+      <div>
+        <label>Bad query (what Deal Scout used)</label>
+        <input id='bad' placeholder='e.g. Taylor acoustic electric guitar' />
+        <p class='hint'>Find this in Railway logs or /debug/query endpoint</p>
+      </div>
+      <div>
+        <label>Good query (what eBay should search)</label>
+        <input id='good' placeholder='e.g. Taylor 114ce acoustic guitar' />
+        <p class='hint'>Test at ebay.com first to verify comp quality</p>
+      </div>
+    </div>
+    <div class='grid'>
+      <div>
+        <label>Correct price range — low ($)</label>
+        <input id='plow' type='number' placeholder='e.g. 150' />
+      </div>
+      <div>
+        <label>Correct price range — high ($)</label>
+        <input id='phigh' type='number' placeholder='e.g. 350' />
+      </div>
+    </div>
+    <label>Notes (optional)</label>
+    <input id='notes' placeholder='e.g. 114ce is entry-level, not Artist series' />
+    <br/>
+    <button onclick='submitCorrection()'>Save Correction</button>
+    <p class='success' id='success'>✅ Correction saved! Future scores will use the new query.</p>
+  </div>
+
+  <h2>Correction Log ({len(corrections)} total)</h2>
+  {"<p style='color:#6b7280'>No corrections yet. Score some listings and fix the bad ones above.</p>" if not corrections else ""}
+  {f"<table><tr><th>Time</th><th>Listing</th><th>Bad Query</th><th>Good Query</th><th>Notes</th></tr>{rows}</table>" if corrections else ""}
+
+  <h2>Useful Debug Links</h2>
+  <ul style='color:#7c8cf8;line-height:2'>
+    <li><a href='/debug/query?title=YOUR+TITLE+HERE' style='color:#7c8cf8'>/debug/query</a> — see exactly what query Deal Scout generates for any title</li>
+    <li><a href='/health' style='color:#7c8cf8'>/health</a> — API key status</li>
+    <li><a href='/affiliate-status' style='color:#7c8cf8'>/affiliate-status</a> — which affiliate programs are live</li>
+    <li><a href='/docs' style='color:#7c8cf8'>/docs</a> — full API docs</li>
+  </ul>
+
+<script>
+async function submitCorrection() {{
+  const body = {{
+    listing_title: document.getElementById('title').value.trim(),
+    bad_query:     document.getElementById('bad').value.trim(),
+    good_query:    document.getElementById('good').value.trim(),
+    correct_price_low:  parseFloat(document.getElementById('plow').value) || 0,
+    correct_price_high: parseFloat(document.getElementById('phigh').value) || 0,
+    notes: document.getElementById('notes').value.trim(),
+  }};
+  if (!body.listing_title || !body.good_query) {{
+    alert('Listing title and good query are required');
+    return;
+  }}
+  const r = await fetch('/feedback', {{
+    method: 'POST',
+    headers: {{'Content-Type': 'application/json'}},
+    body: JSON.stringify(body)
+  }});
+  if (r.ok) {{
+    document.getElementById('success').style.display = 'block';
+    setTimeout(() => location.reload(), 1500);
+  }} else {{
+    alert('Save failed: ' + await r.text());
+  }}
+}}
+</script>
+</body></html>"""
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(content=html)
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(

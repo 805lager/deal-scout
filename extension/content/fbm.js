@@ -1,5 +1,5 @@
 /**
- * content/fbm.js — Facebook Marketplace Content Script v0.20.0
+ * content/fbm.js — Facebook Marketplace Content Script v0.23.0
  *
  * FEATURES:
  *   1. Collapsible deal scoring sidebar (bottom-right tab, draggable)
@@ -1366,6 +1366,152 @@
     renderBuyNewBanner(r, body);
     renderAffiliateCards(r, listing, body);
     renderReliability(r, body);
+    renderQueryFeedback(r, listing, body);
+  }
+
+
+  /**
+   * Inline "Fix comps" button + form at the bottom of every scored listing.
+   *
+   * WHY IN-SIDEBAR:
+   *   The sidebar already has the listing title and the exact query used.
+   *   Going to /admin to correct a bad query adds 5+ steps. This reduces
+   *   it to: see bad comp → click Fix → type correct query → Save.
+   *   Corrections take effect immediately on the next score — no redeploy.
+   *
+   * DATA FLOW:
+   *   r.query_used  → pre-filled as the "bad" query (what was used)
+   *   listing.title → sent as listing_title so fuzzy matching works
+   *   user input    → sent as good_query to POST /feedback
+   */
+  function renderQueryFeedback(r, listing, container) {
+    // Don't show for vehicles — they use a different pricing pipeline
+    if (!r.query_used || r.data_source === 'vehicle_not_applicable') return;
+
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.07)';
+
+    // ── Collapsed state: just the Fix button ──────────────────────────────
+    const fixBtn = document.createElement('button');
+    fixBtn.textContent = '📊 Fix market comps';
+    fixBtn.style.cssText = [
+      'background:none',
+      'border:none',
+      'color:rgba(255,255,255,0.35)',
+      'font-size:10px',
+      'cursor:pointer',
+      'padding:0',
+      'text-decoration:underline',
+      'text-underline-offset:2px',
+    ].join(';');
+
+    // ── Expanded state: inline correction form ────────────────────────────
+    const form = document.createElement('div');
+    form.style.cssText = 'display:none;margin-top:8px';
+    form.innerHTML = `
+      <div style="font-size:10px;opacity:0.5;margin-bottom:6px;line-height:1.5">
+        Tell Deal Scout a better eBay search query for this item.<br>
+        Applies immediately — no redeploy needed.
+      </div>
+      <div style="font-size:10px;opacity:0.4;margin-bottom:3px">Current query used:</div>
+      <div style="font-size:11px;color:#f59e0b;margin-bottom:8px;word-break:break-all">${escHtml(r.query_used)}</div>
+      <div style="font-size:10px;opacity:0.4;margin-bottom:3px">Better eBay search query:</div>
+      <input id="ds-fix-query"
+        placeholder="e.g. Taylor 114ce acoustic guitar"
+        style="
+          width:100%;box-sizing:border-box;background:rgba(255,255,255,0.07);
+          border:1px solid rgba(255,255,255,0.15);border-radius:6px;
+          color:#e0e0e0;font-size:11px;padding:6px 8px;outline:none;
+          font-family:inherit;
+        "
+      />
+      <div style="display:flex;gap:6px;margin-top:6px">
+        <button id="ds-fix-save" style="
+          flex:1;background:#6366f1;color:#fff;border:none;border-radius:6px;
+          padding:6px;font-size:11px;cursor:pointer;font-weight:600;
+        ">Save correction</button>
+        <button id="ds-fix-cancel" style="
+          background:rgba(255,255,255,0.07);color:rgba(255,255,255,0.5);
+          border:none;border-radius:6px;padding:6px 10px;font-size:11px;cursor:pointer;
+        ">Cancel</button>
+      </div>
+      <div id="ds-fix-status" style="font-size:10px;margin-top:5px;min-height:14px"></div>
+    `;
+
+    wrap.appendChild(fixBtn);
+    wrap.appendChild(form);
+    container.appendChild(wrap);
+
+    // ── Event handlers ─────────────────────────────────────────────────────
+    fixBtn.addEventListener('click', () => {
+      form.style.display = 'block';
+      fixBtn.style.display = 'none';
+      const inp = form.querySelector('#ds-fix-query');
+      inp.value = r.query_used; // pre-fill with what was used
+      inp.focus();
+      inp.select();
+    });
+
+    form.querySelector('#ds-fix-cancel').addEventListener('click', () => {
+      form.style.display = 'none';
+      fixBtn.style.display = 'inline';
+    });
+
+    form.querySelector('#ds-fix-save').addEventListener('click', async () => {
+      const goodQuery  = form.querySelector('#ds-fix-query').value.trim();
+      const statusEl   = form.querySelector('#ds-fix-status');
+      const saveBtn    = form.querySelector('#ds-fix-save');
+
+      if (!goodQuery || goodQuery === r.query_used) {
+        statusEl.style.color = '#f59e0b';
+        statusEl.textContent = goodQuery === r.query_used
+          ? '⚠️ Query is the same — enter a different search term'
+          : '⚠️ Please enter a query first';
+        return;
+      }
+
+      saveBtn.textContent  = 'Saving…';
+      saveBtn.disabled     = true;
+      statusEl.textContent = '';
+
+      try {
+        const resp = await fetch(`${API_BASE}/feedback`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            listing_title: listing.title || '',
+            bad_query:     r.query_used,
+            good_query:    goodQuery,
+            notes:         'submitted from sidebar',
+          }),
+        });
+
+        if (resp.ok) {
+          statusEl.style.color = '#22c55e';
+          statusEl.textContent  = '✅ Saved! Next score for similar items will use the new query.';
+          saveBtn.textContent   = '✓ Saved';
+          // Collapse after 3 seconds
+          setTimeout(() => {
+            form.style.display  = 'none';
+            fixBtn.style.display = 'inline';
+            fixBtn.textContent  = '✅ Comp fixed';
+            fixBtn.style.color  = 'rgba(34,197,94,0.6)';
+          }, 3000);
+        } else {
+          throw new Error(`HTTP ${resp.status}`);
+        }
+      } catch (err) {
+        statusEl.style.color = '#ef4444';
+        statusEl.textContent = `❌ Save failed: ${err.message}`;
+        saveBtn.textContent  = 'Save correction';
+        saveBtn.disabled     = false;
+      }
+    });
+
+    // Submit on Enter key in the input
+    form.querySelector('#ds-fix-query').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') form.querySelector('#ds-fix-save').click();
+    });
   }
 
 

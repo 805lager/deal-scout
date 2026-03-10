@@ -488,6 +488,19 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
     """
     query       = build_search_query(listing_title)
     campaign_id = os.getenv("EBAY_CAMPAIGN_ID", "")
+
+    # Check manual corrections first — overrides the auto-generated query
+    # when we know it produces bad comps for this item type.
+    # See scoring/corrections.py for the correction format and lookup logic.
+    try:
+        from scoring.corrections import lookup_correction
+        corrected = lookup_correction(listing_title, query)
+        if corrected and corrected != query:
+            log.info(f"[Corrections] Query override: '{query}' → '{corrected}'")
+            query = corrected
+    except Exception as e:
+        log.debug(f"[Corrections] Lookup skipped: {e}")
+
     log.info(f"Fetching market value for: '{listing_title}' → query: '{query}'")
 
     # ── Vehicle pricing — CarGurus/Craigslist instead of eBay ────────────────
