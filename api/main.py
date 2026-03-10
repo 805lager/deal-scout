@@ -564,10 +564,30 @@ async def test_gemini():
                 "notes":           result["notes"],
             }
         else:
+            # Run a direct knowledge-only call to get the raw Gemini response
+            # text for debugging — helps distinguish "model refused" from
+            # "JSON parse error" from "model returned avg=0".
+            raw_debug = ""
+            try:
+                import google.generativeai as _genai
+                _genai.configure(api_key=api_key)
+                _m = _genai.GenerativeModel(model_name=GEMINI_MODEL)
+                _r = _m.generate_content(
+                    "What is the current used resale price of a Celestron NexStar 6SE telescope? "
+                    "Return ONLY a JSON object: {\"avg_used_price\": <number>, \"price_low\": <number>, "
+                    "\"price_high\": <number>, \"new_retail\": <number>, \"confidence\": \"medium\", "
+                    "\"item_id\": \"Celestron NexStar 6SE\", \"notes\": \"<1 sentence>\"}"
+                )
+                raw_debug = (getattr(_r, "text", "") or "")[:500]
+            except Exception as _e:
+                raw_debug = f"debug call failed: {_e}"
+
             return {
-                "status": "no_result",
-                "detail": "Gemini returned no price — check logs for prompt/parse errors.",
-                "model":  GEMINI_MODEL,
+                "status":    "no_result",
+                "detail":    "Gemini returned no price — search grounding or parse failed.",
+                "model":     GEMINI_MODEL,
+                "raw_debug": raw_debug,
+                "hint":      "If raw_debug shows JSON, the parse logic failed. If it shows plain text, grounding/prompt failed.",
             }
     except Exception as e:
         return {

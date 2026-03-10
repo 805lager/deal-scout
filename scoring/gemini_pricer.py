@@ -182,6 +182,15 @@ def _gemini_with_search(query: str, condition: str, listing_price: float) -> Opt
     """
     Synchronous Gemini call with Google Search grounding.
     Runs in thread pool executor.
+
+    TOOL FORMAT NOTE:
+      tools=["google_search"] (string) is WRONG — the SDK ignores it silently.
+      Must use a proper Tool object or dict form:
+        types.Tool(google_search=types.GoogleSearch())  ← preferred
+        {"google_search": {}}                           ← dict fallback
+      Without grounding, Gemini returns plain text instead of JSON, parse
+      fails, and the whole pipeline falls back to mock. This was the v0.25.0
+      no_result bug.
     """
     try:
         import google.generativeai as genai
@@ -192,17 +201,32 @@ def _gemini_with_search(query: str, condition: str, listing_price: float) -> Opt
     genai.configure(api_key=GOOGLE_AI_API_KEY)
     prompt = _build_prompt(query, condition, listing_price)
 
-    # Search grounding tells Gemini to search Google before answering
-    # The model reads current listings and sold comps to price the item
+    # Build the search grounding tool — try the typed API first,
+    # fall back to dict form for older SDK versions.
+    # WHY NOT STRING: tools=["google_search"] is silently ignored by the SDK.
+    try:
+        from google.generativeai import types as _gtypes
+        _tools = [_gtypes.Tool(google_search=_gtypes.GoogleSearch())]
+        log.debug("[GeminiPricer] Using typed Tool(google_search=GoogleSearch())")
+    except (AttributeError, ImportError):
+        # google-generativeai < 0.7 or API surface changed
+        _tools = [{"google_search": {}}]
+        log.debug("[GeminiPricer] Using dict fallback {google_search:{}}")
+
     try:
         model = genai.GenerativeModel(
             model_name=GEMINI_MODEL,
-            tools=["google_search"],  # enables real-time Google search
+            tools=_tools,
         )
         response = model.generate_content(prompt)
-        result = _parse_response(response.text, data_source="gemini_search")
 
-        # Log grounding sources for debugging
+        # Log raw text at DEBUG so we can see what Gemini actually returned
+        raw_text = getattr(response, "text", "") or ""
+        log.debug(f"[GeminiPricer] Raw grounded response (first 300 chars): {raw_text[:300]!r}")
+
+        result = _parse_response(raw_text, data_source="gemini_search")
+
+        # Log grounding sources — helpful for verifying search actually fired
         try:
             if hasattr(response, "candidates") and response.candidates:
                 meta = response.candidates[0].grounding_metadata
@@ -214,7 +238,7 @@ def _gemini_with_search(query: str, condition: str, listing_price: float) -> Opt
         return result
 
     except Exception as e:
-        # Common failure: quota exceeded, network error, model unavailable
+        # Common failures: quota exceeded, network error, model unavailable
         raise RuntimeError(f"search grounding error: {e}") from e
 
 
@@ -232,10 +256,14 @@ def _gemini_knowledge_only(query: str, condition: str, listing_price: float) -> 
     genai.configure(api_key=GOOGLE_AI_API_KEY)
     prompt = _build_prompt(query, condition, listing_price)
 
-    # No tools — pure language model inference
+    # No tools — pure language model inference from training data
     model = genai.GenerativeModel(model_name=GEMINI_MODEL)
     response = model.generate_content(prompt)
-    return _parse_response(response.text, data_source="gemini_knowledge")
+
+    raw_text = getattr(response, "text", "") or ""
+    log.debug(f"[GeminiPricer] Raw knowledge response (first 300 chars): {raw_text[:300]!r}")
+
+    return _parse_response(raw_text, data_source="gemini_knowledge")
 
 
 # ── Prompt Engineering ────────────────────────────────────────────────────────

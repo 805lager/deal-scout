@@ -5,6 +5,19 @@ Format: `vX.Y.Z — Description (Date)`
 
 ---
 
+## v0.25.1 — Fix Gemini search grounding tool format (Mar 2026)
+
+### Bugs Fixed
+- **`tools=["google_search"]` was silently ignored by the SDK** (`scoring/gemini_pricer.py`)
+  - String form is invalid — SDK expects a `types.Tool` object or dict
+  - Fixed: tries `types.Tool(google_search=types.GoogleSearch())` first, falls back to `{"google_search": {}}`
+  - Without this, Gemini returned plain text instead of JSON; parse failed; pipeline fell back to mock every time
+- **`/test-gemini` now returns `raw_debug` on `no_result`** (`api/main.py`)
+  - Makes it easy to distinguish parse error vs. model refusal vs. grounding failure
+- **Added raw response logging at DEBUG level** for both grounded and knowledge-only paths
+
+---
+
 ## v0.25.0 — Gemini AI market pricing replaces Google Shopping scraper (Mar 2026)
 
 ### New Features
