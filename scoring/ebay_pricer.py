@@ -126,7 +126,7 @@ class MarketValue:
     active_items_sample: list = None  # top 4 currently active listings
     # Which pricing source produced this data — surfaced in sidebar and used
     # by Claude to calibrate how much to trust the market comps.
-    data_source: str = "google_shopping"  # "google_shopping" | "ebay" | "google+ebay" | "ebay_mock"
+    data_source: str = "gemini_search"  # "gemini_search" | "gemini_knowledge" | "ebay" | "ebay_mock" | "correction_range"
 
 
 # ── Search Query Builder ──────────────────────────────────────────────────────
@@ -165,29 +165,55 @@ def build_search_query(title: str) -> str:
     return query
 
 
-# ── Google Shopping (PRIMARY) ─────────────────────────────────────────────────
+# ── Gemini AI Pricer (PRIMARY) ───────────────────────────────────────────────
+#
+# Replaced Google Shopping scraping (google_pricer.py) with Gemini + Search
+# Grounding. Key reasons:
+#   1. Google Shopping returns NEW retail prices — we need USED market prices
+#   2. HTML scraping breaks whenever Google changes its layout
+#   3. Gemini can price niche items (telescopes, e-bikes) that eBay API gets wrong
+#
+# Architecture:
+#   Gemini (Search Grounding) → live Google search → used market price
+#   Gemini (Training Knowledge) → fallback if search fails → still better than mock
+#   eBay API → runs in parallel → ONLY used for sidebar affiliate cards now
 
-async def _try_google_shopping(query: str, listing_price: float = 0.0) -> Optional[dict]:
+async def _try_gemini_pricing(query: str, condition: str, listing_price: float = 0.0) -> Optional[dict]:
     """
-    Attempt Google Shopping price scrape.
-    Returns a stats dict on success, None if insufficient data.
+    Attempt Gemini AI pricing. Returns a stats-format dict on success, None on failure.
 
-    WHY THIS IS THE PRIMARY SOURCE:
-      No API quota to burn. Works on every score without rate-limit anxiety.
-      At POC scale (one listing at a time), Google won't trigger bot detection.
+    Output format matches the old Google Shopping stats dict so the rest of the
+    pipeline (confidence, data_source, affiliate cards) needs minimal changes.
     """
     try:
-        from scoring.google_pricer import get_google_shopping_prices, prices_to_market_stats
-        google_prices = await get_google_shopping_prices(query, max_results=12, min_price=listing_price)
-        stats = prices_to_market_stats(google_prices)
-        if stats and stats["count"] >= 3:
-            log.info(f"[Google PRIMARY] '{query}' → avg=${stats['avg']:.0f} ({stats['count']} prices)")
-            return stats
-        else:
-            log.info(f"[Google PRIMARY] Too few results for '{query}' ({stats['count'] if stats else 0}) — trying eBay")
+        from scoring.gemini_pricer import get_gemini_market_price
+        result = await get_gemini_market_price(query, condition=condition, listing_price=listing_price)
+        if not result or not result.get("avg_used_price"):
+            log.info(f"[Gemini PRIMARY] No price returned for '{query}' — falling back to eBay")
             return None
+
+        # Translate Gemini result into the stats dict format used by the rest of the pipeline
+        # WHY TRANSLATE: keeps the downstream code unchanged; only the source changes
+        avg = result["avg_used_price"]
+        stats = {
+            "avg":        avg,
+            "low":        result["price_low"],
+            "high":       result["price_high"],
+            "count":      10 if result["confidence"] == "high" else 5 if result["confidence"] == "medium" else 3,
+            "new_retail": result["new_retail"],  # bonus: Gemini knows new retail too
+            "confidence": result["confidence"],
+            "data_source": result["data_source"],  # "gemini_search" | "gemini_knowledge"
+            "item_id":    result["item_id"],
+            "notes":      result["notes"],
+        }
+        log.info(
+            f"[Gemini PRIMARY] '{query}' → avg=${avg:.0f} "
+            f"[{result['price_low']:.0f}–{result['price_high']:.0f}] "
+            f"conf={result['confidence']} src={result['data_source']}"
+        )
+        return stats
     except Exception as e:
-        log.warning(f"[Google PRIMARY] Failed for '{query}': {e} — falling back to eBay")
+        log.warning(f"[Gemini PRIMARY] Error for '{query}': {e} — falling back to eBay")
         return None
 
 
@@ -554,13 +580,16 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
             confidence="none", data_source="vehicle_not_applicable",
         )
 
-    # ── Step 1: Try Google Shopping first ─────────────────────────────────────
-    google_stats = await _try_google_shopping(query, listing_price=listing_price)
+    # ── Step 1: Try Gemini AI pricing first ─────────────────────────────────────
+    # Gemini uses Google Search grounding to find actual USED selling prices.
+    # Falls back to its training knowledge if grounding fails.
+    # See scoring/gemini_pricer.py for full details.
+    gemini_stats = await _try_gemini_pricing(query, condition=listing_condition, listing_price=listing_price)
 
     # ── Step 2: Always fetch eBay in parallel for affiliate sidebar cards ──────
-    # WHY ALWAYS: Even when Google succeeds, we want eBay listing cards for
+    # WHY ALWAYS: Even when Gemini succeeds, we want eBay listing cards for
     # the "Like Products" sidebar section. Running them in parallel means
-    # zero extra latency — we just may not use the eBay price data itself.
+    # zero extra latency. eBay is now ONLY used for affiliate cards + price fallback.
     sold_raw, active_raw, new_raw = await asyncio.gather(
         search_ebay(query, "findCompletedItems", max_results=20),
         search_ebay(query, "findItemsAdvanced",  max_results=20),
@@ -573,32 +602,28 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
     new_items    = parse_ebay_items(new_raw,    sold=False)
 
     # ── Step 3: Build market stats from whichever source won ──────────────────
-    if google_stats:
-        # Google Shopping is primary — use its price data
-        # eBay active/sold averages are derived approximations, not direct data
-        sold_avg        = google_stats["avg"]
-        sold_low        = google_stats["low"]
-        sold_high       = google_stats["high"]
-        sold_count      = google_stats["count"]
-        # Estimate "active asking" as ~5% above Google average
-        # WHY: Google Shopping typically shows asking/retail prices, so we
-        # use eBay's active data if available, otherwise approximate.
+    if gemini_stats:
+        # Gemini is primary — it returns USED market prices, not retail
+        sold_avg        = gemini_stats["avg"]
+        sold_low        = gemini_stats["low"]
+        sold_high       = gemini_stats["high"]
+        sold_count      = gemini_stats["count"]
+        # Use eBay active data for the asking-price column if we have it
         if active_items and not ebay_is_mock:
             active_prices = [p.price for p in active_items]
             active_avg    = statistics.mean(active_prices)
             active_low    = min(active_prices)
             active_count  = len(active_items)
         else:
-            active_avg   = round(google_stats["avg"] * 1.05, 2)
-            active_low   = google_stats["low"]
+            active_avg   = round(gemini_stats["avg"] * 1.05, 2)
+            active_low   = gemini_stats["low"]
             active_count = 0
 
-        new_price       = min(p.price for p in new_items) if new_items else 0.0
-        estimated_value = google_stats["avg"]
-        confidence      = "medium" if google_stats["count"] >= 6 else "low"
-        # Google Shopping is primarily retail/new prices — cap confidence
-        # at medium even with many results since we lack sold/completed data
-        data_source     = "google_shopping" if ebay_is_mock else "google+ebay"
+        # Gemini knows new retail too — use it if eBay new-condition data is missing
+        new_price       = min(p.price for p in new_items) if new_items else gemini_stats.get("new_retail", 0.0)
+        estimated_value = gemini_stats["avg"]
+        confidence      = gemini_stats["confidence"]
+        data_source     = gemini_stats["data_source"]  # "gemini_search" | "gemini_knowledge"
 
     else:
         # eBay fallback — use its data directly

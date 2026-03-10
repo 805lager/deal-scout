@@ -529,6 +529,54 @@ async def test_ebay():
         return {"error": str(e), "type": type(e).__name__}
 
 
+@app.get("/test-gemini")
+async def test_gemini():
+    """
+    Tests Gemini API + Search Grounding end-to-end.
+    Visit /test-gemini after deploying to Railway to confirm the new pricer works.
+    Tests with a Celestron NexStar 6SE — a product with a well-known used market.
+    """
+    from scoring.gemini_pricer import get_gemini_market_price, gemini_is_configured, GEMINI_MODEL
+    api_key = os.getenv("GOOGLE_AI_API_KEY", "")
+    if not api_key:
+        return {
+            "status": "not_configured",
+            "detail": "GOOGLE_AI_API_KEY not set. Add it to Railway environment variables.",
+            "get_key_at": "https://aistudio.google.com/",
+        }
+    try:
+        result = await get_gemini_market_price(
+            query         = "Celestron NexStar 6SE telescope",
+            condition     = "Used",
+            listing_price = 600.0,
+        )
+        if result:
+            return {
+                "status":          "ok",
+                "model":           GEMINI_MODEL,
+                "key_prefix":      api_key[:20] + "...",
+                "avg_used_price":  result["avg_used_price"],
+                "price_range":     f"${result['price_low']:.0f}–${result['price_high']:.0f}",
+                "new_retail":      result["new_retail"],
+                "confidence":      result["confidence"],
+                "data_source":     result["data_source"],
+                "item_id":         result["item_id"],
+                "notes":           result["notes"],
+            }
+        else:
+            return {
+                "status": "no_result",
+                "detail": "Gemini returned no price — check logs for prompt/parse errors.",
+                "model":  GEMINI_MODEL,
+            }
+    except Exception as e:
+        return {
+            "status": "error",
+            "detail": str(e),
+            "type":   type(e).__name__,
+        }
+
+
 @app.get("/health")
 async def health():
     """Detailed health check — confirms API keys are configured."""

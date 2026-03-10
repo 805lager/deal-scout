@@ -5,6 +5,37 @@ Format: `vX.Y.Z — Description (Date)`
 
 ---
 
+## v0.25.0 — Gemini AI market pricing replaces Google Shopping scraper (Mar 2026)
+
+### New Features
+- **Gemini AI pricing pipeline** (`scoring/gemini_pricer.py`) — NEW primary pricing source
+  - `gemini_search` (purple `#a78bfa`): Gemini with Google Search Grounding — live web prices
+  - `gemini_knowledge` (lighter purple `#c084fc`): Gemini training-data estimate — better than mock
+  - Cascades: `gemini_search` → `gemini_knowledge` → `ebay_mock` (last resort only)
+- **eBay pricer wired to Gemini** (`scoring/ebay_pricer.py`)
+  - `get_market_prices()` tries Gemini first, falls back to eBay API, then mock
+  - `GOOGLE_AI_API_KEY` env var required on Railway
+- **New `/test-gemini` endpoint** (`api/main.py`) — verify Gemini integration after deploy
+- **`gemini_knowledge` added to mock guards**
+  - `renderQueryFeedback()` in `fbm.js`: shows amber "⚠️ Fix estimated comps" button
+  - `should_trigger_buy_new()` in `affiliate_router.py`: suppresses buy-new banner
+- **Requirements updated**: `google-generativeai>=0.7.0` added to `requirements.txt`
+
+### Data Source Badges (fbm.js)
+| `data_source` | Color | Label |
+|---|---|---|
+| `gemini_search` | `#a78bfa` purple | `✨ AI • Live search` |
+| `gemini_knowledge` | `#c084fc` light purple | `🧠 AI estimate` |
+| `ebay` | `#22c55e` green | `📊 Live eBay` |
+| `ebay_mock` | `#94a3b8` gray | `📊 Est. prices` |
+| `correction_range` | `#67e8f9` teal | `📌 Pinned range` |
+
+### Breaking Changes
+- `GOOGLE_AI_API_KEY` must be set on Railway before Gemini features are active
+- `google-generativeai` package required — run `pip install -r requirements.txt`
+
+---
+
 ## v0.24.1 — Fix comps button: mock fallback mode + locked price ranges (Mar 2026)
 
 ### New Features

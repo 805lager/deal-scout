@@ -929,11 +929,12 @@ def should_trigger_buy_new(
     if is_vehicle:
         return False, ""
 
-    # Mock data: prices are estimates, not real market data — never trigger
-    # this banner on mock because the "new" price will be wrong for most items.
-    # correction_range = user locked in a price range for the used value, but
-    # new_price still comes from mock eBay — suppress here too.
-    if data_source in ("ebay_mock", "correction_range"):
+    # Mock / AI-estimate data: prices are not real market data — never trigger
+    # this banner when pricing is estimated. Reasons by source:
+    #   ebay_mock        — seeded from keywords, not real sales data
+    #   correction_range — user locked in used value; new_price still from mock
+    #   gemini_knowledge — AI training-data estimate, not live search grounding
+    if data_source in ("ebay_mock", "correction_range", "gemini_knowledge"):
         return False, ""
 
     ratio = listing_price / new_price

@@ -1253,6 +1253,8 @@
     const buyLabel  = r.score >= 7 ? "&#x2705; BUY" : r.score >= 4 ? "&#x26A0;&#xFE0F; CAUTION" : "&#x274C; AVOID";
     const buyColor  = r.score >= 7 ? "#22c55e"      : r.score >= 4 ? "#f59e0b"                  : "#ef4444";
     const dataColor = r.data_source === "ebay"                    ? "#22c55e" :
+                      r.data_source === "gemini_search"            ? "#a78bfa" :
+                      r.data_source === "gemini_knowledge"         ? "#c084fc" :
                       r.data_source === "google_shopping"          ? "#60a5fa" :
                       r.data_source === "vehicle_not_applicable"   ? "#f59e0b" :
                       r.data_source === "cargurus"                 ? "#22c55e" :
@@ -1262,6 +1264,8 @@
                       r.data_source === "correction_range"         ? "#67e8f9" :  // teal — user-validated estimate
                       "#fbbf24";
     const dataLabel = r.data_source === "ebay"                    ? "&#x1F4CA; Live eBay" :
+                      r.data_source === "gemini_search"            ? "&#x2728; AI \u2022 Live search" :
+                      r.data_source === "gemini_knowledge"         ? "&#x1F9E0; AI estimate" :
                       r.data_source === "google_shopping"          ? "&#x1F50D; Google Shopping" :
                       r.data_source === "vehicle_not_applicable"   ? "&#x1F697; No data" :
                       r.data_source === "cargurus"                 ? "&#x1F697; CarGurus" :
@@ -1448,7 +1452,7 @@
     //             Fix: lock in a known-good price range so mock uses it next time.
     //             Detected by data_source === 'ebay_mock' or confidence === 'suspect'.
     // The form shows both fields always, but highlights the relevant one.
-    const isMockData = r.data_source === 'ebay_mock' || r.market_confidence === 'suspect';
+    const isMockData = r.data_source === 'ebay_mock' || r.data_source === 'gemini_knowledge' || r.market_confidence === 'suspect';
 
     const wrap = document.createElement('div');
     wrap.style.cssText = 'margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.07)';
@@ -2039,7 +2043,7 @@
 
     // FBM has "Wanted" listings mixed in with "For Sale". DS should not score them.
     // WHY REGEX: FBM doesn't expose listing type in the DOM reliably.
-    const ISO_RE = /(iso|in search of|looking for|wtb|want to buy|wanted[:\s])/i;
+    const ISO_RE = /\b(iso|in search of|looking for|wtb|want to buy|wanted[:\s])\b/i;
     if (ISO_RE.test(combined)) {
       warnings.push({
         code: "POSSIBLY_ISO",
@@ -2052,7 +2056,7 @@
 
     // "each" or "per item" in description when it's also a bundle listing
     // is a very common source of buyer confusion and bad AI scores
-    const PER_ITEM_RE = /(\$\d+\s*(each|ea|per\s+(item|piece|pair|unit))|each.*\$\d+)/i;
+    const PER_ITEM_RE = /\b(\$\d+\s*(each|ea\b|per\s+(item|piece|pair|unit))|each\b.*\$\d+)/i;
     if (PER_ITEM_RE.test(desc) && detectMultiItem(listing.title, listing.description)) {
       warnings.push({
         code: "PRICE_AMBIGUITY",
@@ -2065,7 +2069,7 @@
 
     // Seller says "local pickup only" but FBM shows a shipping cost.
     // This often means the shipping cost was read from a different listing.
-    const PICKUP_ONLY_RE = /(local\s+pick\s*up\s+only|no\s+shipping|cash\s+only)/i;
+    const PICKUP_ONLY_RE = /\b(local\s+pick\s*up\s+only|no\s+shipping|cash\s+only)\b/i;
     if (PICKUP_ONLY_RE.test(desc) && listing.shipping_cost > 0) {
       warnings.push({
         code: "SHIPPING_CONFLICT",
