@@ -1,5 +1,5 @@
 /**
- * content/fbm.js — Facebook Marketplace Content Script v0.23.0
+ * content/fbm.js — Facebook Marketplace Content Script v0.24.0
  *
  * FEATURES:
  *   1. Collapsible deal scoring sidebar (bottom-right tab, draggable)
@@ -53,7 +53,7 @@
     if (s.ds_api_base) API_BASE = s.ds_api_base;
   }).catch(() => {});
 
-  const VERSION   = "0.23.0";
+  const VERSION   = "0.24.0";
   const LOG_PRE   = "[DealScout]";
 
   // v0.19.0: Pro gating removed — fully free (affiliate + data monetization)
@@ -1019,15 +1019,66 @@
       .ds-shipping-note {
         font-size: 11px; color: #fbbf24; margin: 4px 0;
       }
+      /* ── Buy-New Parity Banner — primary revenue trigger ── */
       .ds-parity-banner {
-        display: flex; align-items: flex-start; gap: 8px;
-        background: rgba(99,102,241,0.12); border: 1px solid rgba(99,102,241,0.3);
-        border-radius: 8px; padding: 8px 10px; margin-bottom: 8px;
+        position: relative; overflow: hidden;
+        background: linear-gradient(135deg, #1e1b4b 0%, #312e81 60%, #1e3a5f 100%);
+        border: 1px solid rgba(129,140,248,0.5);
+        border-radius: 10px; padding: 10px 12px 10px 12px;
+        margin-bottom: 10px; cursor: default;
       }
-      .ds-parity-banner-icon { font-size: 16px; flex-shrink: 0; }
-      .ds-parity-banner-text { flex: 1; min-width: 0; }
-      .ds-parity-banner-title { font-size: 12px; font-weight: 700; color: #a78bfa; }
-      .ds-parity-banner-sub { font-size: 10px; opacity: 0.6; margin-top: 2px; }
+      /* Animated shimmer sweep — draws the eye */
+      .ds-parity-banner::before {
+        content: ''; position: absolute;
+        top: -50%; left: -75%; width: 50%; height: 200%;
+        background: linear-gradient(100deg, transparent 20%, rgba(255,255,255,0.06) 50%, transparent 80%);
+        animation: ds-shimmer 3s infinite linear;
+        pointer-events: none;
+      }
+      @keyframes ds-shimmer { 0% { left: -75%; } 100% { left: 125%; } }
+      .ds-parity-top {
+        display: flex; align-items: center; gap: 7px; margin-bottom: 7px;
+      }
+      .ds-parity-badge {
+        background: linear-gradient(135deg, #f59e0b, #ef4444);
+        color: #fff; font-size: 9px; font-weight: 800; letter-spacing: 0.5px;
+        padding: 2px 6px; border-radius: 4px; text-transform: uppercase; flex-shrink: 0;
+      }
+      .ds-parity-headline {
+        font-size: 12px; font-weight: 700; color: #e0e7ff; flex: 1;
+      }
+      .ds-parity-prices {
+        display: flex; gap: 6px; align-items: center; margin-bottom: 9px;
+      }
+      .ds-parity-price-used {
+        font-size: 11px; color: rgba(255,255,255,0.45);
+        text-decoration: line-through;
+      }
+      .ds-parity-price-arrow {
+        font-size: 10px; color: #f59e0b;
+      }
+      .ds-parity-price-new {
+        font-size: 13px; font-weight: 800; color: #a5f3fc;
+      }
+      .ds-parity-price-delta {
+        font-size: 10px; color: #86efac;
+        background: rgba(134,239,172,0.12);
+        border-radius: 4px; padding: 1px 5px;
+      }
+      .ds-parity-cta {
+        display: flex; align-items: center; justify-content: center; gap: 6px;
+        background: linear-gradient(135deg, #f59e0b, #f97316);
+        color: #000; font-size: 12px; font-weight: 800;
+        border-radius: 7px; padding: 7px 10px;
+        text-decoration: none; letter-spacing: 0.2px;
+        transition: filter 0.15s ease; border: none; width: 100%; cursor: pointer;
+        box-shadow: 0 2px 8px rgba(249,115,22,0.35);
+      }
+      .ds-parity-cta:hover { filter: brightness(1.1); }
+      .ds-parity-cta-sub {
+        font-size: 9px; color: rgba(255,255,255,0.4);
+        text-align: center; margin-top: 5px;
+      }
       .ds-section-parity { border-left: 3px solid #6366f1; padding-left: 8px; }
     `;
     document.head.appendChild(style);
@@ -1628,18 +1679,48 @@
     section.appendChild(titleDiv);
 
     if (isDealParity && newRetail > 0) {
-      const savingsText = newPremium > 0
-        ? `Only $${newPremium.toFixed(0)} more to buy new`
-        : `New price is comparable`;
+      // Build Amazon affiliate URL for the CTA button
+      // WHY AMAZON: highest conversion rate + fastest shipping expectation.
+      // We put the direct CTA here — not buried in the cards below — because
+      // this is the highest-intent moment: user already sees the used price
+      // isn't much cheaper than new.
+      const q          = encodeURIComponent((r.product_info?.display_name || listing.title || "").slice(0, 60));
+      const amzUrl     = `https://www.amazon.com/s?k=${q}&tag=dealscout03f-20`;
+      const deltaText  = newPremium > 0
+        ? `+${newPremium.toFixed(0)} for brand new`
+        : `same price as used`;
+      const headline   = newPremium > 0
+        ? `Only ${newPremium.toFixed(0)} more gets you brand new`
+        : `New is the same price — why buy used?`;
+
       const banner = document.createElement("div");
       banner.className = "ds-parity-banner";
       banner.innerHTML = `
-        <span class="ds-parity-banner-icon">&#x1F4A1;</span>
-        <div class="ds-parity-banner-text">
-          <div class="ds-parity-banner-title">${escHtml(savingsText)}</div>
-          <div class="ds-parity-banner-sub">New retail ~$${newRetail.toFixed(0)} &middot; Compare before buying used</div>
+        <div class="ds-parity-top">
+          <span class="ds-parity-badge">&#x26A1; Deal Alert</span>
+          <span class="ds-parity-headline">${escHtml(headline)}</span>
         </div>
+        <div class="ds-parity-prices">
+          <span class="ds-parity-price-used">Used ${listedPrice.toFixed(0)}</span>
+          <span class="ds-parity-price-arrow">&#x2192;</span>
+          <span class="ds-parity-price-new">New ~${newRetail.toFixed(0)}</span>
+          <span class="ds-parity-price-delta">${escHtml(deltaText)}</span>
+        </div>
+        <a href="${amzUrl}" target="_blank" rel="noopener noreferrer"
+           class="ds-parity-cta" id="ds-parity-cta-btn">
+          &#x1F6D2; Buy New on Amazon
+        </a>
+        <div class="ds-parity-cta-sub">Free returns on most items &middot; Prime eligible</div>
       `;
+
+      // Fire affiliate event on CTA click
+      banner.querySelector('#ds-parity-cta-btn').addEventListener('click', () => {
+        fireAffiliateEvent({
+          program_key: 'amazon', card_type: 'parity_cta',
+          price_bucket: newRetail > 500 ? 'high' : newRetail > 100 ? 'mid' : 'low',
+        }, r);
+      });
+
       section.appendChild(banner);
     }
 
