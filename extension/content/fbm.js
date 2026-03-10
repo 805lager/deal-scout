@@ -53,7 +53,7 @@
     if (s.ds_api_base) API_BASE = s.ds_api_base;
   }).catch(() => {});
 
-  const VERSION   = "0.20.0";
+  const VERSION   = "0.23.0";
   const LOG_PRE   = "[DealScout]";
 
   // v0.19.0: Pro gating removed — fully free (affiliate + data monetization)

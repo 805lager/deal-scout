@@ -190,6 +190,7 @@ class DealScoreResponse(BaseModel):
     new_price:         float
     market_confidence: str
     data_source:       str = "ebay"  # "ebay" | "google_shopping" | "ebay_mock" | "cargurus" | "craigslist"
+    query_used:        str = ""       # The actual eBay/Google search query used for comps
 
     # Like Products — real eBay items surfaced as affiliate cards
     sold_items_sample:   list = []
@@ -423,6 +424,7 @@ async def score_listing(listing: ListingRequest, request: Request):
         new_price           = market_value.new_price,
         market_confidence   = market_value.confidence,
         data_source         = market_value.data_source,
+        query_used          = market_value.query_used,
         sold_items_sample   = sold_items_sample,
         active_items_sample = active_items_sample,
 
