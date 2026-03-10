@@ -55,9 +55,14 @@ log = logging.getLogger(__name__)
 
 GOOGLE_AI_API_KEY = os.getenv("GOOGLE_AI_API_KEY", "")
 
-# Which Gemini model to use — configurable for easy upgrades
-# gemini-2.0-flash is fast, cheap, and has search grounding
+# Primary model — fast, cheap, supports search grounding (paid tier)
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+
+# Free-tier fallback model — 1,500 req/day free, resets daily.
+# Used when the primary model hits quota (429) or billing isn't set up.
+# No search grounding on free tier, but knowledge pricing still beats mock data.
+# Override with GEMINI_FALLBACK_MODEL env var if needed.
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-1.5-flash")
 
 # In-memory cache: cache_key → (timestamp, result_dict)
 # WHY 10 MIN: used prices don't change meaningfully in 10 minutes.
@@ -157,23 +162,44 @@ async def _call_gemini_async(
     except Exception as e:
         log.warning(f"[GeminiPricer] Search grounding failed: {type(e).__name__}: {e}")
 
-    # Strategy 2: Training knowledge — no live search, uses model's training data
+    # Strategy 2: Training knowledge (primary model, no search grounding)
     # WHY FALLBACK (not primary): training data has a cutoff; live search is better
     # WHY KEEP: still far better than keyword-based mock data for most items
     try:
         result = await loop.run_in_executor(
             None,
             _gemini_knowledge_only,
-            query, condition, listing_price
+            query, condition, listing_price, GEMINI_MODEL
         )
         if result and result.get("avg_used_price"):
-            # Cap confidence — without live data, "high" is overconfident
             if result.get("confidence") == "high":
                 result["confidence"] = "medium"
             result["data_source"] = "gemini_knowledge"
             return result
     except Exception as e:
-        log.warning(f"[GeminiPricer] Knowledge fallback failed: {type(e).__name__}: {e}")
+        log.warning(f"[GeminiPricer] Knowledge fallback ({GEMINI_MODEL}) failed: {type(e).__name__}: {e}")
+
+    # Strategy 3: Free-tier fallback model (gemini-1.5-flash)
+    # WHY: 1.5-flash gets 1,500 free requests/day regardless of billing status.
+    # When 2.0-flash quota is exhausted or billing isn't configured, this
+    # ensures the pipeline always returns SOMETHING better than mock data.
+    # data_source stays "gemini_knowledge" — same badge, just a different model.
+    if GEMINI_FALLBACK_MODEL and GEMINI_FALLBACK_MODEL != GEMINI_MODEL:
+        try:
+            log.info(f"[GeminiPricer] Trying free-tier fallback: {GEMINI_FALLBACK_MODEL}")
+            result = await loop.run_in_executor(
+                None,
+                _gemini_knowledge_only,
+                query, condition, listing_price, GEMINI_FALLBACK_MODEL
+            )
+            if result and result.get("avg_used_price"):
+                if result.get("confidence") == "high":
+                    result["confidence"] = "medium"
+                result["data_source"] = "gemini_knowledge"
+                log.info(f"[GeminiPricer] Free-tier fallback succeeded: {GEMINI_FALLBACK_MODEL}")
+                return result
+        except Exception as e:
+            log.warning(f"[GeminiPricer] Free-tier fallback ({GEMINI_FALLBACK_MODEL}) failed: {type(e).__name__}: {e}")
 
     return None
 
@@ -242,26 +268,38 @@ def _gemini_with_search(query: str, condition: str, listing_price: float) -> Opt
         raise RuntimeError(f"search grounding error: {e}") from e
 
 
-def _gemini_knowledge_only(query: str, condition: str, listing_price: float) -> Optional[dict]:
+def _gemini_knowledge_only(
+    query: str,
+    condition: str,
+    listing_price: float,
+    model_name: str = None,   # defaults to GEMINI_MODEL; pass GEMINI_FALLBACK_MODEL for free-tier
+) -> Optional[dict]:
     """
     Synchronous Gemini call without search grounding.
     Uses training data only — no live web search.
     Runs in thread pool executor.
+
+    model_name is explicit so the 3-tier cascade can call this with both
+    GEMINI_MODEL (2.0-flash) and GEMINI_FALLBACK_MODEL (1.5-flash) without
+    duplicating the function.
     """
     try:
         import google.generativeai as genai
     except ImportError:
         return None
 
+    if model_name is None:
+        model_name = GEMINI_MODEL
+
     genai.configure(api_key=GOOGLE_AI_API_KEY)
     prompt = _build_prompt(query, condition, listing_price)
 
     # No tools — pure language model inference from training data
-    model = genai.GenerativeModel(model_name=GEMINI_MODEL)
+    model = genai.GenerativeModel(model_name=model_name)
     response = model.generate_content(prompt)
 
     raw_text = getattr(response, "text", "") or ""
-    log.debug(f"[GeminiPricer] Raw knowledge response (first 300 chars): {raw_text[:300]!r}")
+    log.debug(f"[GeminiPricer] Raw knowledge response ({model_name}, first 300 chars): {raw_text[:300]!r}")
 
     return _parse_response(raw_text, data_source="gemini_knowledge")
 

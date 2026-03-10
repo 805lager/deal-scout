@@ -5,6 +5,20 @@ Format: `vX.Y.Z — Description (Date)`
 
 ---
 
+## v0.25.2 — Add gemini-1.5-flash free-tier fallback (Mar 2026)
+
+### New Features
+- **3-tier Gemini cascade** (`scoring/gemini_pricer.py`)
+  - Tier 1: `gemini-2.0-flash` + search grounding (live prices, paid)
+  - Tier 2: `gemini-2.0-flash` knowledge only (training data, paid)
+  - Tier 3: `gemini-1.5-flash` knowledge only (1,500 req/day **free**, always works)
+  - Pipeline now always returns AI pricing regardless of billing status
+- **`GEMINI_FALLBACK_MODEL` env var** — override the free-tier model if needed (default: `gemini-1.5-flash`)
+- **`_gemini_knowledge_only` accepts `model_name` param** — single function serves all tiers
+- **`/test-gemini` debug loop** — tries both models when reporting `no_result`, shows which one works
+
+---
+
 ## v0.25.1 — Fix Gemini search grounding tool format (Mar 2026)
 
 ### Bugs Fixed

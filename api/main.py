@@ -568,19 +568,24 @@ async def test_gemini():
             # text for debugging — helps distinguish "model refused" from
             # "JSON parse error" from "model returned avg=0".
             raw_debug = ""
-            try:
-                import google.generativeai as _genai
-                _genai.configure(api_key=api_key)
-                _m = _genai.GenerativeModel(model_name=GEMINI_MODEL)
-                _r = _m.generate_content(
-                    "What is the current used resale price of a Celestron NexStar 6SE telescope? "
-                    "Return ONLY a JSON object: {\"avg_used_price\": <number>, \"price_low\": <number>, "
-                    "\"price_high\": <number>, \"new_retail\": <number>, \"confidence\": \"medium\", "
-                    "\"item_id\": \"Celestron NexStar 6SE\", \"notes\": \"<1 sentence>\"}"
-                )
-                raw_debug = (getattr(_r, "text", "") or "")[:500]
-            except Exception as _e:
-                raw_debug = f"debug call failed: {_e}"
+            # Try primary model first, then free-tier fallback
+            from scoring.gemini_pricer import GEMINI_FALLBACK_MODEL
+            _debug_prompt = (
+                "What is the current used resale price of a Celestron NexStar 6SE telescope? "
+                "Return ONLY a JSON object: {\"avg_used_price\": <number>, \"price_low\": <number>, "
+                "\"price_high\": <number>, \"new_retail\": <number>, \"confidence\": \"medium\", "
+                "\"item_id\": \"Celestron NexStar 6SE\", \"notes\": \"<1 sentence>\"}"
+            )
+            for _debug_model in [GEMINI_MODEL, GEMINI_FALLBACK_MODEL]:
+                try:
+                    import google.generativeai as _genai
+                    _genai.configure(api_key=api_key)
+                    _m = _genai.GenerativeModel(model_name=_debug_model)
+                    _r = _m.generate_content(_debug_prompt)
+                    raw_debug = f"[{_debug_model}] " + (getattr(_r, "text", "") or "")[:400]
+                    break  # succeeded — stop trying models
+                except Exception as _e:
+                    raw_debug = f"[{_debug_model}] debug call failed: {_e}"
 
             return {
                 "status":    "no_result",
