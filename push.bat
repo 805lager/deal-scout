@@ -1,6 +1,42 @@
 @echo off
 cd /d "C:\Users\Shaun\Desktop\Personal_Shopping_Bot"
 
+echo === Deal Scout — Pre-push Syntax Check ===
+echo.
+
+REM WHY: f-string with bare } causes SyntaxError that only shows up at runtime.
+REM Catching it here prevents a failed Railway healthcheck + wasted deploy minutes.
+python -m py_compile api\main.py
+if %ERRORLEVEL% NEQ 0 (
+    echo.
+    echo *** SYNTAX ERROR in api\main.py — aborting push ***
+    pause
+    exit /b 1
+)
+python -m py_compile scoring\gemini_pricer.py
+if %ERRORLEVEL% NEQ 0 (
+    echo.
+    echo *** SYNTAX ERROR in scoring\gemini_pricer.py — aborting push ***
+    pause
+    exit /b 1
+)
+python -m py_compile scoring\ebay_pricer.py
+if %ERRORLEVEL% NEQ 0 (
+    echo.
+    echo *** SYNTAX ERROR in scoring\ebay_pricer.py — aborting push ***
+    pause
+    exit /b 1
+)
+python -m py_compile scoring\product_evaluator.py
+if %ERRORLEVEL% NEQ 0 (
+    echo.
+    echo *** SYNTAX ERROR in scoring\product_evaluator.py — aborting push ***
+    pause
+    exit /b 1
+)
+echo All syntax checks passed.
+echo.
+
 echo === Deal Scout — Git Push ===
 echo.
 
@@ -8,15 +44,12 @@ git status
 echo.
 
 REM Stage EVERYTHING — new files, modified files, deleted files.
-REM WHY: old push.bat used explicit paths and silently skipped new files
-REM (railway.toml, main.py, Procfile, new scoring modules, etc.)
 git add .
 
 echo === Files staged ===
 git status
 echo.
 
-REM Prompt for a commit message so every push is meaningful in the log
 set /p MSG="Commit message (or press Enter for default): "
 if "%MSG%"=="" set MSG=chore: update project files
 

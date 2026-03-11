@@ -587,7 +587,7 @@ async def test_gemini(
                 f"What is the current used resale price of a {query}? "
                 "Return ONLY a JSON object: {\"avg_used_price\": <number>, \"price_low\": <number>, "
                 "\"price_high\": <number>, \"new_retail\": <number>, \"confidence\": \"medium\", "
-                f"\"item_id\": \"<specific model name>\", \"notes\": \"<1 sentence>\"}"
+                "\"item_id\": \"<specific model name>\", \"notes\": \"<1 sentence>\"}"
             )
             for _debug_model in [GEMINI_MODEL, GEMINI_FALLBACK_MODEL]:
                 try:
