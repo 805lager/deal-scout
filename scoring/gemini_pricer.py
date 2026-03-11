@@ -58,12 +58,12 @@ GOOGLE_AI_API_KEY = os.getenv("GOOGLE_AI_API_KEY", "")
 # Primary model — fast, cheap, supports search grounding (paid tier)
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 
-# Free-tier fallback model — used when primary hits quota (429) or billing isn't set up.
-# No search grounding on fallback, but knowledge pricing still beats mock data.
-# gemini-2.0-flash-lite: current free tier (15 RPM, 1M tokens/day free).
-# WHY NOT gemini-1.5-flash-latest: that alias was deprecated in early 2026 and
-# returns 404 on the v1beta endpoint the SDK uses. -lite is the correct replacement.
-GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-2.0-flash-lite")
+# Fallback model — used when primary hits quota (429) or search grounding fails.
+# No search grounding on this path, but knowledge pricing still beats mock data.
+# WHY same model as primary: Google keeps retiring lite/flash variants rapidly.
+# gemini-2.0-flash works without grounding (knowledge-only mode) and is stable.
+# Override with GEMINI_FALLBACK_MODEL env var if a cheaper model becomes available.
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-2.0-flash")
 
 # In-memory cache: cache_key → (timestamp, result_dict)
 # WHY 10 MIN: used prices don't change meaningfully in 10 minutes.
