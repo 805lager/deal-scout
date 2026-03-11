@@ -367,8 +367,14 @@ Confidence guide:
 - "medium": reasonable estimate from general market knowledge
 - "low": niche/unusual item, rapidly changing market, or uncertain identification
 
-CRITICAL: avg_used_price must reflect realistic used SELLING prices, not what stores charge new.
-If you cannot identify a specific product, return avg_used_price: 0."""
+CRITICAL RULES:
+1. avg_used_price must reflect realistic used SELLING prices, not what stores charge new.
+2. Price THIS EXACT item described in the query. Do NOT substitute a different brand or model.
+   If the item is an obscure or budget brand (e.g. Gskyer, Aomekie, Zhumell), price it as that
+   brand — not as a well-known equivalent. Budget brands sell for less than premium brands.
+3. If you cannot identify this specific product, estimate based on its specs/category/price tier.
+   Example: "80mm refractor telescope, budget brand" → $80–$150 used, NOT $500 for a Celestron.
+4. If you truly have no usable data and cannot estimate by specs, return avg_used_price: 0."""
 
 
 # ── Response Parsing ──────────────────────────────────────────────────────────
