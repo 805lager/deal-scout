@@ -615,13 +615,17 @@ async def test_gemini(
         }
 
 
+BACKEND_VERSION = "0.26.0"  # bumped with each deploy — check /health to confirm Railway is running latest code
+
 @app.get("/health")
 async def health():
     """Detailed health check — confirms API keys are configured."""
     return {
-        "api":          "ok",
+        "api":           "ok",
+        "version":       BACKEND_VERSION,
         "anthropic_key": "set" if os.getenv("ANTHROPIC_API_KEY") else "missing",
-        "ebay_key":      "set" if os.getenv("EBAY_APP_ID") and "your_ebay" not in os.getenv("EBAY_APP_ID", "") else "missing — using mock data",
+        "ebay_key":      "set" if os.getenv("EBAY_APP_ID") and "your_ebay" not in os.getenv("EBAY_APP_ID", "") else "missing",
+        "gemini_key":    "set" if os.getenv("GOOGLE_AI_API_KEY") else "missing",
     }
 
 
