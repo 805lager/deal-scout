@@ -241,12 +241,20 @@ def _gemini_with_search(query: str, condition: str, listing_price: float) -> Opt
         _tools = [{"google_search": {}}]
         log.debug("[GeminiPricer] Using dict fallback {google_search:{}}")
 
+    # WHY response_mime_type: gemini-2.5-flash ignores "return ONLY JSON" prompts
+    # when search grounding is active — it returns rich prose instead.
+    # Enforcing application/json at the API level overrides that behavior.
+    # NOTE: if the SDK version doesn't support this with grounding active,
+    # the generate_content call will raise an exception and we fall through
+    # to the knowledge-only path naturally.
+    _gen_config = {"response_mime_type": "application/json"}
+
     try:
         model = genai.GenerativeModel(
             model_name=GEMINI_MODEL,
             tools=_tools,
         )
-        response = model.generate_content(prompt)
+        response = model.generate_content(prompt, generation_config=_gen_config)
 
         # Log raw text at DEBUG so we can see what Gemini actually returned
         raw_text = getattr(response, "text", "") or ""
@@ -296,9 +304,16 @@ def _gemini_knowledge_only(
     genai.configure(api_key=GOOGLE_AI_API_KEY)
     prompt = _build_prompt(query, condition, listing_price)
 
-    # No tools — pure language model inference from training data
+    # No tools — pure language model inference from training data.
+    # WHY response_mime_type: enforces JSON output at API level.
+    # Without this, 2.5-flash sometimes returns prose even with "ONLY JSON" in prompt.
+    _gen_config = {"response_mime_type": "application/json"}
     model = genai.GenerativeModel(model_name=model_name)
-    response = model.generate_content(prompt)
+    try:
+        response = model.generate_content(prompt, generation_config=_gen_config)
+    except Exception:
+        # Older SDK versions may not support response_mime_type — fall back without it
+        response = model.generate_content(prompt)
 
     raw_text = getattr(response, "text", "") or ""
     log.debug(f"[GeminiPricer] Raw knowledge response ({model_name}, first 300 chars): {raw_text[:300]!r}")
