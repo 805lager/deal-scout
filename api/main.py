@@ -219,6 +219,9 @@ class DealScoreResponse(BaseModel):
     buy_new_trigger:       bool = False
     buy_new_message:       str  = ""
     category_detected:     str  = ""
+    # Gemini AI metadata — populated when data_source is gemini_search/gemini_knowledge
+    ai_item_id:            str  = ""   # Product Gemini identified (e.g. "Celestron NexStar 6SE")
+    ai_notes:              str  = ""   # Gemini's 1-sentence market context
     # Security scoring
     security_score:        dict = {}   # Scam/fraud risk assessment
 
@@ -450,6 +453,9 @@ async def score_listing(listing: ListingRequest, request: Request):
         buy_new_message    = buy_new_msg,
         category_detected  = category_detected,
         security_score     = dc_asdict_top(security),
+        # Gemini AI metadata
+        ai_item_id         = market_value.ai_item_id,
+        ai_notes           = market_value.ai_notes,
     )
 
 

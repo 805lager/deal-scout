@@ -1374,24 +1374,50 @@
           </div>
         ` : `
           ${(()=>{
-            // Use source-accurate labels — Google Shopping is primary,
-            // so showing "eBay sold avg" when Google won is misleading.
-            const isGoogle   = r.data_source === 'google_shopping' || r.data_source === 'google+ebay';
-            const isEbayMock = r.data_source === 'ebay_mock';
-            const soldLabel   = isGoogle ? 'Market avg (sold)'   : isEbayMock ? 'Est. sold avg'   : 'eBay sold avg';
-            const activeLabel = isGoogle ? 'Market avg (active)' : isEbayMock ? 'Est. active avg' : 'eBay active avg';
-            const compSource  = isGoogle ? 'Google Shopping'     : isEbayMock ? 'estimated'       : 'eBay';
+            // Use source-accurate labels for each pricing backend.
+            // Gemini returns USED market prices (not eBay sold/active split).
+            // Google Shopping is retail-focused. eBay mock is estimated.
+            const isGemini       = r.data_source === 'gemini_search' || r.data_source === 'gemini_knowledge';
+            const isGeminiSearch = r.data_source === 'gemini_search';
+            const isGoogle       = r.data_source === 'google_shopping' || r.data_source === 'google+ebay';
+            const isEbayMock     = r.data_source === 'ebay_mock';
+            const soldLabel   = isGemini   ? (isGeminiSearch ? 'AI market avg (live)' : 'AI market avg (est.)')
+                              : isGoogle   ? 'Market avg (sold)'
+                              : isEbayMock ? 'Est. sold avg'
+                              : 'eBay sold avg';
+            const activeLabel = isGemini   ? 'AI price range'
+                              : isGoogle   ? 'Market avg (active)'
+                              : isEbayMock ? 'Est. active avg'
+                              : 'eBay active avg';
+            const compSource  = isGemini   ? (isGeminiSearch ? 'AI live' : 'AI est.')
+                              : isGoogle   ? 'Google Shopping'
+                              : isEbayMock ? 'estimated'
+                              : 'eBay';
+            // Gemini active_avg = avg * 1.05 (synthetic) — show price range instead
+            // ps: dollar-sign prefix variable — edit_file strips $$ in template literals
+            const ps = '$';
+            const activeVal = isGemini
+              ? `${ps}${r.sold_low?.toFixed(0) || 0} \u2013 ${ps}${r.sold_high?.toFixed(0) || 0}`
+              : `${ps}${r.active_avg?.toFixed(0) || 0}`;
             const suspectStyle = r.market_confidence === 'suspect' ? 'color:#f59e0b;opacity:1' : 'opacity:0.4';
             const confLine = r.market_confidence === 'suspect'
-              ? '&#x26A0;&#xFE0F; comps may be inaccurate — verify manually'
-              : `${escHtml(r.market_confidence || 'low')} confidence · ${r.sold_count || 0} ${compSource} comps`;
+              ? '&#x26A0;&#xFE0F; comps may be inaccurate \u2014 verify manually'
+              : `${escHtml(r.market_confidence || 'low')} confidence \u00b7 ${r.sold_count || 0} ${compSource} comps`;
+            // Gemini AI metadata lines — item identified + market context note
+            const aiItemLine = isGemini && r.ai_item_id
+              ? `<div style="font-size:10px;opacity:0.5;margin-top:3px">&#x1F4CC; ${escHtml(r.ai_item_id)}</div>`
+              : '';
+            const aiNotesLine = isGemini && r.ai_notes
+              ? `<div style="font-size:10px;opacity:0.45;margin-top:2px;font-style:italic">${escHtml(r.ai_notes)}</div>`
+              : '';
             return `
-              <div class="ds-price-row"><span class="ds-price-label">${soldLabel}</span><span>$${r.sold_avg?.toFixed(0) || 0}</span></div>
-              <div class="ds-price-row"><span class="ds-price-label">${activeLabel}</span><span>$${r.active_avg?.toFixed(0) || 0}</span></div>
-              <div class="ds-price-row"><span class="ds-price-label">New retail</span><span>$${r.new_price?.toFixed(0) || 0}</span></div>
-              <div class="ds-price-row"><span class="ds-price-label">Listed price</span><strong>$${listing.price?.toFixed(0) || 0}</strong></div>
+              <div class="ds-price-row"><span class="ds-price-label">${soldLabel}</span><span>${ps}${r.sold_avg?.toFixed(0) || 0}</span></div>
+              <div class="ds-price-row"><span class="ds-price-label">${activeLabel}</span><span>${activeVal}</span></div>
+              <div class="ds-price-row"><span class="ds-price-label">New retail</span><span>${ps}${r.new_price?.toFixed(0) || 0}</span></div>
+              <div class="ds-price-row"><span class="ds-price-label">Listed price</span><strong>${ps}${listing.price?.toFixed(0) || 0}</strong></div>
               <div style="margin-top:6px;font-size:12px;">${diffEl}</div>
               <div style="font-size:10px;margin-top:3px;${suspectStyle}">${confLine}</div>
+              ${aiItemLine}${aiNotesLine}
             `;
           })()}
         `}
@@ -1452,7 +1478,9 @@
     //             Fix: lock in a known-good price range so mock uses it next time.
     //             Detected by data_source === 'ebay_mock' or confidence === 'suspect'.
     // The form shows both fields always, but highlights the relevant one.
-    const isMockData = r.data_source === 'ebay_mock' || r.data_source === 'gemini_knowledge' || r.market_confidence === 'suspect';
+    // gemini_knowledge is intentionally excluded here — it's a real AI estimate,
+    // not mock data. Mock data = eBay keyword-derived prices (unreliable).
+    const isMockData = r.data_source === 'ebay_mock' || r.market_confidence === 'suspect';
 
     const wrap = document.createElement('div');
     wrap.style.cssText = 'margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.07)';
@@ -1504,7 +1532,7 @@
           style="flex:1;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.15);
             border-radius:6px;color:#e0e0e0;font-size:11px;padding:6px 8px;outline:none;font-family:inherit;"
         />
-        <span style="align-self:center;opacity:0.4;font-size:11px">–</span>
+        <span style="align-self:center;opacity:0.4;font-size:11px">\u2013</span>
         <input id="ds-fix-high" type="number" placeholder="High $"
           style="flex:1;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.15);
             border-radius:6px;color:#e0e0e0;font-size:11px;padding:6px 8px;outline:none;font-family:inherit;"
@@ -1560,16 +1588,16 @@
 
       if (!hasQueryChange && !hasPriceRange) {
         statusEl.style.color = '#f59e0b';
-        statusEl.textContent = '⚠️ Change the query or enter a price range (or both)';
+        statusEl.textContent = '\u26a0\ufe0f Change the query or enter a price range (or both)';
         return;
       }
       if (priceHigh > 0 && priceHigh <= priceLow) {
         statusEl.style.color = '#f59e0b';
-        statusEl.textContent = '⚠️ High price must be greater than low price';
+        statusEl.textContent = '\u26a0\ufe0f High price must be greater than low price';
         return;
       }
 
-      saveBtn.textContent  = 'Saving…';
+      saveBtn.textContent  = 'Saving\u2026';
       saveBtn.disabled     = true;
       statusEl.textContent = '';
 
@@ -1585,21 +1613,21 @@
             good_query:         goodQuery || r.query_used,
             correct_price_low:  priceLow,
             correct_price_high: priceHigh,
-            notes:              `from sidebar · source=${r.data_source}`,
+            notes:              `from sidebar \u00b7 source=${r.data_source}`,
           }),
         });
 
         if (resp.ok) {
           const parts = [];
           if (hasQueryChange) parts.push('query updated');
-          if (hasPriceRange)  parts.push(`price range ${priceLow}–${priceHigh} locked in`);
+          if (hasPriceRange)  parts.push(`price range ${priceLow}\u2013${priceHigh} locked in`);
           statusEl.style.color = '#22c55e';
-          statusEl.textContent = `✅ Saved! ${parts.join(' · ')}.`;
-          saveBtn.textContent  = '✓ Saved';
+          statusEl.textContent = `\u2705 Saved! ${parts.join(' \u00b7 ')}.`;
+          saveBtn.textContent  = '\u2713 Saved';
           setTimeout(() => {
             form.style.display   = 'none';
             fixBtn.style.display = 'inline';
-            fixBtn.textContent   = '✅ Comp fixed';
+            fixBtn.textContent   = '\u2705 Comp fixed';
             fixBtn.style.color   = 'rgba(34,197,94,0.6)';
           }, 3000);
         } else {
@@ -1607,7 +1635,7 @@
         }
       } catch (err) {
         statusEl.style.color = '#ef4444';
-        statusEl.textContent = `❌ Save failed: ${err.message}`;
+        statusEl.textContent = `\u274c Save failed: ${err.message}`;
         saveBtn.textContent  = 'Save correction';
         saveBtn.disabled     = false;
       }
@@ -1664,7 +1692,7 @@
       flags.forEach(flag => {
         const li = document.createElement("div");
         li.style.cssText = "display:flex;gap:5px;align-items:flex-start";
-        li.innerHTML = `<span style="color:${cfg.color};flex-shrink:0">•</span><span>${escHtml(flag)}</span>`;
+        li.innerHTML = `<span style="color:${cfg.color};flex-shrink:0">\u2022</span><span>${escHtml(flag)}</span>`;
         ul.appendChild(li);
       });
       section.appendChild(ul);
@@ -1674,7 +1702,7 @@
     if (itemRisks.length) {
       const riskDiv = document.createElement("div");
       riskDiv.style.cssText = "margin-top:5px;font-size:10px;opacity:0.6;font-style:italic";
-      riskDiv.textContent = "Item risks: " + itemRisks.join(" · ");
+      riskDiv.textContent = "Item risks: " + itemRisks.join(" \u00b7 ");
       section.appendChild(riskDiv);
     }
 
@@ -1751,7 +1779,7 @@
         : `same price as used`;
       const headline   = newPremium > 0
         ? `Only ${newPremium.toFixed(0)} more gets you brand new`
-        : `New is the same price — why buy used?`;
+        : `New is the same price \u2014 why buy used?`;
 
       const banner = document.createElement("div");
       banner.className = "ds-parity-banner";
@@ -1790,7 +1818,7 @@
       const ebayUrl = `https://www.ebay.com/sch/i.html?_nkw=${q}&mkevt=1&mkcid=1&mkrid=711-53200-19255-0&campid=5339144027&toolid=10001`;
 
       const amzSubtitle = (isDealParity && newRetail > 0)
-        ? `New from ~$${newRetail.toFixed(0)} · Free returns on most items`
+        ? `New from ~$${newRetail.toFixed(0)} \u00b7 Free returns on most items`
         : "New retail reference";
       const amzReason = (isDealParity && newPremium > 0)
         ? `Only $${newPremium.toFixed(0)} more than the used asking price`
@@ -1840,7 +1868,7 @@
       </span>
       <div class="ds-aff-text">
         <div class="ds-aff-title">${escHtml(card.title || "")}</div>
-        <div class="ds-aff-sub">${escHtml(card.subtitle || "")}${card.price_hint ? " · <b>" + escHtml(card.price_hint) + "</b>" : ""}</div>
+        <div class="ds-aff-sub">${escHtml(card.subtitle || "")}${card.price_hint ? " \u00b7 <b>" + escHtml(card.price_hint) + "</b>" : ""}</div>
         <div class="ds-aff-reason">${escHtml(card.reason || "")}</div>
       </div>
       <span class="ds-aff-arrow">&#x2192;</span>
@@ -1874,10 +1902,31 @@
     const rating = pe.overall_rating ? ` &middot; ${pe.overall_rating.toFixed(1)}/5 &#x2B50;` : "";
     const count  = pe.review_count   ? ` (${pe.review_count} reviews)` : "";
 
+    // Source badge: purple Google AI or grey Reddit
+    // WHY SHOW SOURCE: lets user know whether reputation came from AI knowledge
+    // or community scraped data — affects how much weight to put on it
+    const sourceBadge = pe.ai_powered
+      ? `<span style="background:rgba(139,92,246,0.15);color:#a78bfa;border:1px solid rgba(139,92,246,0.3);
+           border-radius:10px;padding:1px 7px;font-size:9px;font-weight:600;white-space:nowrap">
+           &#x1F916; Google AI</span>`
+      : `<span style="background:rgba(255,255,255,0.07);color:rgba(255,255,255,0.4);
+           border:1px solid rgba(255,255,255,0.12);
+           border-radius:10px;padding:1px 7px;font-size:9px;font-weight:600;white-space:nowrap">
+           Reddit</span>`;
+
     let issueHtml = "";
     if (pe.known_issues?.length) {
+      // Show up to 3 issues, · separator (was 2 with comma)
       issueHtml = `<div style="font-size:11px;opacity:0.6;margin-top:4px">
-        Issues: ${pe.known_issues.slice(0,2).map(i => escHtml(i)).join(", ")}
+        Issues: ${pe.known_issues.slice(0,3).map(i => escHtml(i)).join(" &middot; ")}
+      </div>`;
+    }
+
+    // Show strengths only when no issues (avoids wall of text)
+    let strengthHtml = "";
+    if (!pe.known_issues?.length && pe.strengths?.length) {
+      strengthHtml = `<div style="font-size:11px;color:#86efac;opacity:0.75;margin-top:4px">
+        &#x2714; ${pe.strengths.slice(0,2).map(s => escHtml(s)).join(" &middot; ")}
       </div>`;
     }
 
@@ -1886,10 +1935,14 @@
     section.innerHTML = `
       <div class="ds-section-title">&#x1F4CB; Product Reputation</div>
       <div class="ds-reliability">
-        <span style="font-weight:700;color:${color}">${emoji} ${pe.reliability_tier.toUpperCase()}</span>
-        <span style="font-size:11px;opacity:0.7">${rating}${count}</span>
-        ${pe.reddit_sentiment ? `<div style="font-size:11px;opacity:0.6;margin-top:4px;font-style:italic">"${escHtml(pe.reddit_sentiment.slice(0,80))}"</div>` : ""}
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <span style="font-weight:700;color:${color}">${emoji} ${pe.reliability_tier.toUpperCase()}</span>
+          ${sourceBadge}
+          <span style="font-size:11px;opacity:0.7">${rating}${count}</span>
+        </div>
+        ${pe.reddit_sentiment ? `<div style="font-size:11px;opacity:0.6;margin-top:4px;font-style:italic">"${escHtml(pe.reddit_sentiment.slice(0,100))}"</div>` : ""}
         ${issueHtml}
+        ${strengthHtml}
       </div>`;
     container.appendChild(section);
   }
@@ -2024,7 +2077,7 @@
       warnings.push({
         code: "PRICE_LIKELY_ERROR",
         severity: "warning",
-        message: "Price shows $1 — may be a page-read error. Verify before scoring.",
+        message: "Price shows $1 \u2014 may be a page-read error. Verify before scoring.",
       });
     }
 
@@ -2035,7 +2088,7 @@
       warnings.push({
         code: "PRICE_VERY_LOW",
         severity: "info",
-        message: `Price is $${price} — confirm this isn't per-item pricing for a bundle.`,
+        message: `Price is $${price} \u2014 confirm this isn't per-item pricing for a bundle.`,
       });
     }
 
@@ -2061,7 +2114,7 @@
       warnings.push({
         code: "PRICE_AMBIGUITY",
         severity: "warning",
-        message: "Description mentions per-item pricing — listed price may be for one item only.",
+        message: "Description mentions per-item pricing \u2014 listed price may be for one item only.",
       });
     }
 
@@ -2074,7 +2127,7 @@
       warnings.push({
         code: "SHIPPING_CONFLICT",
         severity: "info",
-        message: "Seller says pickup only but a shipping cost was detected — verify delivery option.",
+        message: "Seller says pickup only but a shipping cost was detected \u2014 verify delivery option.",
       });
     }
 
@@ -2086,7 +2139,7 @@
       warnings.push({
         code: "SPARSE_DESCRIPTION",
         severity: "info",
-        message: "Description is very short — score may have less context than usual.",
+        message: "Description is very short \u2014 score may have less context than usual.",
       });
     }
 
@@ -2140,7 +2193,7 @@
 
       // Wait for listing DOM to fully hydrate using MutationObserver.
       // WHY MUTATIONOBSERVER OVER RETRY LOOP:
-      //   The old retry loop (8×800ms) had two failure modes:
+      //   The old retry loop (8x800ms) had two failure modes:
       //     1. Fires too early — description still empty, Claude gets no context
       //     2. Fires too late — wastes up to 6.4s on fast connections
       //   MutationObserver fires the instant React renders each field,
@@ -2149,8 +2202,8 @@
       let listing = await waitForListingReady();
 
       if (!listing) {
-        console.warn(LOG_PRE, "Listing DOM not ready after timeout — aborting score");
-        showError("Could not read listing — try refreshing the page");
+        console.warn(LOG_PRE, "Listing DOM not ready after timeout \u2014 aborting score");
+        showError("Could not read listing \u2014 try refreshing the page");
         return;
       }
 
@@ -2187,7 +2240,7 @@
           } else {
             msg = detail || `API error ${resp.status}`;
           }
-          console.error(LOG_PRE, `API ${resp.status} — full detail:`, JSON.stringify(err));
+          console.error(LOG_PRE, `API ${resp.status} \u2014 full detail:`, JSON.stringify(err));
           throw new Error(msg);
         }
         r = await resp.json();
@@ -2195,7 +2248,7 @@
         const isNetworkErr = fetchErr instanceof TypeError;
         showError(
           isNetworkErr
-            ? `API not reachable — is it running?\n\nStart it:\n  uvicorn api.main:app --reload --port 8000`
+            ? `API not reachable \u2014 is it running?\n\nStart it:\n  uvicorn api.main:app --reload --port 8000`
             : fetchErr.message
         );
         return;

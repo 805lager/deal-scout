@@ -127,6 +127,12 @@ class MarketValue:
     # Which pricing source produced this data — surfaced in sidebar and used
     # by Claude to calibrate how much to trust the market comps.
     data_source: str = "gemini_search"  # "gemini_search" | "gemini_knowledge" | "ebay" | "ebay_mock" | "correction_range"
+    # Gemini AI metadata — only populated when data_source is gemini_search/gemini_knowledge.
+    # item_id: the specific product Gemini identified (e.g. "Celestron NexStar 6SE")
+    # ai_notes: Gemini's 1-sentence market context (e.g. "Prices vary by condition")
+    # These surface in the sidebar Market Comparison panel beneath the price rows.
+    ai_item_id: str = ""
+    ai_notes:   str = ""
 
 
 # ── Search Query Builder ──────────────────────────────────────────────────────
@@ -585,6 +591,10 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
     # Falls back to its training knowledge if grounding fails.
     # See scoring/gemini_pricer.py for full details.
     gemini_stats = await _try_gemini_pricing(query, condition=listing_condition, listing_price=listing_price)
+    # Capture Gemini metadata before it goes out of scope — MarketValue will carry it
+    # to the API response and eventually to the sidebar for display.
+    _gemini_ai_item_id = gemini_stats.get("item_id", "") if gemini_stats else ""
+    _gemini_ai_notes   = gemini_stats.get("notes",   "") if gemini_stats else ""
 
     # ── Step 2: Always fetch eBay in parallel for affiliate sidebar cards ──────
     # WHY ALWAYS: Even when Gemini succeeds, we want eBay listing cards for
@@ -716,6 +726,8 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         sold_items_sample    = sold_items_sample,
         active_items_sample  = active_items_sample,
         data_source          = data_source,
+        ai_item_id           = _gemini_ai_item_id,
+        ai_notes             = _gemini_ai_notes,
     )
 
 

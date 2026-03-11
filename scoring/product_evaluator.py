@@ -75,8 +75,9 @@ class ProductEvaluation:
     strengths:         list             # ["excellent optics for price", "easy setup"]
     reddit_sentiment:  Optional[str]    # 1-2 sentence owner consensus summary
     reddit_post_count: int
-    sources_used:      list             # ["reddit", "google_shopping"]
+    sources_used:      list             # ["reddit", "google_shopping", "gemini"]
     confidence:        str              # "high" | "medium" | "low"
+    ai_powered:        bool = False     # True when Gemini AI contributed to this assessment
 
     def to_prompt_text(self) -> str:
         """
@@ -135,11 +136,13 @@ async def evaluate_product(
 
     log.info(f"[Evaluator] Evaluating: '{display_name}'")
 
-    # Run Reddit search + Google Shopping rating concurrently
-    # return_exceptions=True prevents one failure from cancelling the other
-    reddit_data, google_rating = await asyncio.gather(
+    # Run Reddit search + Google Shopping rating + Gemini AI concurrently.
+    # Gemini is the most reliable source — Reddit can rate-limit, Google HTML changes.
+    # return_exceptions=True prevents one failure from cancelling the others.
+    reddit_data, google_rating, gemini_rep = await asyncio.gather(
         _fetch_reddit_signals(brand, model, category),
         _fetch_google_rating(display_name),
+        _fetch_gemini_reputation(brand, model, category),
         return_exceptions=True,
     )
 
@@ -151,29 +154,62 @@ async def evaluate_product(
         log.warning(f"[Evaluator] Google rating failed: {google_rating}")
         google_rating = {"rating": None, "count": 0}
 
+    if isinstance(gemini_rep, Exception):
+        log.warning(f"[Evaluator] Gemini reputation failed: {gemini_rep}")
+        gemini_rep = {}
+
     rating = google_rating.get("rating")
     count  = google_rating.get("count", 0)
     issues = reddit_data.get("issues", [])
     posts  = reddit_data.get("posts", [])
 
-    tier       = _determine_tier(rating, count, issues, posts)
-    confidence = _determine_confidence(rating, count, posts)
+    # ── Merge Gemini + Reddit/Google signals ───────────────────────────────────
+    # Gemini knows product reputation from training data (millions of reviews).
+    # Reddit catches very recent issues that post-date Gemini's training cutoff.
+    # Strategy: Gemini sets the baseline tier/issues/strengths. Reddit appends
+    # any additional signals not already captured. This is better than either alone.
+    gemini_powered = bool(gemini_rep and gemini_rep.get("reliability_tier") not in (None, "unknown", ""))
 
-    sources = []
-    if posts:       sources.append("reddit")
-    if rating:      sources.append("google_shopping")
+    if gemini_powered:
+        tier       = gemini_rep["reliability_tier"]
+        confidence = gemini_rep.get("confidence", "medium")
+        # Merge Gemini issues/strengths with Reddit-found signals, deduplicating
+        gemini_issues    = gemini_rep.get("known_issues", [])
+        gemini_strengths = gemini_rep.get("strengths", [])
+        all_issues   = list(dict.fromkeys(gemini_issues   + [i for i in issues   if i not in gemini_issues]))[:5]
+        all_strengths = list(dict.fromkeys(gemini_strengths + [s for s in reddit_data.get("strengths", []) if s not in gemini_strengths]))[:5]
+        # Use Gemini sentiment as primary; Reddit sentiment supplements when Gemini is brief
+        final_sentiment = gemini_rep.get("sentiment") or reddit_data.get("sentiment")
+        # Bump confidence if Google reviews confirm Gemini's assessment
+        if count >= 100 and confidence == "medium":
+            confidence = "high"
+        sources = ["gemini"]
+        if posts:  sources.append("reddit")
+        if rating: sources.append("google_shopping")
+        log.info(f"[Evaluator] Gemini powered: tier={tier} conf={confidence} ai_issues={len(gemini_issues)} reddit_posts={len(posts)}")
+    else:
+        # Gemini unavailable (no API key, quota, etc.) — fall back to Reddit/Google only
+        tier            = _determine_tier(rating, count, issues, posts)
+        confidence      = _determine_confidence(rating, count, posts)
+        all_issues      = issues[:5]
+        all_strengths   = reddit_data.get("strengths", [])[:5]
+        final_sentiment = reddit_data.get("sentiment")
+        sources = []
+        if posts:  sources.append("reddit")
+        if rating: sources.append("google_shopping")
 
     result = ProductEvaluation(
         product_name      = display_name,
         overall_rating    = rating,
         review_count      = count,
         reliability_tier  = tier,
-        known_issues      = issues[:5],
-        strengths         = reddit_data.get("strengths", [])[:5],
-        reddit_sentiment  = reddit_data.get("sentiment"),
+        known_issues      = all_issues,
+        strengths         = all_strengths,
+        reddit_sentiment  = final_sentiment,
         reddit_post_count = len(posts),
         sources_used      = sources,
         confidence        = confidence,
+        ai_powered        = gemini_powered,
     )
 
     _cache[cache_key] = {"data": result, "ts": now}
@@ -182,6 +218,133 @@ async def evaluate_product(
         f"rating={rating}, reviews={count}, reddit={len(posts)} posts"
     )
     return result
+
+
+# ── Gemini AI Reputation Engine ─────────────────────────────────────────────
+
+async def _fetch_gemini_reputation(brand: str, model: str, category: str) -> dict:
+    """
+    Use Gemini AI to assess product reliability from training data.
+
+    WHY GEMINI FOR REPUTATION:
+      Reddit search returns 10 posts with 400-char snippets — noisy and sparse.
+      Gemini's training data includes millions of product reviews across Amazon,
+      Reddit, BestBuy, YouTube, tech publications etc. For well-known products,
+      Gemini knows the reputation instantly without any web requests.
+
+    WHY KNOWLEDGE-ONLY (no search grounding):
+      Search grounding costs quota and adds latency. For reputation data,
+      training knowledge is sufficient — we're looking for well-established
+      patterns ("This product is known for battery issues") not today's price.
+
+    Returns dict with reliability_tier, confidence, known_issues, strengths,
+    sentiment. Returns {} on any failure — never blocks the pipeline.
+    """
+    try:
+        from scoring.gemini_pricer import GOOGLE_AI_API_KEY, GEMINI_MODEL, GEMINI_FALLBACK_MODEL
+        if not GOOGLE_AI_API_KEY or GOOGLE_AI_API_KEY.startswith("your_"):
+            log.debug("[GeminiReputation] GOOGLE_AI_API_KEY not set — skipping")
+            return {}
+    except ImportError:
+        return {}
+
+    product_term = f"{brand} {model}".strip()
+    if not product_term or product_term.lower() in ("unknown unknown", "unknown"):
+        return {}
+
+    prompt = f"""You are a product reliability expert. Based on consumer reviews, owner reports, and known quality data for the {product_term}, provide a reliability assessment.
+
+Return ONLY a valid JSON object (no markdown, no explanation outside the JSON):
+{{
+  "reliability_tier": "<excellent|good|mixed|poor|unknown>",
+  "confidence": "<high|medium|low>",
+  "known_issues": ["<brief issue 1>", "<brief issue 2>"],
+  "strengths": ["<brief strength 1>", "<brief strength 2>"],
+  "sentiment": "<1-2 sentence owner consensus summary>"
+}}
+
+Reliability tier guide:
+- excellent: highly reliable, minimal owner complaints, strong build quality
+- good: generally reliable with minor issues reported
+- mixed: notable reliability concerns, inconsistent quality reports
+- poor: significant recurring issues, high complaint volume
+- unknown: product not well-documented or too niche to assess
+
+CRITICAL: Base this only on real owner feedback and documented issues, not marketing.
+Return \"unknown\" tier if you don't have sufficient data for this specific model."""
+
+    import asyncio
+    loop = asyncio.get_event_loop()
+
+    for model_name in [GEMINI_MODEL, GEMINI_FALLBACK_MODEL]:
+        try:
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, _gemini_reputation_call, model_name, prompt),
+                timeout=10.0,
+            )
+            if result:
+                log.info(
+                    f"[GeminiReputation] '{product_term}' → "
+                    f"tier={result.get('reliability_tier')} model={model_name}"
+                )
+                return result
+        except asyncio.TimeoutError:
+            log.warning(f"[GeminiReputation] Timeout for '{product_term}' with {model_name}")
+        except Exception as e:
+            log.warning(f"[GeminiReputation] {model_name} failed for '{product_term}': {e}")
+
+    return {}
+
+
+def _gemini_reputation_call(model_name: str, prompt: str) -> dict:
+    """
+    Synchronous Gemini call for product reputation. Runs in thread pool executor.
+    Reuses the same response parsing pattern as gemini_pricer.py.
+    """
+    import json as _json
+    import re as _re
+    try:
+        import google.generativeai as genai
+        from scoring.gemini_pricer import GOOGLE_AI_API_KEY
+    except ImportError:
+        return {}
+
+    genai.configure(api_key=GOOGLE_AI_API_KEY)
+    model  = genai.GenerativeModel(model_name=model_name)
+    response = model.generate_content(prompt)
+    text   = getattr(response, "text", "") or ""
+
+    # Strip markdown fences if present
+    text = _re.sub(r"```(?:json)?\s*", "", text.strip())
+    text = _re.sub(r"```", "", text)
+
+    json_start = text.find("{")
+    json_end   = text.rfind("}") + 1
+    if json_start == -1 or json_end == 0:
+        log.debug(f"[GeminiReputation] No JSON in response: {text[:200]!r}")
+        return {}
+
+    try:
+        data = _json.loads(text[json_start:json_end])
+    except _json.JSONDecodeError as e:
+        log.debug(f"[GeminiReputation] JSON parse error ({e}): {text[json_start:json_end][:200]!r}")
+        return {}
+
+    tier = str(data.get("reliability_tier", "unknown")).lower()
+    if tier not in ("excellent", "good", "mixed", "poor", "unknown"):
+        tier = "unknown"
+
+    conf = str(data.get("confidence", "medium")).lower()
+    if conf not in ("high", "medium", "low"):
+        conf = "medium"
+
+    return {
+        "reliability_tier": tier,
+        "confidence":       conf,
+        "known_issues":     [str(i) for i in (data.get("known_issues") or [])[:5]],
+        "strengths":        [str(s) for s in (data.get("strengths")    or [])[:5]],
+        "sentiment":        str(data.get("sentiment") or ""),
+    }
 
 
 # ── Reddit Signal Extraction ──────────────────────────────────────────────────
