@@ -55,15 +55,16 @@ log = logging.getLogger(__name__)
 
 GOOGLE_AI_API_KEY = os.getenv("GOOGLE_AI_API_KEY", "")
 
-# Primary model — fast, cheap, supports search grounding (paid tier)
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+# Primary model — supports search grounding, stable GA as of 2025.
+# WHY 2.5-flash: 2.0-flash is retired for new API keys (404). 2.5-flash is the
+# current stable production model with search grounding support.
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 # Fallback model — used when primary hits quota (429) or search grounding fails.
 # No search grounding on this path, but knowledge pricing still beats mock data.
-# WHY same model as primary: Google keeps retiring lite/flash variants rapidly.
-# gemini-2.0-flash works without grounding (knowledge-only mode) and is stable.
-# Override with GEMINI_FALLBACK_MODEL env var if a cheaper model becomes available.
-GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-2.0-flash")
+# gemini-2.5-flash-lite: stable GA, fastest/cheapest 2.5 model, no grounding needed.
+# Override with GEMINI_FALLBACK_MODEL env var if needed.
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash-lite")
 
 # In-memory cache: cache_key → (timestamp, result_dict)
 # WHY 10 MIN: used prices don't change meaningfully in 10 minutes.

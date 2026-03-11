@@ -1,5 +1,5 @@
 /**
- * content/fbm.js — Facebook Marketplace Content Script v0.25.4
+ * content/fbm.js — Facebook Marketplace Content Script v0.25.5
  *
  * FEATURES:
  *   1. Collapsible deal scoring sidebar (bottom-right tab, draggable)
@@ -53,7 +53,7 @@
     if (s.ds_api_base) API_BASE = s.ds_api_base;
   }).catch(() => {});
 
-  const VERSION   = "0.25.4";
+  const VERSION   = "0.25.5";
   const LOG_PRE   = "[DealScout]";
 
   // v0.19.0: Pro gating removed — fully free (affiliate + data monetization)
