@@ -615,7 +615,7 @@ async def test_gemini(
         }
 
 
-BACKEND_VERSION = "0.26.0"  # bumped with each deploy — check /health to confirm Railway is running latest code
+BACKEND_VERSION = "0.26.6"  # bumped with each deploy — check /health to confirm Railway is running latest code
 
 @app.get("/health")
 async def health():

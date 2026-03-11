@@ -370,6 +370,19 @@ CATEGORY_MAP = {
     "audio":               "audio",
     "stereo":              "audio",
 
+    # Optics / Astronomy — no dedicated affiliate, route to cameras (Best Buy, Amazon)
+    "telescope":           "cameras",
+    "binocular":           "cameras",
+    "spotting scope":      "cameras",
+    "monocular":           "cameras",
+    "refractor":           "cameras",
+    "reflector":           "cameras",
+    "dobsonian":           "cameras",
+    "optics":              "cameras",
+    "astronomy":           "cameras",
+    "microscope":          "electronics",
+    "night vision":        "cameras",
+
     # Phones
     "phone":               "phones",
     "smartphone":          "phones",
@@ -644,7 +657,7 @@ def get_affiliate_recommendations(
     max_cards: int = 3,
     category_override: str = "",  # When set, skips detect_category() — used by main.py to force
                                    # "vehicles" when listing.is_vehicle=True, since product_info
-                                   # text for a BMW 328i won\'t contain the word "vehicle"
+                                   # text for a BMW 328i won't contain the word "vehicle"
 ) -> list:
     """
     Generate ranked affiliate recommendation cards for the sidebar.
