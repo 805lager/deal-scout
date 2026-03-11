@@ -536,11 +536,18 @@ async def test_ebay():
 
 
 @app.get("/test-gemini")
-async def test_gemini():
+async def test_gemini(
+    query:         str   = "Celestron NexStar 6SE telescope",
+    condition:     str   = "Used",
+    listing_price: float = 600.0,
+):
     """
     Tests Gemini API + Search Grounding end-to-end.
     Visit /test-gemini after deploying to Railway to confirm the new pricer works.
-    Tests with a Celestron NexStar 6SE — a product with a well-known used market.
+
+    Optional query params for testing specific items:
+      /test-gemini?query=Gskyer+80mm+AZ+Refractor+Telescope&listing_price=250
+      /test-gemini?query=iPhone+13+Pro&condition=Used&listing_price=500
     """
     from scoring.gemini_pricer import get_gemini_market_price, gemini_is_configured, GEMINI_MODEL
     api_key = os.getenv("GOOGLE_AI_API_KEY", "")
@@ -552,9 +559,9 @@ async def test_gemini():
         }
     try:
         result = await get_gemini_market_price(
-            query         = "Celestron NexStar 6SE telescope",
-            condition     = "Used",
-            listing_price = 600.0,
+            query         = query,
+            condition     = condition,
+            listing_price = listing_price,
         )
         if result:
             return {
@@ -577,10 +584,10 @@ async def test_gemini():
             # Try primary model first, then free-tier fallback
             from scoring.gemini_pricer import GEMINI_FALLBACK_MODEL
             _debug_prompt = (
-                "What is the current used resale price of a Celestron NexStar 6SE telescope? "
+                f"What is the current used resale price of a {query}? "
                 "Return ONLY a JSON object: {\"avg_used_price\": <number>, \"price_low\": <number>, "
                 "\"price_high\": <number>, \"new_retail\": <number>, \"confidence\": \"medium\", "
-                "\"item_id\": \"Celestron NexStar 6SE\", \"notes\": \"<1 sentence>\"}"
+                f"\"item_id\": \"<specific model name>\", \"notes\": \"<1 sentence>\"}"
             )
             for _debug_model in [GEMINI_MODEL, GEMINI_FALLBACK_MODEL]:
                 try:
