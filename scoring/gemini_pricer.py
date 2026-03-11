@@ -241,20 +241,17 @@ def _gemini_with_search(query: str, condition: str, listing_price: float) -> Opt
         _tools = [{"google_search": {}}]
         log.debug("[GeminiPricer] Using dict fallback {google_search:{}}")
 
-    # WHY response_mime_type: gemini-2.5-flash ignores "return ONLY JSON" prompts
-    # when search grounding is active — it returns rich prose instead.
-    # Enforcing application/json at the API level overrides that behavior.
-    # NOTE: if the SDK version doesn't support this with grounding active,
-    # the generate_content call will raise an exception and we fall through
-    # to the knowledge-only path naturally.
-    _gen_config = {"response_mime_type": "application/json"}
-
+    # WHY NO response_mime_type here: Google rejects response_mime_type when
+    # tools (search grounding) are active — it returns a 400 error after a full
+    # round-trip to the API, wasting 5-8 seconds before falling through.
+    # The grounding tool itself structures the response well enough that
+    # our JSON parser can extract what it needs from the output.
     try:
         model = genai.GenerativeModel(
             model_name=GEMINI_MODEL,
             tools=_tools,
         )
-        response = model.generate_content(prompt, generation_config=_gen_config)
+        response = model.generate_content(prompt)
 
         # Log raw text at DEBUG so we can see what Gemini actually returned
         raw_text = getattr(response, "text", "") or ""
@@ -305,14 +302,28 @@ def _gemini_knowledge_only(
     prompt = _build_prompt(query, condition, listing_price)
 
     # No tools — pure language model inference from training data.
-    # WHY response_mime_type: enforces JSON output at API level.
-    # Without this, 2.5-flash sometimes returns prose even with "ONLY JSON" in prompt.
-    _gen_config = {"response_mime_type": "application/json"}
+    # WHY response_mime_type: enforces JSON output at API level without tools.
+    # Unlike the grounding path, response_mime_type IS valid here (no tools active).
+    # We detect support from the SDK version string to avoid a slow-fail round-trip:
+    # if the SDK is too old to accept response_mime_type as a dict, skip it.
     model = genai.GenerativeModel(model_name=model_name)
     try:
-        response = model.generate_content(prompt, generation_config=_gen_config)
+        import google.generativeai.version as _gv
+        _sdk_version = tuple(int(x) for x in _gv.__version__.split(".")[:2])
+        _supports_mime = _sdk_version >= (0, 7)  # response_mime_type added in 0.7
     except Exception:
-        # Older SDK versions may not support response_mime_type — fall back without it
+        _supports_mime = True  # assume supported; let API error catch it
+
+    if _supports_mime:
+        try:
+            response = model.generate_content(
+                prompt,
+                generation_config={"response_mime_type": "application/json"}
+            )
+        except Exception:
+            # API rejected mime type (shouldn't happen without tools, but be safe)
+            response = model.generate_content(prompt)
+    else:
         response = model.generate_content(prompt)
 
     raw_text = getattr(response, "text", "") or ""
