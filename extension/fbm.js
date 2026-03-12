@@ -245,26 +245,25 @@
   function extractListing() {
     const { price, original } = findPrices();
 
-    // Title — FBM uses h1 for listing title, but the nav also has an h1 reading
-    // "Marketplace". Scan all h1s and pick the first non-generic one. Fall back
-    // to document.title which on listing pages is "Item title | Facebook".
-    let title = '';
-    for (const el of document.querySelectorAll('h1')) {
-      const t = el.textContent.trim();
-      if (t && !/^(marketplace|facebook marketplace|facebook)$/i.test(t)) {
-        title = t;
-        break;
-      }
-    }
-    if (!title) {
-      // document.title on a listing page: "Item title | Facebook" or "Facebook | Item title"
-      const parts = document.title.split(/\s*[|]\s*/);
-      title = parts.find(p => !/^(facebook|marketplace|facebook marketplace)$/i.test(p.trim())) || '';
-    }
-    if (!title) {
-      // Last resort: og:title meta tag
-      title = document.querySelector('meta[property="og:title"]')?.content?.trim() || document.title;
-    }
+    // Title — try selectors from most to least specific.
+    // FBM marks user-generated content (listing title) with dir="auto" on h1.
+    // The nav heading "Marketplace" does NOT have dir="auto".
+    let title =
+      document.querySelector('h1[dir="auto"]')?.textContent?.trim() ||
+      (() => {
+        for (const el of document.querySelectorAll('h1')) {
+          const t = el.textContent.trim();
+          if (t && !/^(marketplace|facebook marketplace|facebook)$/i.test(t)) return t;
+        }
+        return '';
+      })() ||
+      (() => {
+        // document.title on listing pages: "Item title | Facebook"
+        const parts = document.title.split(/\s*[|]\s*/);
+        return parts.find(p => !/^(facebook|marketplace|facebook marketplace)$/i.test(p.trim())) || '';
+      })() ||
+      document.querySelector('meta[property="og:title"]')?.content?.trim() ||
+      document.title;
 
     // Description — the long text block after the price
     let description = '';
@@ -355,15 +354,12 @@
       console.debug('[DealScout] No price found — skipping auto-score');
       return;
     }
-    // If the SPA hasn't fully hydrated the listing title yet, wait and retry
-    // (up to 3 times, 800 ms apart) before giving up.
-    if (_GENERIC_TITLES.has((listing.title || '').trim().toLowerCase())) {
-      if (attempt < 3) {
-        console.debug(`[DealScout] Generic title detected (attempt ${attempt + 1}) — retrying in 800ms`);
-        setTimeout(() => autoScore(attempt + 1), 800);
-        return;
-      }
-      console.debug('[DealScout] Could not extract listing title after retries — skipping');
+    // If the title looks generic (SPA hasn't hydrated yet), retry a few times.
+    // After retries, proceed anyway — vision scoring can still work from the image.
+    const titleLow = (listing.title || '').trim().toLowerCase();
+    if (_GENERIC_TITLES.has(titleLow) && attempt < 3) {
+      console.debug(`[DealScout] Generic title on attempt ${attempt + 1} — retrying in 900ms`);
+      setTimeout(() => autoScore(attempt + 1), 900);
       return;
     }
     showPanel();
@@ -372,9 +368,8 @@
       const result = await sendToBackground(listing);
       renderScore(result);
     } catch (err) {
-      // 422 from the API means the title guard fired server-side — show retry hint
       const msg = err.message || 'Scoring failed';
-      renderError(msg.includes('listing title') ? '⏳ Page still loading — try again in a moment' : msg);
+      renderError(msg.includes('listing title') ? '⏳ Page still loading — try the Score button' : msg);
     }
   }
 
