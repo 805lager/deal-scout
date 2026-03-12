@@ -72,17 +72,24 @@ document.getElementById("score-current").addEventListener("click", async () => {
     // Step 2: inject the content script file fresh
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: [scriptFile] });
 
-    // Step 3: wait for init, then send RESCORE
-    await new Promise(r => setTimeout(r, 800));
-
-    chrome.tabs.sendMessage(tab.id, { type: "RESCORE" }, (response) => {
-      if (chrome.runtime.lastError) {
-        statusEl.className = "status-card error";
-        statusEl.innerText = "⚠️ Script loaded but could not reach it. Please reload the Craigslist page and try again.";
-      } else {
-        window.close();
-      }
+    // Step 3: call global trigger directly via executeScript (no messaging)
+    const triggerResult = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: (plat) => {
+        const fnMap = { craigslist: "__dsScoreCL", offerup: "__dsScoreOU", ebay: "__dsScoreEB", fbm: "__dsFBMRescore" };
+        const fn = fnMap[plat];
+        const injectedFlag = { craigslist: "__dsCLInjected", offerup: "__dsOUInjected", ebay: "__dsEBInjected", fbm: "__dsFBMInjected" }[plat];
+        if (fn && typeof window[fn] === "function") { window[fn](); return "ok"; }
+        return "fn=" + typeof window[fn] + " guard=" + window[injectedFlag] + " url=" + location.href.slice(-60);
+      },
+      args: [platform],
     });
+
+    const diag = triggerResult?.[0]?.result;
+    if (diag === "ok") { window.close(); return; }
+
+    statusEl.className = "status-card error";
+    statusEl.innerText = `⚠️ Debug info — please share this: ${diag}`;
   } catch (e) {
     statusEl.className = "status-card error";
     statusEl.innerText = `⚠️ Blocked: ${e.message || "unknown error"}. Reload the page and try again.`;
