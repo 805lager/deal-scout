@@ -20,7 +20,7 @@
 (function () {
   "use strict";
 
-  const VERSION  = "1.0.1";
+  const VERSION  = "0.26.27";
   const PANEL_ID = "deal-scout-ou-panel";
   const PLATFORM = "offerup";
 
@@ -179,6 +179,30 @@
   }
 
   // ── Rendering ──────────────────────────────────────────────────────────────
+  function renderNavigating() {
+    const panel = getPanel();
+    panel.innerHTML = "";
+    const bar = document.createElement("div");
+    bar.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:#13111f;border-bottom:1px solid #3d3660;border-radius:10px 10px 0 0";
+    bar.innerHTML = '<span style="font-weight:700;font-size:13px;color:#7c8cf8">📊 Deal Scout <span style="font-size:10px;color:#6b7280;font-weight:400">v' + VERSION + " · OfferUp</span></span>";
+    const closeBtn = document.createElement("button");
+    closeBtn.textContent = "✕";
+    closeBtn.style.cssText = "background:none;border:none;color:#6b7280;font-size:15px;cursor:pointer;padding:1px 4px";
+    closeBtn.onclick = removePanel;
+    bar.appendChild(closeBtn);
+    panel.appendChild(bar);
+    const body = document.createElement("div");
+    body.style.cssText = "padding:24px 12px;text-align:center;color:#6b7280";
+    body.innerHTML = '<div style="font-size:24px;margin-bottom:8px;animation:ds-spin 1s linear infinite;display:inline-block">⟳</div>' +
+      '<div style="font-size:12px">Loading next listing…</div>';
+    panel.appendChild(body);
+    if (!document.getElementById("ds-spin-style")) {
+      const s = document.createElement("style"); s.id = "ds-spin-style";
+      s.textContent = "@keyframes ds-spin{to{transform:rotate(360deg)}}";
+      document.head.appendChild(s);
+    }
+  }
+
   function renderLoading(listing) {
     const panel = getPanel();
     panel.innerHTML = "";
@@ -506,9 +530,12 @@
     window.__dsOUPrevTitle = document.querySelector('h1')?.textContent?.trim() ?? '';
     _lastUrl = cur;
     _scored = false;
-    removePanel();
     if (isListingPage()) {
-      setTimeout(waitForContent, 400);
+      // Show spinner immediately — clears stale score before new listing loads.
+      renderNavigating();
+      setTimeout(waitForContent, 200);
+    } else {
+      removePanel();
     }
   }
 

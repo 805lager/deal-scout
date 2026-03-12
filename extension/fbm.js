@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION   = "0.26.26";
+  const VERSION   = "0.26.27";
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -46,8 +46,10 @@
       // Snapshot the CURRENT title before the SPA swaps the DOM.
       // autoScore will wait until this title changes → guaranteed fresh data.
       window.__dealScoutPrevTitle = document.querySelector('h1[dir="auto"]')?.textContent?.trim() ?? '';
+      // Show spinner immediately so the old score never lingers on a new URL.
+      renderNavigating();
       clearTimeout(window.__dealScoutRescanTimer);
-      window.__dealScoutRescanTimer = setTimeout(autoScore, 500);
+      window.__dealScoutRescanTimer = setTimeout(autoScore, 200);
     }
     return;
   }
@@ -472,6 +474,42 @@
 
   function getPanel() {
     return document.getElementById(PANEL_ID) || showPanel();
+  }
+
+  // ── Navigation Transition State ───────────────────────────────────────────────
+  // Called immediately when SPA navigation is detected, before the new DOM loads.
+  // Clears the old score instantly so the user never reads a stale result.
+
+  function renderNavigating() {
+    const panel = getPanel();
+    panel.innerHTML = '';
+
+    const bar = document.createElement('div');
+    bar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;'
+      + 'padding:7px 10px;background:#13111f;border-bottom:1px solid #3d3660;border-radius:10px 10px 0 0';
+    bar.innerHTML = '<span style="font-weight:700;font-size:13px;color:#7c8cf8">📊 Deal Scout '
+      + '<span style="font-size:10px;color:#6b7280;font-weight:400">v' + VERSION + '</span></span>';
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = '✕';
+    closeBtn.style.cssText = 'background:none;border:none;color:#6b7280;font-size:15px;cursor:pointer;padding:1px 4px';
+    closeBtn.onclick = () => removePanel();
+    bar.appendChild(closeBtn);
+    panel.appendChild(bar);
+
+    const body = document.createElement('div');
+    body.style.cssText = 'padding:24px 12px;text-align:center;color:#6b7280';
+    body.innerHTML = `
+      <div style="font-size:24px;margin-bottom:8px;animation:ds-spin 1s linear infinite;display:inline-block">⟳</div>
+      <div style="font-size:12px">Loading next listing…</div>
+    `;
+    panel.appendChild(body);
+
+    if (!document.getElementById('ds-spin-style')) {
+      const style = document.createElement('style');
+      style.id = 'ds-spin-style';
+      style.textContent = '@keyframes ds-spin{to{transform:rotate(360deg)}}';
+      document.head.appendChild(style);
+    }
   }
 
   // ── Loading State ─────────────────────────────────────────────────────────────
