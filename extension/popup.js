@@ -1,14 +1,3 @@
-/**
- * popup.js — Deal Scout Extension Popup
- * v0.20.0
- *
- * DEPLOYMENT NOTE:
- *   API_BASE is read from chrome.storage.local key "ds_api_base" if set.
- *   Default falls back to localhost for local dev.
- *   To point at production: set ds_api_base = "https://your-api.railway.app"
- *   in background.js onInstalled, or hardcode the URL below before packaging.
- */
-
 const API_BASE_DEFAULT = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
 
 async function getApiBase() {
@@ -20,60 +9,67 @@ async function getApiBase() {
   }
 }
 
-// ── API Health Check ──────────────────────────────────────────────────────────
+function detectPlatform(url) {
+  if (!url) return null;
+  if (url.includes("facebook.com/marketplace/item") || url.match(/facebook\.com\/marketplace\/[^/]+\/item\//)) return "fbm";
+  if (url.includes("craigslist.org")) return "craigslist";
+  if (url.includes("offerup.com/item/detail")) return "offerup";
+  if (url.includes("ebay.com/itm")) return "ebay";
+  if (url.includes("amazon.com/dp") || url.includes("amazon.com/") && url.includes("/dp/")) return "amazon";
+  return null;
+}
+
+const CONTENT_SCRIPT = {
+  fbm:        "content/fbm.js",
+  craigslist: "content/craigslist.js",
+  offerup:    "content/offerup.js",
+  ebay:       "content/ebay.js",
+};
 
 async function checkAPIHealth() {
   const statusEl = document.getElementById("api-status");
   const API_BASE = await getApiBase();
   try {
-    const resp = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(3000) });
+    const resp = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(4000) });
     if (resp.ok) {
       const data = await resp.json();
       statusEl.className = "status-card active";
-      statusEl.innerHTML = `
-        ✅ API connected<br>
-        <span style="font-size:11px">
-          Claude: ${data.anthropic_key} &nbsp;·&nbsp;
-          eBay: ${data.ebay_key}
-        </span>`;
+      statusEl.innerHTML = `✅ API connected &nbsp;·&nbsp; <span style="font-size:11px">Claude: ${data.anthropic_key} &nbsp;·&nbsp; eBay: ${data.ebay_key}</span>`;
     } else {
       throw new Error(`HTTP ${resp.status}`);
     }
   } catch (e) {
     statusEl.className = "status-card error";
-    statusEl.innerHTML = `
-      ❌ API not running<br>
-      <span style="font-size:11px">
-        Start: <code>uvicorn api.main:app --port 8000</code>
-      </span>`;
+    statusEl.innerHTML = `❌ API offline &nbsp;·&nbsp; <span style="font-size:11px">${e.message}</span>`;
   }
 }
 
-
-
-// ── Score Current Listing ─────────────────────────────────────────────────────
-
 document.getElementById("score-current").addEventListener("click", async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const statusEl = document.getElementById("api-status");
+  const platform = detectPlatform(tab?.url);
 
-  const isSupportedPage =
-    tab.url?.includes("facebook.com/marketplace/item") ||
-    tab.url?.includes("amazon.com/dp");
-
-  if (!isSupportedPage) {
-    const statusEl = document.getElementById("api-status");
+  if (!platform || platform === "amazon") {
     statusEl.className = "status-card error";
-    statusEl.innerText = "⚠️ Navigate to a Facebook Marketplace listing first";
+    statusEl.innerText = "⚠️ Navigate to a Craigslist, OfferUp, eBay, or Facebook Marketplace listing first.";
     return;
   }
 
-  // Close popup AFTER message confirmed — close-before-deliver drops the message
+  const scriptFile = CONTENT_SCRIPT[platform];
+
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: [scriptFile],
+    });
+  } catch (_) {}
+
+  await new Promise(r => setTimeout(r, 300));
+
   chrome.tabs.sendMessage(tab.id, { type: "RESCORE" }, (response) => {
     if (chrome.runtime.lastError) {
-      const statusEl = document.getElementById("api-status");
       statusEl.className = "status-card error";
-      statusEl.innerText = "⚠️ Reload the listing page and try again";
-      setTimeout(() => window.close(), 2000);
+      statusEl.innerText = "⚠️ Could not reach the page script. Try reloading the listing page first.";
     } else {
       window.close();
     }
@@ -81,19 +77,12 @@ document.getElementById("score-current").addEventListener("click", async () => {
 });
 
 
-// ── Report Issue Modal ────────────────────────────────────────────────────────
-//
-// POC: POSTs to /report on the local API, which appends to reports.jsonl.
-// Production swap: replace the fetch URL with a Slack webhook, a Sentry
-// dsn, or a simple Airtable form — no other code changes needed.
-
 const modal     = document.getElementById("report-modal");
 const modalForm = document.getElementById("modal-form");
 const modalSent = document.getElementById("modal-sent");
 
 document.getElementById("report-link").addEventListener("click", async (e) => {
   e.preventDefault();
-  // Pre-fill the URL so the user doesn't have to copy-paste it
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const ta = document.getElementById("report-text");
@@ -109,7 +98,6 @@ modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); }
 document.getElementById("modal-send").addEventListener("click", async () => {
   const text = document.getElementById("report-text").value.trim();
   if (!text) return;
-
   const API_BASE = await getApiBase();
   try {
     await fetch(`${API_BASE}/report`, {
@@ -118,8 +106,7 @@ document.getElementById("modal-send").addEventListener("click", async () => {
       body: JSON.stringify({ report: text, ts: new Date().toISOString() }),
       signal: AbortSignal.timeout(4000),
     });
-  } catch { /* fire-and-forget — don't block UX if API is down */ }
-
+  } catch {}
   modalForm.style.display = "none";
   modalSent.style.display = "block";
   setTimeout(closeModal, 2000);
@@ -131,11 +118,6 @@ function closeModal() {
   modalForm.style.display = "";
   document.getElementById("report-text").value = "";
 }
-
-
-// ── Settings Panel ───────────────────────────────────────────────────────────
-// Lets you switch between localhost and Railway without touching code.
-// The saved URL persists in chrome.storage.local as "ds_api_base".
 
 document.getElementById("settings-toggle").addEventListener("click", async () => {
   const panel = document.getElementById("settings-panel");
@@ -153,8 +135,7 @@ document.getElementById("settings-save").addEventListener("click", async () => {
   const saved = document.getElementById("settings-saved");
   saved.style.display = "inline";
   setTimeout(() => { saved.style.display = "none"; }, 2000);
-  checkAPIHealth(); // re-ping with new URL
+  checkAPIHealth();
 });
 
-// ── Init ──────────────────────────────────────────────────────────────────────
 checkAPIHealth();
