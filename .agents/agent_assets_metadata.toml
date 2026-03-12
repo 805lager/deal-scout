@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "QVdgteRtIq60yP34-zCn8"
+uri = "file://extension/deal-scout-extension.zip"
+type = "unspecified"
+title = "Deal Scout Extension JS Files"
