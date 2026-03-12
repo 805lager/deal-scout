@@ -245,9 +245,26 @@
   function extractListing() {
     const { price, original } = findPrices();
 
-    // Title — FBM uses h1 for listing title
-    const h1 = document.querySelector('h1');
-    const title = h1 ? h1.textContent.trim() : document.title.split('|')[0].trim();
+    // Title — FBM uses h1 for listing title, but the nav also has an h1 reading
+    // "Marketplace". Scan all h1s and pick the first non-generic one. Fall back
+    // to document.title which on listing pages is "Item title | Facebook".
+    let title = '';
+    for (const el of document.querySelectorAll('h1')) {
+      const t = el.textContent.trim();
+      if (t && !/^(marketplace|facebook marketplace|facebook)$/i.test(t)) {
+        title = t;
+        break;
+      }
+    }
+    if (!title) {
+      // document.title on a listing page: "Item title | Facebook" or "Facebook | Item title"
+      const parts = document.title.split(/\s*[|]\s*/);
+      title = parts.find(p => !/^(facebook|marketplace|facebook marketplace)$/i.test(p.trim())) || '';
+    }
+    if (!title) {
+      // Last resort: og:title meta tag
+      title = document.querySelector('meta[property="og:title"]')?.content?.trim() || document.title;
+    }
 
     // Description — the long text block after the price
     let description = '';
@@ -287,9 +304,14 @@
       .filter(src => src && src.length > 10)
       .slice(0, 3);
 
-    // Vehicle detection — look for year + make patterns or explicit vehicle keywords
-    const isVehicle = /\b(20\d\d|19\d\d)\s+[A-Z][a-z]+\s+[A-Z][a-z]+/.test(title) ||
-      /\b(miles?|mileage|odometer|transmission|cylinders?|vin\b|title\s+status|sedan|suv|truck|pickup|hatchback|coupe|convertible|minivan|motorcycle|atv|dirt\s*bike|sur.?ron|electric\s+bike)\b/i.test(title + ' ' + description);
+    // Vehicle detection — strong signals only to avoid false positives on electronics/audio/etc.
+    // "miles", "transmission", "cylinders" are excluded — too common in non-vehicle contexts.
+    const vehicleText = title + ' ' + description.slice(0, 300);
+    const isVehicle =
+      // Year + Make + Model pattern (e.g. "2019 Honda Civic")
+      /\b(20\d\d|19\d\d)\s+[A-Z][a-z]+\s+[A-Z][a-z]+/.test(title) ||
+      // Unambiguous vehicle-only keywords
+      /\b(odometer|vin\b|title\s+status|sedan|suv\b|pickup\s+truck|hatchback|minivan|motorcycle|atv\b|dirt\s*bike|sur.?ron|electric\s+bike|convertible\s+top|carfax|clean\s+title|salvage\s+title|lien\b)\b/i.test(vehicleText);
 
     // Multi-item / bundle detection
     const isMultiItem = /\b(bundle|lot\b|set\b|pack\b|pair\b|\d+\s*pcs|pieces|assorted|collection)\b/i.test(title + ' ' + description.slice(0, 200));
@@ -324,11 +346,24 @@
 
   // ── Auto-score ─────────────────────────────────────────────────────────────────
 
-  async function autoScore() {
+  const _GENERIC_TITLES = new Set(['marketplace', 'facebook marketplace', 'facebook', '']);
+
+  async function autoScore(attempt = 0) {
     if (!isListingPage()) return;
     const listing = extractListing();
     if (!listing.price) {
       console.debug('[DealScout] No price found — skipping auto-score');
+      return;
+    }
+    // If the SPA hasn't fully hydrated the listing title yet, wait and retry
+    // (up to 3 times, 800 ms apart) before giving up.
+    if (_GENERIC_TITLES.has((listing.title || '').trim().toLowerCase())) {
+      if (attempt < 3) {
+        console.debug(`[DealScout] Generic title detected (attempt ${attempt + 1}) — retrying in 800ms`);
+        setTimeout(() => autoScore(attempt + 1), 800);
+        return;
+      }
+      console.debug('[DealScout] Could not extract listing title after retries — skipping');
       return;
     }
     showPanel();
@@ -337,7 +372,9 @@
       const result = await sendToBackground(listing);
       renderScore(result);
     } catch (err) {
-      renderError(err.message || 'Scoring failed');
+      // 422 from the API means the title guard fired server-side — show retry hint
+      const msg = err.message || 'Scoring failed';
+      renderError(msg.includes('listing title') ? '⏳ Page still loading — try again in a moment' : msg);
     }
   }
 

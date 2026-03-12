@@ -265,6 +265,14 @@ async def score_listing(listing: ListingRequest, request: Request):
 
     log.info(f"Scoring request: '{listing.title}' @ ${listing.price}")
 
+    # Guard: reject obviously bad titles that indicate a broken extraction
+    _generic_titles = {"marketplace", "facebook marketplace", "facebook", "craigslist", "offerup", ""}
+    if (listing.title or "").strip().lower() in _generic_titles:
+        raise HTTPException(
+            status_code=422,
+            detail="Could not read the listing title — please wait for the page to fully load and try again."
+        )
+
     # ── Step 1: Extract product identity ────────────────────────────────────────
     # "Telescope" → "Orion SkyQuest XT8 Intelliscope" — this single step
     # is the biggest accuracy improvement in the entire pipeline.
