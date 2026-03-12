@@ -28,10 +28,14 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION   = "0.26.8";
+  const VERSION   = "0.26.22";
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
+  // _GENERIC_TITLES must also be before the guard — autoScore references it and
+  // autoScore is scheduled from the guard path on SPA re-injection. Any const/let
+  // declared after the early return is in TDZ when autoScore runs. (See TDZ note above.)
+  const _GENERIC_TITLES = new Set(['marketplace', 'facebook marketplace', 'facebook', '']);
 
   // ── Guard: prevent double-injection on SPA navigation ───────────────────────
   // background.js re-injects fbm.js on every pushState. Without this guard,
@@ -344,8 +348,6 @@
   }
 
   // ── Auto-score ─────────────────────────────────────────────────────────────────
-
-  const _GENERIC_TITLES = new Set(['marketplace', 'facebook marketplace', 'facebook', '']);
 
   async function autoScore(attempt = 0) {
     if (!isListingPage()) return;
