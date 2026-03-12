@@ -73,7 +73,7 @@ DATA_DIR         = Path(__file__).parent.parent / "data"
 # same item during a session. 10 min TTL keeps prices fresh enough.
 import time as _time
 _ebay_cache: dict = {}
-EBAY_CACHE_TTL_SECONDS = 600  # 10 minutes
+EBAY_CACHE_TTL_SECONDS = 3600  # 1 hour — reduces rate-limit exposure
 
 
 # ── Data Models ───────────────────────────────────────────────────────────────
@@ -197,7 +197,7 @@ async def _try_claude_ai_pricing(query: str, condition: str, listing_price: floa
     pipeline (confidence, data_source, affiliate cards) needs minimal changes.
     """
     try:
-        from scoring.gemini_pricer import get_claude_market_price
+        from scoring.claude_pricer import get_claude_market_price
         result = await get_claude_market_price(query, condition=condition, listing_price=listing_price)
         if not result or not result.get("avg_used_price"):
             log.info(f"[Gemini PRIMARY] No price returned for '{query}' — falling back to eBay")
@@ -299,7 +299,11 @@ async def search_ebay(
         ack = result.get("ack", [""])[0]
 
         if ack != "Success":
-            errors   = result.get("errorMessage", [{}])[0].get("error", [])
+            # eBay sometimes returns HTTP 200 with a top-level errorMessage dict
+            # (no operation-wrapper) when rate-limited — check both locations.
+            errors = result.get("errorMessage", [{}])[0].get("error", [])
+            if not errors:
+                errors = data.get("errorMessage", [{}])[0].get("error", [])
             error_ids = [e.get("errorId", ["0"])[0] for e in errors]
             if "10001" in error_ids:
                 log.warning(f"eBay rate limited — falling back to mock for '{query}'")
@@ -307,7 +311,7 @@ async def search_ebay(
                 for item in result:
                     item["_is_mock"] = True
                 return result
-            log.warning(f"eBay API non-success ack={ack}")
+            log.warning(f"eBay API non-success ack={ack}, error_ids={error_ids}")
             return []
 
         items = result.get("searchResult", [{}])[0].get("item", [])
