@@ -387,7 +387,7 @@
   function renderFooter(container) {
     const footer = document.createElement("div");
     footer.style.cssText = "display:flex;align-items:center;justify-content:center;padding:8px 12px;border-top:1px solid rgba(255,255,255,0.06);margin-top:4px";
-    footer.innerHTML = '<span style="font-size:10px;color:#4b5563">Deal Scout v' + VERSION + ' · OfferUp · <a href="https://dealscout.app" target="_blank" style="color:#6366f1;text-decoration:none">dealscout.app</a></span>';
+    footer.innerHTML = '<span style="font-size:10px;color:#4b5563">Deal Scout v' + VERSION + ' · OfferUp</span>';
     container.appendChild(footer);
   }
 
