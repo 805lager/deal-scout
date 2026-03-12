@@ -1347,8 +1347,33 @@
 
   function renderFooter(r, container) {
     const footer = document.createElement('div');
-    footer.style.cssText = 'text-align:center;font-size:10px;color:#4b5563;padding:6px 0 10px';
-    footer.innerHTML = `Deal Scout v${VERSION} &middot; <a href="https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/docs" target="_blank" rel="noopener" style="color:#6366f1;text-decoration:none">API docs</a>`;
+    footer.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:6px 12px 10px;font-size:10px;color:#4b5563';
+    const label = document.createElement('span');
+    label.innerHTML = `Deal Scout v${VERSION}`;
+    footer.appendChild(label);
+    if (r && r.score_id) {
+      const thumbWrap = document.createElement('div');
+      thumbWrap.style.cssText = 'display:flex;align-items:center;gap:4px';
+      const makeThumb = (emoji, val) => {
+        const btn = document.createElement('button');
+        btn.textContent = emoji;
+        btn.title = val === 1 ? 'Score felt right' : 'Score felt wrong';
+        btn.style.cssText = 'background:none;border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:2px 6px;cursor:pointer;font-size:13px';
+        btn.addEventListener('click', () => {
+          fetch(API_BASE + '/thumbs', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({score_id: r.score_id, thumbs: val}),
+            signal: AbortSignal.timeout(5000),
+          }).catch(() => {});
+          thumbWrap.innerHTML = '<span style="font-size:11px;color:#6ee7b7">Thanks!</span>';
+        });
+        return btn;
+      };
+      thumbWrap.appendChild(makeThumb('👍', 1));
+      thumbWrap.appendChild(makeThumb('👎', -1));
+      footer.appendChild(thumbWrap);
+    }
     container.appendChild(footer);
   }
 

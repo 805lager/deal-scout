@@ -63,7 +63,7 @@ function extractOfferUp() {
 }
 
 // ── Inline panel renderer injected into the page ──────────────────────────────
-function renderDealPanel(r, panelId) {
+function renderDealPanel(r, panelId, apiBase) {
   const existing = document.getElementById(panelId);
   if (existing) existing.remove();
   const score = r.score || 0;
@@ -110,8 +110,12 @@ function renderDealPanel(r, panelId) {
       ${rows}
     </div>
     ${flags?`<div style="margin:0 12px 8px">${flags}</div>`:""}
-    <div style="display:flex;align-items:center;justify-content:center;padding:8px 12px;border-top:1px solid rgba(255,255,255,0.06);margin-top:4px">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-top:1px solid rgba(255,255,255,0.06);margin-top:4px">
       <span style="font-size:10px;color:#4b5563">${cta}</span>
+      ${r.score_id ? `<div id="${panelId}-thumbs" style="display:flex;gap:4px">
+        <button onclick="(function(){fetch('${apiBase}/thumbs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({score_id:${r.score_id},thumbs:1}),signal:AbortSignal.timeout(5000)}).catch(()=>{});document.getElementById('${panelId}-thumbs').innerHTML='<span style=\\'font-size:11px;color:#6ee7b7\\'>Thanks!</span>'})()" style="background:none;border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:2px 6px;cursor:pointer;font-size:13px">👍</button>
+        <button onclick="(function(){fetch('${apiBase}/thumbs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({score_id:${r.score_id},thumbs:-1}),signal:AbortSignal.timeout(5000)}).catch(()=>{});document.getElementById('${panelId}-thumbs').innerHTML='<span style=\\'font-size:11px;color:#6ee7b7\\'>Thanks!</span>'})()" style="background:none;border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:2px 6px;cursor:pointer;font-size:13px">👎</button>
+      </div>` : ''}
     </div>`;
   document.body.appendChild(panel);
 }
@@ -186,7 +190,7 @@ document.getElementById("score-current").addEventListener("click", async () => {
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: renderDealPanel,
-      args: [result, panelId],
+      args: [result, panelId, API_BASE],
     });
   } catch (e) {
     statusEl.className = "status-card error";

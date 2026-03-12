@@ -197,6 +197,9 @@ class DealScoreResponse(BaseModel):
     sold_items_sample:   list = []
     active_items_sample: list = []
 
+    # DB row ID — returned so the extension can submit thumbs feedback
+    score_id:          int   = 0
+
     # Claude's deal analysis
     score:             int
     verdict:           str
@@ -495,7 +498,30 @@ async def score_listing(listing: ListingRequest, request: Request):
         craigslist_count        = market_value.craigslist_count,
     )
 
-    # ── Step 6: Record anonymized market signal (non-blocking) ────────────────
+    # ── Step 6: Save full score to deal_scores for feedback/replay ───────────
+    score_id = 0
+    try:
+        from scoring.data_pipeline import _get_pool
+        pool = await _get_pool()
+        if pool:
+            row = await pool.fetchrow(
+                """INSERT INTO deal_scores
+                   (platform, listing_url, listing_json, score_json, score)
+                   VALUES ($1, $2, $3::jsonb, $4::jsonb, $5)
+                   RETURNING id""",
+                listing.platform or "unknown",
+                listing.listing_url or "",
+                _json.dumps(listing.model_dump()),
+                _json.dumps(response.model_dump()),
+                deal_score.score,
+            )
+            if row:
+                score_id = row["id"]
+                response = response.model_copy(update={"score_id": score_id})
+    except Exception as _db_err:
+        log.warning(f"[deal_scores] save failed (non-fatal): {_db_err}")
+
+    # ── Step 7: Record anonymized market signal (non-blocking) ────────────────
     # Fires as a background task — API response is returned immediately.
     # Any DB error is swallowed inside record_signal; it never affects the user.
     try:
@@ -915,6 +941,40 @@ class FeedbackRequest(BaseModel):
     notes:               str   = ""
 
 
+class ThumbsRequest(BaseModel):
+    score_id: int
+    thumbs:   int  # 1 = up, -1 = down
+
+
+@app.post("/thumbs")
+async def submit_thumbs(body: ThumbsRequest):
+    """
+    Record a thumbs-up or thumbs-down on a scored listing.
+    score_id comes from the /score response. thumbs: 1 or -1.
+    Used to build a training dataset for prompt improvement.
+    """
+    if body.thumbs not in (1, -1):
+        raise HTTPException(status_code=400, detail="thumbs must be 1 or -1")
+    try:
+        from scoring.data_pipeline import _get_pool
+        pool = await _get_pool()
+        if not pool:
+            raise HTTPException(status_code=503, detail="DB unavailable")
+        result = await pool.execute(
+            "UPDATE deal_scores SET thumbs=$1, thumbs_at=NOW() WHERE id=$2",
+            body.thumbs, body.score_id,
+        )
+        if result == "UPDATE 0":
+            raise HTTPException(status_code=404, detail=f"score_id {body.score_id} not found")
+        log.info(f"[Thumbs] score_id={body.score_id} thumbs={body.thumbs}")
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"[Thumbs] DB error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/feedback")
 async def submit_feedback(body: FeedbackRequest, request: Request):
     """
@@ -943,14 +1003,39 @@ async def submit_feedback(body: FeedbackRequest, request: Request):
 @app.get("/admin")
 async def admin_page():
     """
-    Simple HTML admin page for reviewing and correcting market comparison queries.
-    Visit: https://deal-scout-production.up.railway.app/admin
-
-    Shows the correction log and a form to add new corrections.
-    No auth (obscurity only) — add HTTP Basic Auth before sharing publicly.
+    Admin page: recent scored listings with thumbs, correction log, links.
     """
     from scoring.corrections import get_all_corrections
+    from scoring.data_pipeline import _get_pool
     corrections = get_all_corrections()
+
+    # ── Fetch recent scored listings ─────────────────────────────────────────
+    recent_scores = []
+    score_stats = {"total": 0, "up": 0, "down": 0, "unrated": 0}
+    try:
+        pool = await _get_pool()
+        if pool:
+            rows = await pool.fetch(
+                """SELECT id, created_at, platform, score, thumbs,
+                          listing_json->>'title'   AS title,
+                          listing_json->>'price'   AS price,
+                          score_json->>'verdict'   AS verdict
+                   FROM deal_scores
+                   ORDER BY created_at DESC
+                   LIMIT 50"""
+            )
+            recent_scores = [dict(r) for r in rows]
+            stats_row = await pool.fetchrow(
+                """SELECT COUNT(*) AS total,
+                          COUNT(*) FILTER (WHERE thumbs=1)  AS up,
+                          COUNT(*) FILTER (WHERE thumbs=-1) AS down,
+                          COUNT(*) FILTER (WHERE thumbs IS NULL) AS unrated
+                   FROM deal_scores"""
+            )
+            if stats_row:
+                score_stats = dict(stats_row)
+    except Exception as _e:
+        log.warning(f"[admin] DB query failed: {_e}")
 
     rows = ""
     for c in corrections:
@@ -962,6 +1047,35 @@ async def admin_page():
             <td style='color:#22c55e'>{c.get('good_query','')}</td>
             <td style='color:#aaa;font-size:11px'>{c.get('notes','')[:40]}</td>
         </tr>"""
+
+    # Build scores table separately to avoid nested f-string issues
+    def _score_color(s):
+        s = s or 0
+        return "#22c55e" if s >= 7 else "#fbbf24" if s >= 5 else "#ef4444"
+
+    def _score_row(r):
+        t   = (r["title"]   or "")[:40].replace("'", "")
+        v   = (r["verdict"] or "")[:30]
+        sc  = r["score"] or 0
+        th  = "👍" if r["thumbs"] == 1 else "👎" if r["thumbs"] == -1 else "—"
+        col = _score_color(sc)
+        return (
+            "<tr>"
+            f"<td style='color:#aaa;font-size:11px'>{str(r['created_at'])[:16]}</td>"
+            f"<td style='font-size:11px;color:#7c8cf8'>{r['platform'] or ''}</td>"
+            f"<td style='max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' title='{t}'>{t}</td>"
+            f"<td>${float(r['price'] or 0):.0f}</td>"
+            f"<td style='font-weight:700;color:{col}'>{sc or '?'}</td>"
+            f"<td style='font-size:12px;color:#aaa'>{v}</td>"
+            f"<td style='font-size:16px'>{th}</td>"
+            "</tr>"
+        )
+    scores_table_rows = "".join(_score_row(r) for r in recent_scores)
+    scores_html = (
+        f"<table><tr><th>Time</th><th>Platform</th><th>Title</th>"
+        f"<th>Price</th><th>Score</th><th>Verdict</th><th>Feedback</th></tr>"
+        f"{scores_table_rows}</table>"
+    ) if recent_scores else "<p style='color:#6b7280'>No listings scored yet.</p>"
 
     html = f"""<!DOCTYPE html>
 <html><head><title>Deal Scout — Admin</title>
@@ -1024,6 +1138,12 @@ async def admin_page():
   <h2>Correction Log ({len(corrections)} total)</h2>
   {"<p style='color:#6b7280'>No corrections yet. Score some listings and fix the bad ones above.</p>" if not corrections else ""}
   {f"<table><tr><th>Time</th><th>Listing</th><th>Bad Query</th><th>Good Query</th><th>Notes</th></tr>{rows}</table>" if corrections else ""}
+
+  <h2>Recent Scored Listings</h2>
+  <p style='color:#6b7280;font-size:12px'>Total: {score_stats['total']} &nbsp;&middot;&nbsp;
+    👍 {score_stats['up']} &nbsp;&middot;&nbsp; 👎 {score_stats['down']} &nbsp;&middot;&nbsp;
+    ⬜ {score_stats['unrated']} unrated</p>
+  {scores_html}
 
   <h2>Useful Debug Links</h2>
   <ul style='color:#7c8cf8;line-height:2'>
