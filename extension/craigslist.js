@@ -466,8 +466,19 @@
   });
 
   // ── Init ───────────────────────────────────────────────────────────────────
-  if (isListingPage()) {
-    setTimeout(autoScore, 1200);
+  let _initiated = false;
+  function tryInit() {
+    if (_initiated) return;
+    if (!isListingPage()) return;
+    _initiated = true;
+    setTimeout(autoScore, 800);
   }
+
+  tryInit();
+  if (document.readyState !== "complete") {
+    document.addEventListener("DOMContentLoaded", tryInit);
+    window.addEventListener("load", tryInit);
+  }
+  setTimeout(tryInit, 2000);
 
 })();
