@@ -110,12 +110,16 @@ function renderDealPanel(r, panelId, apiBase) {
       ${rows}
     </div>
     ${flags?`<div style="margin:0 12px 8px">${flags}</div>`:""}
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-top:1px solid rgba(255,255,255,0.06);margin-top:4px">
-      <span style="font-size:10px;color:#4b5563">${cta}</span>
-      ${r.score_id ? `<div id="${panelId}-thumbs" style="display:flex;gap:4px">
-        <button onclick="(function(){fetch('${apiBase}/thumbs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({score_id:${r.score_id},thumbs:1}),signal:AbortSignal.timeout(5000)}).catch(()=>{});document.getElementById('${panelId}-thumbs').innerHTML='<span style=\\'font-size:11px;color:#6ee7b7\\'>Thanks!</span>'})()" style="background:none;border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:2px 6px;cursor:pointer;font-size:13px">👍</button>
-        <button onclick="(function(){fetch('${apiBase}/thumbs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({score_id:${r.score_id},thumbs:-1}),signal:AbortSignal.timeout(5000)}).catch(()=>{});document.getElementById('${panelId}-thumbs').innerHTML='<span style=\\'font-size:11px;color:#6ee7b7\\'>Thanks!</span>'})()" style="background:none;border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:2px 6px;cursor:pointer;font-size:13px">👎</button>
+    <div style="border-top:1px solid rgba(255,255,255,0.06);margin-top:4px;padding:10px 12px">
+      ${r.score_id ? `
+      <div style="display:flex;flex-direction:column;align-items:center;gap:6px">
+        <div style="font-size:11px;color:#9ca3af">Was this score accurate?</div>
+        <div id="${panelId}-thumbs" style="display:flex;gap:8px">
+          <button onclick="(function(){fetch('${apiBase}/thumbs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({score_id:${r.score_id},thumbs:1}),signal:AbortSignal.timeout(5000)}).catch(()=>{});document.getElementById('${panelId}-thumbs').innerHTML='<span style=\\'font-size:12px;color:#6ee7b7\\'>✓ Thanks for the feedback!</span>'})()" style="display:flex;align-items:center;gap:5px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:5px 12px;cursor:pointer;font-size:14px;color:#d1d5db">👍 <span style="font-size:11px">Yes, accurate</span></button>
+          <button onclick="(function(){fetch('${apiBase}/thumbs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({score_id:${r.score_id},thumbs:-1}),signal:AbortSignal.timeout(5000)}).catch(()=>{});document.getElementById('${panelId}-thumbs').innerHTML='<span style=\\'font-size:12px;color:#6ee7b7\\'>✓ Thanks for the feedback!</span>'})()" style="display:flex;align-items:center;gap:5px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:5px 12px;cursor:pointer;font-size:14px;color:#d1d5db">👎 <span style="font-size:11px">No, off</span></button>
+        </div>
       </div>` : ''}
+      <div style="text-align:center;font-size:10px;color:#374151;margin-top:${r.score_id ? '8' : '0'}px">${cta}</div>
     </div>`;
   document.body.appendChild(panel);
 }

@@ -401,19 +401,21 @@
 
   function renderFooter(r, container) {
     const footer = document.createElement("div");
-    footer.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-top:1px solid rgba(255,255,255,0.06);margin-top:4px";
-    const label = document.createElement("span");
-    label.style.cssText = "font-size:10px;color:#4b5563";
-    label.textContent = "Deal Scout v" + VERSION + " · OfferUp";
-    footer.appendChild(label);
+    footer.style.cssText = "border-top:1px solid rgba(255,255,255,0.06);margin-top:4px;padding:10px 12px";
+
     if (r && r.score_id) {
+      const thumbSection = document.createElement("div");
+      thumbSection.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:6px";
+      const prompt = document.createElement("div");
+      prompt.style.cssText = "font-size:11px;color:#9ca3af";
+      prompt.textContent = "Was this score accurate?";
       const thumbWrap = document.createElement("div");
-      thumbWrap.style.cssText = "display:flex;align-items:center;gap:4px";
-      const makeThumb = (emoji, val) => {
+      thumbWrap.id = "ds-thumb-wrap-" + r.score_id;
+      thumbWrap.style.cssText = "display:flex;gap:8px";
+      const makeThumb = (emoji, label, val) => {
         const btn = document.createElement("button");
-        btn.textContent = emoji;
-        btn.title = val === 1 ? "Score felt right" : "Score felt wrong";
-        btn.style.cssText = "background:none;border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:2px 6px;cursor:pointer;font-size:13px;transition:background 0.15s";
+        btn.style.cssText = "display:flex;align-items:center;gap:5px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:5px 12px;cursor:pointer;font-size:14px;color:#d1d5db;transition:background 0.15s";
+        btn.innerHTML = emoji + ' <span style="font-size:11px">' + label + "</span>";
         btn.addEventListener("click", () => {
           fetch(API_BASE + "/thumbs", {
             method: "POST",
@@ -421,13 +423,24 @@
             body: JSON.stringify({score_id: r.score_id, thumbs: val}),
             signal: AbortSignal.timeout(5000),
           }).catch(() => {});
-          thumbWrap.innerHTML = '<span style="font-size:11px;color:#6ee7b7">Thanks!</span>';
+          thumbWrap.innerHTML = '<span style="font-size:12px;color:#6ee7b7">✓ Thanks for the feedback!</span>';
         });
         return btn;
       };
-      thumbWrap.appendChild(makeThumb("👍", 1));
-      thumbWrap.appendChild(makeThumb("👎", -1));
-      footer.appendChild(thumbWrap);
+      thumbWrap.appendChild(makeThumb("👍", "Yes, accurate", 1));
+      thumbWrap.appendChild(makeThumb("👎", "No, off", -1));
+      thumbSection.appendChild(prompt);
+      thumbSection.appendChild(thumbWrap);
+      footer.appendChild(thumbSection);
+      const versionEl = document.createElement("div");
+      versionEl.style.cssText = "text-align:center;font-size:10px;color:#374151;margin-top:8px";
+      versionEl.textContent = "Deal Scout v" + VERSION + " · OfferUp";
+      footer.appendChild(versionEl);
+    } else {
+      const versionEl = document.createElement("div");
+      versionEl.style.cssText = "text-align:center;font-size:10px;color:#374151";
+      versionEl.textContent = "Deal Scout v" + VERSION + " · OfferUp";
+      footer.appendChild(versionEl);
     }
     container.appendChild(footer);
   }
