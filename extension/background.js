@@ -268,8 +268,11 @@ chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
 // ── Installation Handler ──────────────────────────────────────────────────────
 
 chrome.runtime.onInstalled.addListener(({ reason }) => {
-  if (reason === "install") {
-    console.log("Deal Scout installed — ready to score deals");
+  if (reason === "install" || reason === "update") {
+    // Clear any previously stored API URL so the hardcoded default always wins.
+    // Without this, an old saved URL in chrome.storage silently overrides the default.
+    chrome.storage.local.remove("ds_api_base");
+    console.log(`Deal Scout ${reason === "install" ? "installed" : "updated"} — API URL reset to default`);
   }
 });
 

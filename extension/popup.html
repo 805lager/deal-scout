@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Deal Scout</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 320px;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 14px;
+      color: #111827;
+      background: #fff;
+    }
+    .header {
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      padding: 14px 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .header-left { display: flex; align-items: center; gap: 8px; }
+    .header-logo { width: 24px; height: 24px; border-radius: 5px; }
+    .header h1 { color: #fff; font-size: 16px; font-weight: 700; }
+    .header .version { color: rgba(255,255,255,0.6); font-size: 11px; }
+    .body { padding: 16px; }
+    .status-card {
+      background: #f8fafc; border-radius: 8px;
+      padding: 12px; margin-bottom: 12px;
+      font-size: 13px; color: #6b7280;
+    }
+    .status-card.active { background: #f0fdf4; color: #15803d; }
+    .status-card.error  { background: #fef2f2; color: #dc2626; }
+    .platform-list { margin-bottom: 16px; }
+    .platform-heading {
+      font-weight: 600; font-size: 12px; color: #6b7280;
+      margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .platform {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 8px 0; border-bottom: 1px solid #f3f4f6; font-size: 13px;
+    }
+    .badge { font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 99px; }
+    .badge-live   { background: #dcfce7; color: #16a34a; }
+    .badge-soon   { background: #f3f4f6; color: #9ca3af; }
+    .badge-anchor { background: #eff6ff; color: #3b82f6; }
+    .btn {
+      display: block; width: 100%; padding: 10px;
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: #fff; border: none; border-radius: 8px;
+      font-weight: 600; font-size: 14px;
+      cursor: pointer; text-align: center; margin-bottom: 8px;
+    }
+    .btn:hover { opacity: 0.92; }
+    .footer {
+      padding: 10px 16px; font-size: 11px; color: #9ca3af;
+      text-align: center; border-top: 1px solid #f3f4f6; line-height: 1.8;
+    }
+    .footer a { color: #7c3aed; text-decoration: none; }
+    .footer a:hover { text-decoration: underline; }
+    /* Report Modal */
+    #report-modal {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.45); z-index: 100;
+      align-items: center; justify-content: center;
+    }
+    #report-modal.open { display: flex; }
+    .modal-box {
+      background: #fff; border-radius: 12px;
+      padding: 18px; width: 280px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+    }
+    .modal-box h2 { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+    .modal-box p  { font-size: 12px; color: #6b7280; margin-bottom: 10px; }
+    .modal-box textarea {
+      width: 100%; height: 80px; border: 1px solid #e5e7eb; border-radius: 6px;
+      padding: 8px; font-size: 12px; font-family: inherit;
+      resize: none; margin-bottom: 10px;
+    }
+    .modal-box textarea:focus { outline: none; border-color: #7c3aed; }
+    .modal-actions { display: flex; gap: 8px; }
+    .modal-actions button {
+      flex: 1; padding: 8px; border: none; border-radius: 6px;
+      font-size: 13px; font-weight: 600; cursor: pointer;
+    }
+    #modal-send   { background: linear-gradient(135deg,#667eea,#764ba2); color: #fff; }
+    #modal-cancel { background: #f3f4f6; color: #374151; }
+    #modal-sent   { display: none; text-align: center; padding: 12px 0; font-size: 13px; color: #16a34a; }
+    /* Settings panel */
+    #settings-toggle { background: none; border: none; cursor: pointer; color: #9ca3af; font-size: 11px; padding: 0; }
+    #settings-toggle:hover { color: #7c3aed; }
+    #settings-panel {
+      display: none; background: #f8fafc; border-radius: 8px;
+      padding: 10px 12px; margin-bottom: 12px; font-size: 12px;
+    }
+    #settings-panel.open { display: block; }
+    #settings-panel label { color: #6b7280; font-weight: 600; display: block; margin-bottom: 4px; }
+    #settings-panel input {
+      width: 100%; border: 1px solid #e5e7eb; border-radius: 5px;
+      padding: 6px 8px; font-size: 12px; font-family: inherit; margin-bottom: 8px;
+    }
+    #settings-panel input:focus { outline: none; border-color: #7c3aed; }
+    #settings-save {
+      padding: 5px 12px; background: #7c3aed; color: #fff;
+      border: none; border-radius: 5px; font-size: 12px; font-weight: 600;
+      cursor: pointer;
+    }
+    #settings-save:hover { background: #6d28d9; }
+    #settings-saved { display: none; color: #16a34a; font-size: 11px; margin-left: 8px; }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div class="header-left">
+      <img class="header-logo" src="../icons/icon48.png" alt="Deal Scout">
+      <h1>Deal Scout</h1>
+    </div>
+    <span class="version">v0.20.0</span>
+  </div>
+
+  <div class="body">
+
+    <div id="api-status" class="status-card">
+      ⏳ Checking connection...
+    </div>
+
+    <div class="platform-list">
+      <div class="platform-heading">Supported Platforms</div>
+      <div class="platform">
+        <span>📘 Facebook Marketplace</span>
+        <span class="badge badge-live">Live</span>
+      </div>
+      <div class="platform">
+        <span>🛒 Amazon</span>
+        <span class="badge badge-anchor">Retail anchor</span>
+      </div>
+      <div class="platform">
+        <span>📋 Craigslist</span>
+        <span class="badge badge-soon">Coming soon</span>
+      </div>
+      <div class="platform">
+        <span>🏷️ OfferUp</span>
+        <span class="badge badge-soon">Coming soon</span>
+      </div>
+    </div>
+
+    <button id="score-current" class="btn">🔍 Score Current Listing</button>
+
+    <!-- Settings (collapsed by default) -->
+    <div style="text-align:right;margin-bottom:4px">
+      <button id="settings-toggle">⚙️ API Settings</button>
+    </div>
+    <div id="settings-panel">
+      <label for="api-url-input">API Base URL</label>
+      <input id="api-url-input" type="url" placeholder="https://deal-scout-production.up.railway.app">
+      <button id="settings-save">Save</button>
+      <span id="settings-saved">✅ Saved!</span>
+    </div>
+
+  </div>
+
+  <div class="footer">
+    Navigate to any FBM listing — Deal Scout scores it automatically<br>
+    <a id="report-link" href="#">⚠️ Report an issue</a>
+  </div>
+
+  <!-- Report Issue Modal -->
+  <div id="report-modal">
+    <div class="modal-box">
+      <h2>⚠️ Report an Issue</h2>
+      <p>Describe what went wrong — listing URL, what you expected, and what happened.</p>
+      <textarea id="report-text" placeholder="e.g. Guitar listing showed car prices. URL: https://..."></textarea>
+      <div id="modal-form">
+        <div class="modal-actions">
+          <button id="modal-cancel">Cancel</button>
+          <button id="modal-send">Send Report</button>
+        </div>
+      </div>
+      <div id="modal-sent">✅ Report sent — thanks!</div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
