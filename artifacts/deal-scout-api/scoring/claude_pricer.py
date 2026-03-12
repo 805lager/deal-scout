@@ -80,7 +80,7 @@ Return ONLY a JSON object with this exact structure:
   "avg_used_price": <typical used selling price as a number>,
   "price_low": <low end of the used price range as a number>,
   "price_high": <high end of the used price range as a number>,
-  "new_retail": <current new retail price or 0 if unknown as a number>,
+  "new_retail": <current new street price for THIS EXACT model on Amazon/Walmart, or 0 if unsure>,
   "confidence": "<high|medium|low>",
   "item_id": "<specific product model you identified, e.g. 'Orion SkyQuest XT8 Intelliscope'>",
   "notes": "<one sentence about what drives pricing for this item>"
@@ -88,6 +88,7 @@ Return ONLY a JSON object with this exact structure:
 
 Base your answer on typical US marketplace prices (eBay, Facebook Marketplace, Craigslist).
 For used prices, reflect what items actually SELL for — not asking prices.
+For new_retail: use the EXACT current Amazon/street price for this specific model. Budget/entry-level items typically retail for $50–300. If you are confusing this model with a premium variant, use 0 instead.
 If you're uncertain about this specific item, use "low" confidence and provide a rough estimate.
 Do NOT hallucinate — if you truly don't know, return avg_used_price: 0 and confidence: "low".
 Return ONLY the JSON, no explanation."""
@@ -154,6 +155,17 @@ def _validate_and_normalize(data: dict, listing_price: float) -> Optional[dict]:
     try:
         new_retail = float(data.get("new_retail") or 0)
     except (TypeError, ValueError):
+        new_retail = 0.0
+
+    # Sanity: new retail should not be more than 5× the used market avg.
+    # If it is, Claude likely confused this model with a premium variant
+    # (e.g. returned a $600 Celestron price for a $100 Gskyer query).
+    # Set to 0 so the affiliate cards don't display a misleading price.
+    if new_retail > 0 and avg > 0 and new_retail > avg * 5:
+        log.warning(
+            f"[ClaudePricer] new_retail=${new_retail:.0f} is {new_retail/avg:.1f}× avg=${avg:.0f} "
+            f"— likely model confusion, discarding new_retail"
+        )
         new_retail = 0.0
 
     confidence = str(data.get("confidence", "medium")).lower()

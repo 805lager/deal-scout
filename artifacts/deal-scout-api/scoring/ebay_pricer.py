@@ -674,8 +674,14 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
             active_low   = ai_pricing_stats["low"]
             active_count = 0
 
-        # Gemini knows new retail too — use it if eBay new-condition data is missing
-        new_price       = min(p.price for p in new_items) if new_items else ai_pricing_stats.get("new_retail", 0.0)
+        # Gemini knows new retail too — only use eBay new-condition items if they are
+        # real (not mock). Mock items have inflated placeholder prices that will
+        # override the accurate value Claude already provided.
+        new_price       = (
+            min(p.price for p in new_items)
+            if (new_items and not ebay_is_mock)
+            else ai_pricing_stats.get("new_retail", 0.0)
+        )
         estimated_value = ai_pricing_stats["avg"]
         confidence      = ai_pricing_stats["confidence"]
         data_source     = ai_pricing_stats["data_source"]  # "claude_knowledge" | "claude_knowledge"
