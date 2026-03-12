@@ -17,15 +17,17 @@ FastAPI backend for the Deal Scout Chrome extension. Scores deals on Facebook Ma
 ```
 artifacts/deal-scout-api/
 ├── main.py                   # FastAPI app, routes, request/response models
-├── requirements.txt          # Python dependencies
+├── requirements.txt          # Python deps (asyncpg added for DB pipeline)
 └── scoring/                  # Pipeline modules
     ├── deal_scorer.py         # Claude scoring (main AI call)
     ├── product_extractor.py   # Claude extracts brand/model from vague title
-    ├── ebay_pricer.py         # eBay Finding API comps
+    ├── ebay_pricer.py         # eBay Finding API comps + _safe_craigslist wrapper
     ├── claude_pricer.py       # Claude AI price fallback (replaces Gemini)
+    ├── craigslist_pricer.py   # Craigslist asking prices via RSS (no API key)
     ├── product_evaluator.py   # Reddit + Google reliability signals
     ├── security_scorer.py     # Claude scam/fraud detection
-    ├── affiliate_router.py    # Buy suggestion cards
+    ├── affiliate_router.py    # Buy suggestion cards (config-driven, 20+ programs)
+    ├── data_pipeline.py       # Market signal data collection → DB
     ├── vehicle_pricer.py      # Car pricing via CarGurus
     ├── suggestion_engine.py   # Deal card generation
     ├── corrections.py         # Manual query corrections
@@ -34,12 +36,30 @@ artifacts/deal-scout-api/
 
 ## API Endpoints
 
-- `POST /score` — main endpoint, scores a deal listing
+- `POST /score` — main endpoint, scores a deal listing; fires market signal write as background task
 - `GET /health` — health check with key status
 - `GET /test-claude` — tests Claude pricing integration end-to-end
 - `GET /test-claude-connection` — tests Claude API connection
 - `GET /test-ebay` — tests eBay API connection
+- `GET /v1/market-data` — anonymized aggregate market signals (B2B data product)
+- `GET /admin/dashboard` — data pipeline summary stats
 - `GET /docs` — FastAPI auto-generated API docs
+
+## Revenue Streams
+
+### 1. Affiliate Commissions
+- **Amazon Associates** (`dealscout03f-20`): Live, ~4% avg
+- **eBay Partner Network** (campaign `5339144027`): Live, ~4%
+- **Automotive** (search-only until tags added): Autotrader ($50-150/lead CPA), CarGurus, CarMax, Advance Auto (4%), CarParts.com (8%)
+- **20+ other programs** configured in `affiliate_router.py` (search-only; activate by adding env var tag)
+- Cards redesigned: full-width CTA buttons, brand colors, score-aware headers, trust signals
+
+### 2. Market Intelligence Data
+- Every `/score` call writes an anonymized signal to `market_signals` PostgreSQL table
+- Signals include: category, item label, condition, city, pricing from all sources, deal score, affiliate programs shown
+- No PII collected — no user IDs, no listing URLs, no seller data
+- Sellable via AWS Data Exchange, Snowflake Marketplace, or direct `/v1/market-data` API
+- Protect with `MARKET_DATA_API_KEY` env var before sharing with buyers
 
 ## Environment Variables / Secrets
 

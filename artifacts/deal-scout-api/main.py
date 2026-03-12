@@ -412,7 +412,7 @@ async def score_listing(listing: ListingRequest, request: Request):
     active_items_sample = [dc_asdict(i) for i in (market_value.active_items_sample or [])]
     affiliate_dicts     = [dc_asdict(c) for c in affiliate_cards]
 
-    return DealScoreResponse(
+    response = DealScoreResponse(
         # Listing
         title          = listing.title,
         price          = listing.price,
@@ -467,6 +467,40 @@ async def score_listing(listing: ListingRequest, request: Request):
         craigslist_asking_high  = market_value.craigslist_high,
         craigslist_count        = market_value.craigslist_count,
     )
+
+    # ── Step 6: Record anonymized market signal (non-blocking) ────────────────
+    # Fires as a background task — API response is returned immediately.
+    # Any DB error is swallowed inside record_signal; it never affects the user.
+    try:
+        from scoring.data_pipeline import record_signal
+        _loc_parts  = [p.strip() for p in (listing.location or "").split(",")]
+        _city       = _loc_parts[0] if _loc_parts else ""
+        _state      = _loc_parts[1][:2].upper() if len(_loc_parts) > 1 else ""
+        _gap_pct    = 0.0
+        if market_value.sold_avg and market_value.sold_avg > 0:
+            _gap_pct = round((listing.price - market_value.sold_avg) / market_value.sold_avg * 100, 1)
+        _affil_shown = ",".join(c.get("program_key", "") for c in affiliate_dicts)
+        asyncio.create_task(record_signal(
+            category         = category_detected or "",
+            item_label       = (market_value.ai_item_id or listing.title or "")[:120],
+            condition        = listing.condition or "",
+            city             = _city,
+            state_code       = _state,
+            asking_price     = listing.price,
+            ebay_sold_avg    = market_value.sold_avg,
+            ebay_active_avg  = market_value.active_avg,
+            new_price        = market_value.new_price,
+            cl_asking_avg    = market_value.craigslist_avg,
+            price_gap_pct    = _gap_pct,
+            deal_score       = deal_score.score,
+            buy_new_trigger  = bool(buy_new),
+            affiliate_programs = _affil_shown,
+            platform         = "facebook_marketplace",
+        ))
+    except Exception:
+        pass  # Signal recording must never affect the API response
+
+    return response
 
 
 @app.get("/test-claude-connection")
@@ -1002,6 +1036,64 @@ async function submitCorrection() {{
 </body></html>"""
     from fastapi.responses import HTMLResponse
     return HTMLResponse(content=html)
+
+
+# ── Market Intelligence Data API ─────────────────────────────────────────────
+# These endpoints expose the anonymized aggregate market signal data.
+# Protect with MARKET_DATA_API_KEY env var before sharing with any buyer.
+# Buyers call: GET /v1/market-data?category=electronics&days=30
+# Admin view:  GET /admin/dashboard  (summary stats)
+
+def _check_data_key(request: Request) -> None:
+    """Simple API key gate for the market data endpoints."""
+    required_key = os.getenv("MARKET_DATA_API_KEY", "")
+    if not required_key:
+        return  # Open access until you set the env var
+    provided = request.headers.get("X-API-Key", "") or request.query_params.get("api_key", "")
+    if provided != required_key:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
+@app.get("/v1/market-data")
+async def market_data_api(
+    request:  Request,
+    category: Optional[str] = None,
+    days:     int = 30,
+):
+    """
+    Returns anonymized aggregate market signal data.
+
+    Query params:
+      - category (str, optional): Filter to a single category (e.g. 'electronics')
+      - days     (int, default 30): Lookback window in days
+
+    Authentication:
+      Set MARKET_DATA_API_KEY env var, then pass X-API-Key header or ?api_key= param.
+      If no key is set, endpoint is open (useful during development).
+
+    Only rows with >= 5 samples are returned to prevent any single listing
+    from being identifiable in the output.
+    """
+    _check_data_key(request)
+    from scoring.data_pipeline import get_aggregate_stats
+    result = await get_aggregate_stats(category=category, days=days)
+    return result
+
+
+@app.get("/admin/dashboard")
+async def admin_dashboard(request: Request):
+    """
+    Quick summary stats for the data pipeline admin view.
+    Shows total signals collected, 24h and 7d counts, unique categories, etc.
+    """
+    _check_data_key(request)
+    from scoring.data_pipeline import get_dashboard_summary
+    summary = await get_dashboard_summary()
+    return {
+        "pipeline": "Deal Scout Market Intelligence",
+        "description": "Anonymized used-market price signals. No PII collected.",
+        "stats": summary,
+    }
 
 
 if __name__ == "__main__":
