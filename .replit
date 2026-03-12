@@ -49,3 +49,11 @@ timeoutMs = 20000
 [nix]
 channel = "stable-25_05"
 packages = ["libxcrypt"]
+
+[userenv]
+
+[userenv.shared]
+EBAY_APP_ID = "ShaunLag-DealScou-PRD-db58a57cb-b494510e"
+EBAY_CAMPAIGN_ID = "5339144027"
+EBAY_TRACKING_ID = "dealscout"
+AMAZON_ASSOCIATE_TAG = "dealscout03f-20"
