@@ -351,27 +351,65 @@
 
   async function autoScore(attempt = 0) {
     if (!isListingPage()) return;
-    const listing = extractListing();
-    if (!listing.price) {
+
+    // ── DOM Stability Check ──────────────────────────────────────────────────
+    // FBM is a React SPA. When navigating between listings the URL changes
+    // instantly but the DOM content (title, price, images) can lag 500-1500ms.
+    // Without this check we'd score the OLD listing's data against the new URL.
+    //
+    // Strategy: extract now, wait 650ms, extract again.
+    // If anything meaningful changed → DOM was still hydrating → retry.
+    // If the URL changed mid-wait → user navigated away → abort.
+    // Cap at 4 total attempts so we don't loop forever.
+    const snapUrl = location.href;
+    const snap1   = extractListing();
+
+    if (!snap1.price) {
       console.debug('[DealScout] No price found — skipping auto-score');
       return;
     }
-    // If the title looks generic (SPA hasn't hydrated yet), retry a few times.
-    // After retries, proceed anyway — vision scoring can still work from the image.
-    const titleLow = (listing.title || '').trim().toLowerCase();
-    if (_GENERIC_TITLES.has(titleLow) && attempt < 3) {
-      console.debug(`[DealScout] Generic title on attempt ${attempt + 1} — retrying in 900ms`);
-      setTimeout(() => autoScore(attempt + 1), 900);
+
+    if (attempt < 4) {
+      await new Promise(r => setTimeout(r, 650));
+      if (location.href !== snapUrl) return; // navigated away
+
+      const snap2 = extractListing();
+      const titleChanged = snap2.title !== snap1.title;
+      const priceChanged = snap2.price !== snap1.price;
+      const imageChanged = (snap2.image_urls?.[0] || '') !== (snap1.image_urls?.[0] || '');
+
+      if (titleChanged || priceChanged || imageChanged) {
+        // DOM still updating — recurse with the fresher snapshot
+        console.debug(`[DealScout] DOM still hydrating (attempt ${attempt + 1}) — retrying`);
+        return autoScore(attempt + 1);
+      }
+
+      // Stable — use snap2 (the freshest data)
+      const titleLow = (snap2.title || '').trim().toLowerCase();
+      if (_GENERIC_TITLES.has(titleLow)) {
+        console.debug(`[DealScout] Title still generic after stability check — proceeding anyway`);
+      }
+
+      showPanel();
+      renderLoading(snap2);
+      try {
+        const result = await sendToBackground(snap2);
+        renderScore(result);
+      } catch (err) {
+        const msg = err.message || 'Scoring failed';
+        renderError(msg.includes('listing title') ? '⏳ Page still loading — try the Score button' : msg);
+      }
       return;
     }
+
+    // Fallback: max attempts reached, score whatever we have
     showPanel();
-    renderLoading(listing);
+    renderLoading(snap1);
     try {
-      const result = await sendToBackground(listing);
+      const result = await sendToBackground(snap1);
       renderScore(result);
     } catch (err) {
-      const msg = err.message || 'Scoring failed';
-      renderError(msg.includes('listing title') ? '⏳ Page still loading — try the Score button' : msg);
+      renderError(err.message || 'Scoring failed');
     }
   }
 
