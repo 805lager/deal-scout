@@ -86,9 +86,9 @@ app = FastAPI(
 # ── Rate Limiting ─────────────────────────────────────────────────────────────
 # Simple in-memory IP rate limiter — no Redis needed for POC.
 # Protects Claude API credits from abuse if someone discovers the Railway URL.
-# Limits: 30 scores/hour per IP (generous for a real user, blocks scrapers).
+# Limits: 300 scores/hour per IP (covers active browsing sessions; blocks scrapers).
 _rate_limit_store: dict = defaultdict(list)
-RATE_LIMIT_REQUESTS = 30
+RATE_LIMIT_REQUESTS = 300
 RATE_LIMIT_WINDOW   = 3600  # seconds (1 hour)
 
 def _check_rate_limit(client_ip: str):
