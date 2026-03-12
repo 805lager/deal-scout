@@ -28,7 +28,7 @@
   // for that IIFE instance. If a hoisted function (like autoScore) is scheduled
   // via setTimeout in the guard path and later references those consts → TDZ crash.
   // Fix: declare all consts used by hoisted functions BEFORE the guard.
-  const VERSION   = "0.26.6";
+  const VERSION   = "0.26.7";
   const PANEL_ID  = "deal-scout-panel";
 
   // ── Guard: prevent double-injection on SPA navigation ───────────────────────
