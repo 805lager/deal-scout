@@ -17,7 +17,7 @@
 (function () {
   "use strict";
 
-  const VERSION  = "1.0.1";
+  const VERSION  = "1.0.2";
   const PANEL_ID = "deal-scout-cl-panel";
   const PLATFORM = "craigslist";
 
@@ -44,7 +44,19 @@
       document.querySelector(".postingtitletext")?.childNodes?.[0]?.textContent?.trim() ||
       document.title.split(" - ")[0].trim();
 
-    const priceText = document.querySelector(".price")?.textContent?.trim() || "";
+    const priceEl =
+      document.querySelector(".price") ||
+      document.querySelector("[class*='price']") ||
+      document.querySelector("[class*='Price']") ||
+      document.querySelector("span.price") ||
+      document.querySelector("h2.price") ||
+      null;
+    let priceText = priceEl?.textContent?.trim() || "";
+    if (!priceText) {
+      const bodyInner = document.body?.innerText || "";
+      const m = bodyInner.match(/\$\s?([0-9,]+(?:\.[0-9]{2})?)/);
+      if (m) priceText = "$" + m[1];
+    }
     const price = parseFloat(priceText.replace(/[^0-9.]/g, "")) || 0;
 
     const bodyText = document.querySelector("#postingbody")?.textContent || "";
@@ -429,8 +441,11 @@
   async function autoScore() {
     if (!isListingPage()) return;
     const listing = extractListing();
-    if (!listing.price) return;
     showPanel();
+    if (!listing.price) {
+      renderError("Could not detect a price on this listing. Try refreshing the page.");
+      return;
+    }
     renderLoading(listing);
     try {
       const result = await sendToBackground(listing);
