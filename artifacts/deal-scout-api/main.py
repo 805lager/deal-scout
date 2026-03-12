@@ -461,6 +461,11 @@ async def score_listing(listing: ListingRequest, request: Request):
         # Gemini AI metadata
         ai_item_id         = market_value.ai_item_id,
         ai_notes           = market_value.ai_notes,
+        # Craigslist asking prices (supplementary comparison)
+        craigslist_asking_avg   = market_value.craigslist_avg,
+        craigslist_asking_low   = market_value.craigslist_low,
+        craigslist_asking_high  = market_value.craigslist_high,
+        craigslist_count        = market_value.craigslist_count,
     )
 
 

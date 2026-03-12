@@ -876,90 +876,184 @@
     const ratio    = hasNew ? (r.price / r.new_price) : 0;
     const isClose  = ratio >= 0.72;
     const trigger  = r.buy_new_trigger || isClose;
+    const score    = r.score || 0;
 
     if (!hasCards && !trigger) return;
 
+    // ── Outer section wrapper ─────────────────────────────────────────────────
     const section = document.createElement('div');
-    section.style.cssText = 'margin:6px 12px 12px';
+    section.style.cssText = [
+      'margin:4px 10px 12px',
+      'background:linear-gradient(160deg,rgba(99,102,241,0.12) 0%,rgba(15,23,42,0.0) 60%)',
+      'border:1.5px solid rgba(139,92,246,0.35)',
+      'border-radius:14px',
+      'padding:13px 13px 10px',
+      'position:relative',
+      'overflow:hidden',
+    ].join(';');
 
-    // ── Alert banner (price-parity warning) ───────────────────────────────────
+    // Subtle glow strip at top-left
+    const glowStrip = document.createElement('div');
+    glowStrip.style.cssText = [
+      'position:absolute',
+      'top:0',
+      'left:0',
+      'right:0',
+      'height:3px',
+      'background:linear-gradient(90deg,#6366f1,#a855f7,#06b6d4)',
+      'border-radius:14px 14px 0 0',
+    ].join(';');
+    section.appendChild(glowStrip);
+
+    // ── Score-aware section header ─────────────────────────────────────────────
+    // Headline + subtext varies by how good the deal is, to motivate action.
+    const hdrWrap = document.createElement('div');
+    hdrWrap.style.cssText = 'display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:11px;margin-top:2px';
+
+    let hdrIcon, hdrText, hdrSub;
+    if (!hasCards) {
+      hdrIcon = '\uD83D\uDCA1';
+      hdrText = 'Buy New Instead?';
+      hdrSub  = 'Asking price is close to retail.';
+    } else if (score <= 3) {
+      hdrIcon = '\u26A0\uFE0F';
+      hdrText = 'Better Options Below';
+      hdrSub  = 'This deal is overpriced. Skip it.';
+    } else if (score <= 5) {
+      hdrIcon = '\uD83D\uDCA1';
+      hdrText = 'You Could Do Better';
+      hdrSub  = 'Checkout these alternatives first.';
+    } else if (score <= 7) {
+      hdrIcon = '\u2705';
+      hdrText = 'Solid Deal — Confirm Price';
+      hdrSub  = 'Double-check before you commit.';
+    } else {
+      hdrIcon = '\uD83D\uDD25';
+      hdrText = 'Great Deal — Verify Here';
+      hdrSub  = 'Compare to make sure it\'s the best price.';
+    }
+
+    const hdrLeft = document.createElement('div');
+    const hdrTitle = document.createElement('div');
+    hdrTitle.style.cssText = 'font-size:13px;font-weight:800;color:#e2e8f0;letter-spacing:0.1px';
+    hdrTitle.textContent = hdrIcon + ' ' + hdrText;
+    const hdrSubEl = document.createElement('div');
+    hdrSubEl.style.cssText = 'font-size:11px;color:#94a3b8;margin-top:2px';
+    hdrSubEl.textContent = hdrSub;
+    hdrLeft.appendChild(hdrTitle);
+    hdrLeft.appendChild(hdrSubEl);
+    hdrWrap.appendChild(hdrLeft);
+
+    const discTag = document.createElement('div');
+    discTag.style.cssText = [
+      'font-size:9px',
+      'color:#475569',
+      'background:rgba(71,85,105,0.18)',
+      'border:1px solid rgba(71,85,105,0.3)',
+      'border-radius:4px',
+      'padding:2px 6px',
+      'white-space:nowrap',
+      'align-self:flex-start',
+      'margin-top:1px',
+    ].join(';');
+    discTag.textContent = 'Affiliate';
+    hdrWrap.appendChild(discTag);
+    section.appendChild(hdrWrap);
+
+    // ── Price-parity alert (inline, compact) ──────────────────────────────────
     if (trigger && hasNew) {
       const premium    = r.new_price - r.price;
       const premiumPct = Math.round(Math.abs(premium / r.new_price) * 100);
-
-      const alertEl = document.createElement('div');
+      const alertEl    = document.createElement('div');
       alertEl.style.cssText = [
-        'background:linear-gradient(135deg,rgba(99,102,241,0.22) 0%,rgba(139,92,246,0.15) 100%)',
-        'border:1px solid rgba(139,92,246,0.55)',
-        'border-radius:10px',
-        'padding:11px 13px',
+        'display:flex',
+        'align-items:center',
+        'gap:8px',
+        'background:rgba(16,185,129,0.10)',
+        'border:1px solid rgba(16,185,129,0.35)',
+        'border-radius:8px',
+        'padding:8px 10px',
         'margin-bottom:10px',
       ].join(';');
-
-      const titleRow = document.createElement('div');
-      titleRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:6px';
-      const headline = document.createElement('span');
-      headline.style.cssText = 'font-weight:700;font-size:13px;color:#a5b4fc';
-      headline.textContent = '\uD83D\uDCA1 Buy New Instead?';
-      titleRow.appendChild(headline);
+      const alertIcon = document.createElement('span');
+      alertIcon.style.cssText = 'font-size:15px;flex-shrink:0';
+      alertIcon.textContent = '\uD83C\uDFF7\uFE0F';
+      const alertBody = document.createElement('div');
+      alertBody.style.cssText = 'flex:1;min-width:0';
+      const alertLine1 = document.createElement('div');
+      alertLine1.style.cssText = 'font-size:11.5px;font-weight:700;color:#6ee7b7';
       if (premium > 0) {
-        const badge = document.createElement('span');
-        badge.style.cssText = 'font-size:11px;font-weight:700;color:#6ee7b7;' +
-          'background:rgba(16,185,129,0.18);border:1px solid rgba(16,185,129,0.4);' +
-          'border-radius:5px;padding:2px 8px;white-space:nowrap';
-        badge.textContent = 'Only ' + ps + Math.abs(premium).toFixed(0) + ' more (' + premiumPct + '%)';
-        titleRow.appendChild(badge);
+        alertLine1.textContent = 'Only ' + ps + premium.toFixed(0) + ' more (' + premiumPct + '% over used asking) gets you:';
+      } else {
+        alertLine1.textContent = 'Used asking \u2265 new retail price \u2014 buying used has no advantage:';
       }
-      alertEl.appendChild(titleRow);
-      const bodyEl = document.createElement('div');
-      bodyEl.style.cssText = 'font-size:12px;color:#c4b5fd;line-height:1.55';
-      bodyEl.textContent = premium > 0
-        ? 'Used asking: ' + ps + r.price.toFixed(0) + '  \u2022  New retail: ' + ps + r.new_price.toFixed(0) +
-          '. For ' + ps + Math.abs(premium).toFixed(0) + ' more you get full warranty and buyer protection.'
-        : (r.buy_new_message || 'Used asking equals or exceeds new retail. Buying new gets you warranty for the same price.');
-      alertEl.appendChild(bodyEl);
+      const alertLine2 = document.createElement('div');
+      alertLine2.style.cssText = 'font-size:10.5px;color:#a7f3d0;margin-top:2px';
+      alertLine2.textContent = 'Full warranty \u2022 Easy returns \u2022 Buyer protection';
+      alertBody.appendChild(alertLine1);
+      alertBody.appendChild(alertLine2);
+      alertEl.appendChild(alertIcon);
+      alertEl.appendChild(alertBody);
       section.appendChild(alertEl);
     }
 
     // ── Affiliate cards ────────────────────────────────────────────────────────
     if (!hasCards) { container.appendChild(section); return; }
 
-    // Section header
-    const hdr = document.createElement('div');
-    hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:8px';
-    const hdrL = document.createElement('span');
-    hdrL.style.cssText = 'font-size:11px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:#a78bfa';
-    hdrL.textContent = '\uD83D\uDED2 Shop New / Compare';
-    hdr.appendChild(hdrL);
-    const hdrR = document.createElement('span');
-    hdrR.style.cssText = 'font-size:10px;color:#4b5563';
-    hdrR.textContent = 'Affiliate links';
-    hdr.appendChild(hdrR);
-    section.appendChild(hdr);
+    const STORE_COLORS = {
+      amazon:     '#f97316',
+      ebay:       '#22c55e',
+      best_buy:   '#0046be',
+      target:     '#ef4444',
+      walmart:    '#0071ce',
+      home_depot: '#f96302',
+      lowes:      '#004990',
+      back_market:'#16a34a',
+      newegg:     '#ff6600',
+      rei:        '#3d6b4f',
+      sweetwater: '#e67e22',
+      autotrader: '#1a5276',
+      guitar_center: '#c0392b',
+    };
+    const STORE_ICONS = {
+      amazon:     '\uD83D\uDCE6',
+      ebay:       '\uD83C\uDFEA',
+      best_buy:   '\uD83D\uDCBB',
+      target:     '\uD83C\uDFAF',
+      walmart:    '\uD83D\uDED2',
+      home_depot: '\uD83C\uDFE0',
+      lowes:      '\uD83D\uDD28',
+      back_market:'\u267B\uFE0F',
+      newegg:     '\uD83D\uDCBB',
+      rei:        '\u26FA',
+      sweetwater: '\uD83C\uDFB8',
+      autotrader: '\uD83D\uDE97',
+      guitar_center: '\uD83C\uDFB8',
+    };
+    const STORE_TRUST = {
+      amazon:     'Prime eligible \u2022 Free returns',
+      ebay:       'Money-back guarantee \u2022 Buyer protection',
+      best_buy:   'Geek Squad warranty available',
+      target:     'Free drive-up pickup available',
+      walmart:    'Free pickup \u2022 Easy returns',
+      home_depot: 'In-store pickup \u2022 Pro discounts',
+      lowes:      'In-store pickup \u2022 Military discount',
+      back_market:'Certified refurb \u2022 1-yr warranty',
+      newegg:     'Tech-focused \u2022 Flash deals',
+      rei:        'Member dividend \u2022 Expert staff',
+      sweetwater: 'No-hassle returns \u2022 Free tech support',
+      autotrader: 'Dealer-certified listings',
+      guitar_center: '45-day returns \u2022 Price match',
+    };
 
-    // Cards
-    // WHY program_key: backend AffiliateCard dataclass uses field name "program_key",
-    // not "program". dc_asdict() serialises it as-is. Fix here, not on backend.
-    for (const card of r.affiliate_cards.slice(0, 3)) {
+    for (const [idx, card] of r.affiliate_cards.slice(0, 3).entries()) {
       const progKey   = card.program_key || card.program || '';
-      const progColor = progKey === 'amazon'     ? '#f97316'
-                      : progKey === 'ebay'       ? '#22c55e'
-                      : progKey === 'best_buy'   ? '#0046be'
-                      : progKey === 'target'     ? '#cc0000'
-                      : progKey === 'walmart'    ? '#0071ce'
-                      : progKey === 'home_depot' ? '#f96302'
-                      : progKey === 'rei'        ? '#4a7c59'
-                      : progKey === 'sweetwater' ? '#e67e22'
-                      : progKey === 'autotrader' ? '#1a5276'
-                      : '#7c8cf8';
-      const progIcon  = card.icon || (
-                        progKey === 'amazon'  ? '\uD83D\uDCE6'
-                      : progKey === 'ebay'    ? '\uD83C\uDFEA'
-                      : progKey === 'target' ? '\uD83C\uDFAF'
-                      : '\uD83D\uDED2');
+      const progColor = STORE_COLORS[progKey] || '#7c8cf8';
+      const progIcon  = card.icon || STORE_ICONS[progKey] || '\uD83D\uDED2';
+      const trustLine = STORE_TRUST[progKey] || 'Trusted retailer';
+      const storeName = card.badge_label || card.title || progKey;
 
-      // Parse price from price_hint string ("From ~$299") — backend sends
-      // price_hint, not price. Extract the number for display.
+      // Parse price_hint ("From ~$299") → number
       let cardPrice = 0;
       if (card.price_hint) {
         const pm = String(card.price_hint).match(/([0-9,]+(?:\.[0-9]+)?)/);
@@ -967,85 +1061,141 @@
       } else if (card.price) {
         cardPrice = parseFloat(card.price) || 0;
       }
-
       const saving = cardPrice > 0 ? (r.price - cardPrice) : 0;
 
-      // Card: full-width, colored border on hover, prominent CTA button
+      // ── Card shell ──
       const cardEl = document.createElement('a');
       cardEl.href   = card.url || '#';
       cardEl.target = '_blank';
       cardEl.rel    = 'noopener noreferrer';
       cardEl.style.cssText = [
-        'display:flex',
-        'align-items:center',
+        'display:block',
         'text-decoration:none',
-        'background:rgba(255,255,255,0.04)',
-        'border:1.5px solid rgba(255,255,255,0.10)',
+        'background:rgba(15,23,42,0.55)',
+        'border:1.5px solid rgba(255,255,255,0.08)',
+        'border-left:4px solid ' + progColor,
         'border-radius:10px',
-        'padding:10px 12px',
-        'margin-bottom:7px',
+        'padding:11px 12px 10px',
+        'margin-bottom:8px',
         'cursor:pointer',
-        'gap:10px',
+        'transition:background 0.15s,border-color 0.15s',
+        'position:relative',
       ].join(';');
       cardEl.onmouseenter = () => {
-        cardEl.style.borderColor = progColor;
-        cardEl.style.background  = 'rgba(255,255,255,0.08)';
+        cardEl.style.background   = 'rgba(255,255,255,0.07)';
+        cardEl.style.borderColor  = progColor;
+        cardEl.style.borderLeftColor = progColor;
       };
       cardEl.onmouseleave = () => {
-        cardEl.style.borderColor = 'rgba(255,255,255,0.10)';
-        cardEl.style.background  = 'rgba(255,255,255,0.04)';
+        cardEl.style.background   = 'rgba(15,23,42,0.55)';
+        cardEl.style.borderColor  = 'rgba(255,255,255,0.08)';
+        cardEl.style.borderLeftColor = progColor;
       };
 
-      // Program icon pill (colored background)
-      const iconPill = document.createElement('div');
-      iconPill.style.cssText = 'width:36px;height:36px;border-radius:8px;display:flex;align-items:center;' +
-        'justify-content:center;font-size:18px;flex-shrink:0;background:' + progColor + '22;' +
-        'border:1px solid ' + progColor + '44';
-      iconPill.textContent = progIcon;
-      cardEl.appendChild(iconPill);
+      // ── Top row: icon + name + price ──
+      const topRow = document.createElement('div');
+      topRow.style.cssText = 'display:flex;align-items:center;gap:9px;margin-bottom:7px';
 
-      // Text block
-      const textCol = document.createElement('div');
-      textCol.style.cssText = 'flex:1;min-width:0';
+      const iconBubble = document.createElement('div');
+      iconBubble.style.cssText = [
+        'width:38px',
+        'height:38px',
+        'border-radius:9px',
+        'display:flex',
+        'align-items:center',
+        'justify-content:center',
+        'font-size:20px',
+        'flex-shrink:0',
+        'background:' + progColor + '1a',
+        'border:1.5px solid ' + progColor + '55',
+      ].join(';');
+      iconBubble.textContent = progIcon;
+      topRow.appendChild(iconBubble);
 
+      const nameStack = document.createElement('div');
+      nameStack.style.cssText = 'flex:1;min-width:0';
       const nameEl = document.createElement('div');
-      nameEl.style.cssText = 'font-size:13px;font-weight:700;color:' + progColor +
-        ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
-      nameEl.textContent = card.badge_label || card.title || progKey;
-      textCol.appendChild(nameEl);
+      nameEl.style.cssText = 'font-size:14px;font-weight:800;color:' + progColor +
+        ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;letter-spacing:0.1px';
+      nameEl.textContent = storeName;
+      const trustEl = document.createElement('div');
+      trustEl.style.cssText = 'font-size:10.5px;color:#64748b;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+      trustEl.textContent = trustLine;
+      nameStack.appendChild(nameEl);
+      nameStack.appendChild(trustEl);
+      topRow.appendChild(nameStack);
 
-      const subEl = document.createElement('div');
-      subEl.style.cssText = 'font-size:11px;color:#6b7280;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:1px';
-      subEl.textContent = card.subtitle || '';
-      textCol.appendChild(subEl);
-      cardEl.appendChild(textCol);
-
-      // Right side: price block or CTA button
-      const rightCol = document.createElement('div');
-      rightCol.style.cssText = 'display:flex;flex-direction:column;align-items:flex-end;flex-shrink:0;gap:2px';
-
+      // Price block (right-aligned in top row)
       if (cardPrice > 0) {
+        const priceStack = document.createElement('div');
+        priceStack.style.cssText = 'display:flex;flex-direction:column;align-items:flex-end;flex-shrink:0;gap:2px';
         const priceEl = document.createElement('div');
-        priceEl.style.cssText = 'font-size:15px;font-weight:800;color:#e6edf3';
+        priceEl.style.cssText = 'font-size:18px;font-weight:900;color:#f1f5f9;letter-spacing:-0.5px';
         priceEl.textContent = ps + cardPrice.toFixed(0);
-        rightCol.appendChild(priceEl);
+        priceStack.appendChild(priceEl);
         if (saving > 2) {
-          const savEl = document.createElement('div');
-          savEl.style.cssText = 'font-size:10px;font-weight:600;color:#6ee7b7';
-          savEl.textContent = ps + saving.toFixed(0) + ' cheaper';
-          rightCol.appendChild(savEl);
+          const savBadge = document.createElement('div');
+          savBadge.style.cssText = [
+            'font-size:10px',
+            'font-weight:700',
+            'color:#6ee7b7',
+            'background:rgba(16,185,129,0.15)',
+            'border:1px solid rgba(16,185,129,0.4)',
+            'border-radius:5px',
+            'padding:1px 7px',
+            'white-space:nowrap',
+          ].join(';');
+          savBadge.textContent = ps + saving.toFixed(0) + ' less than asking';
+          priceStack.appendChild(savBadge);
+        } else if (saving < -2) {
+          const ovBadge = document.createElement('div');
+          ovBadge.style.cssText = [
+            'font-size:10px',
+            'font-weight:700',
+            'color:#fcd34d',
+            'background:rgba(251,191,36,0.10)',
+            'border:1px solid rgba(251,191,36,0.3)',
+            'border-radius:5px',
+            'padding:1px 7px',
+            'white-space:nowrap',
+          ].join(';');
+          ovBadge.textContent = ps + Math.abs(saving).toFixed(0) + ' pricier new';
+          priceStack.appendChild(ovBadge);
         }
-      } else {
-        // No price — show a solid color CTA button
-        const ctaEl = document.createElement('div');
-        ctaEl.style.cssText = 'font-size:11px;font-weight:700;color:#fff;' +
-          'background:' + progColor + ';border-radius:6px;padding:4px 10px;white-space:nowrap';
-        ctaEl.textContent = 'Shop \u2192';
-        rightCol.appendChild(ctaEl);
+        topRow.appendChild(priceStack);
       }
-      cardEl.appendChild(rightCol);
+      cardEl.appendChild(topRow);
 
-      // Analytics click tracking
+      // ── Subtitle (card.subtitle from backend) ──
+      if (card.subtitle) {
+        const subEl = document.createElement('div');
+        subEl.style.cssText = 'font-size:11px;color:#94a3b8;margin-bottom:8px;line-height:1.45';
+        subEl.textContent = card.subtitle;
+        cardEl.appendChild(subEl);
+      }
+
+      // ── Full-width CTA button ──
+      const ctaBtn = document.createElement('div');
+      ctaBtn.style.cssText = [
+        'display:flex',
+        'align-items:center',
+        'justify-content:center',
+        'gap:6px',
+        'background:' + progColor,
+        'color:#fff',
+        'font-size:12px',
+        'font-weight:800',
+        'letter-spacing:0.3px',
+        'border-radius:7px',
+        'padding:8px 0',
+        'text-align:center',
+      ].join(';');
+      ctaBtn.textContent = cardPrice > 0
+        ? 'Shop ' + storeName + ' \u2192'
+        : 'Compare on ' + storeName + ' \u2192';
+      cardEl.appendChild(ctaBtn);
+
+      // ── Analytics click tracking ──
       cardEl.addEventListener('click', () => {
         try {
           chrome.runtime.sendMessage({
@@ -1053,7 +1203,7 @@
             program:      progKey,
             category:     r.category_detected || '',
             price_bucket: priceBucket(r.price),
-            deal_score:   r.score || 0,
+            deal_score:   score,
           });
         } catch(e) {}
       });

@@ -521,6 +521,24 @@ def parse_ebay_items_with_images(
     return result
 
 
+# ── Craigslist Safe Wrapper ───────────────────────────────────────────────────
+
+async def _safe_craigslist(query: str) -> dict | None:
+    """
+    Wraps get_craigslist_asking_prices with a hard timeout + exception guard.
+    Craigslist is supplementary — it must NEVER delay or break the main pipeline.
+    Returns None silently on any failure or timeout.
+    """
+    try:
+        from scoring.craigslist_pricer import get_craigslist_asking_prices
+        return await asyncio.wait_for(
+            get_craigslist_asking_prices(query),
+            timeout=6.0,
+        )
+    except Exception:
+        return None
+
+
 # ── Main Entry Point ──────────────────────────────────────────────────────────
 
 async def get_market_value(listing_title: str, listing_condition: str = "Used", is_vehicle: bool = False, listing_price: float = 0.0) -> MarketValue:
@@ -620,8 +638,8 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
     # WHY ALWAYS: Even when Gemini succeeds, we want eBay listing cards for
     # the "Like Products" sidebar section. Running them in parallel means
     # zero extra latency. eBay is now ONLY used for affiliate cards + price fallback.
-    # Craigslist runs concurrently — it's purely informational and never blocks.
-    from scoring.craigslist_pricer import get_craigslist_asking_prices
+    # Craigslist runs concurrently via _safe_craigslist — it's purely informational
+    # and will never crash or delay the pipeline (timeout + exception guard inside).
     sold_raw, active_raw, new_raw, _cl_result = await asyncio.gather(
         search_ebay(query, "findCompletedItems", max_results=20),
         search_ebay(query, "findItemsAdvanced",  max_results=20),
@@ -751,6 +769,10 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         data_source          = data_source,
         ai_item_id           = _gemini_ai_item_id,
         ai_notes             = _gemini_ai_notes,
+        craigslist_avg       = round(_cl_result["avg"],   2) if _cl_result else 0.0,
+        craigslist_low       = round(_cl_result["low"],   2) if _cl_result else 0.0,
+        craigslist_high      = round(_cl_result["high"],  2) if _cl_result else 0.0,
+        craigslist_count     = _cl_result["count"]           if _cl_result else 0,
     )
 
 
