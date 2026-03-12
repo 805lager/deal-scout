@@ -58,61 +58,35 @@ document.getElementById("score-current").addEventListener("click", async () => {
   statusEl.className = "status-card";
   statusEl.innerText = "⏳ Triggering score…";
 
-  // Step 1: call the global trigger if the content script is already injected
-  let triggered = false;
-  try {
-    const results = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: (plat) => {
-        const fn = { craigslist: "__dsScoreCL", offerup: "__dsScoreOU", ebay: "__dsScoreEB", fbm: "__dsFBMRescore" }[plat];
-        if (fn && typeof window[fn] === "function") { window[fn](); return true; }
-        return false;
-      },
-      args: [platform],
-    });
-    triggered = results?.[0]?.result === true;
-  } catch (e) {
-    statusEl.className = "status-card error";
-    statusEl.innerText = `⚠️ Injection blocked: ${e.message}. Try reloading the page.`;
-    return;
-  }
-
-  if (triggered) { window.close(); return; }
-
-  // Step 2: content script not injected yet — inject the file then retry
   const scriptFile = CONTENT_SCRIPT[platform];
+  const guardKey = { craigslist: "__dsCLInjected", offerup: "__dsOUInjected", ebay: "__dsEBInjected", fbm: "__dsFBMInjected" }[platform];
+
   try {
+    // Step 1: clear the injection guard so the file can run fresh
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: (key) => { if (key) delete window[key]; },
+      args: [guardKey || ""],
+    });
+
+    // Step 2: inject the content script file fresh
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: [scriptFile] });
+
+    // Step 3: wait for init, then send RESCORE
+    await new Promise(r => setTimeout(r, 800));
+
+    chrome.tabs.sendMessage(tab.id, { type: "RESCORE" }, (response) => {
+      if (chrome.runtime.lastError) {
+        statusEl.className = "status-card error";
+        statusEl.innerText = "⚠️ Script loaded but could not reach it. Please reload the Craigslist page and try again.";
+      } else {
+        window.close();
+      }
+    });
   } catch (e) {
     statusEl.className = "status-card error";
-    statusEl.innerText = `⚠️ Could not inject script: ${e.message}`;
-    return;
+    statusEl.innerText = `⚠️ Blocked: ${e.message || "unknown error"}. Reload the page and try again.`;
   }
-
-  await new Promise(r => setTimeout(r, 600));
-
-  try {
-    const results2 = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: (plat) => {
-        const fn = { craigslist: "__dsScoreCL", offerup: "__dsScoreOU", ebay: "__dsScoreEB", fbm: "__dsFBMRescore" }[plat];
-        if (fn && typeof window[fn] === "function") { window[fn](); return true; }
-        return false;
-      },
-      args: [platform],
-    });
-    if (results2?.[0]?.result === true) { window.close(); return; }
-  } catch (_) {}
-
-  // Step 3: fall back to RESCORE message
-  chrome.tabs.sendMessage(tab.id, { type: "RESCORE" }, (response) => {
-    if (chrome.runtime.lastError) {
-      statusEl.className = "status-card error";
-      statusEl.innerText = "⚠️ Could not score this page. Please reload the listing and try again.";
-    } else {
-      window.close();
-    }
-  });
 });
 
 
