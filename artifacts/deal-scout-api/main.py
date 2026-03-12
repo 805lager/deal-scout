@@ -350,6 +350,32 @@ async def score_listing(listing: ListingRequest, request: Request):
 
     log.info(f"Score: {deal_score.score}/10 — {deal_score.verdict}")
 
+    # ── Score cap: listing priced at or above new retail ────────────────────────
+    # WHY: Claude may still give a 6+ even when the listing is priced above new
+    # retail (e.g. seller claims "new in box"). From a buyer's standpoint, paying
+    # used-market price AT OR ABOVE new retail is objectively bad — no discount,
+    # no warranty, no return protection. We hard-cap the score here so the UI
+    # never shows "FAIR DEAL / Solid Deal — Confirm Price" for such listings.
+    # Only applies when new_price is real data (not mock / zero).
+    _np = market_value.new_price
+    _lp = listing.price
+    if _np > 0 and market_value.data_source not in ("ebay_mock",):
+        _ratio = _lp / _np
+        if _ratio >= 1.0 and deal_score.score > 4:
+            log.info(
+                f"[ScoreCap] Asking ${_lp:.0f} >= new retail ${_np:.0f} "
+                f"— capping score {deal_score.score} → 4"
+            )
+            deal_score.score     = min(deal_score.score, 4)
+            deal_score.should_buy = False
+        elif _ratio >= 0.85 and deal_score.score > 5:
+            log.info(
+                f"[ScoreCap] Asking ${_lp:.0f} is {_ratio*100:.0f}% of new retail ${_np:.0f} "
+                f"— capping score {deal_score.score} → 5"
+            )
+            deal_score.score     = min(deal_score.score, 5)
+            deal_score.should_buy = False
+
     # ── Step 4: Generate affiliate recommendations ──────────────────────────────
     from scoring.affiliate_router import detect_category
     # Compute category here so it can be passed to both the affiliate router

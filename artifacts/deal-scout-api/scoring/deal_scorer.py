@@ -236,6 +236,12 @@ Analyze this listing holistically. Consider:
 - Never flag standard vehicle attributes (mileage, transmission, color, battery specs) as suspicious.
 - Do not flag missing accessories or original packaging for vehicles, motorcycles, or powersports items.
 
+## CRITICAL RULES FOR NEW RETAIL COMPARISON
+When the "New retail price" above is > 0, apply these hard scoring limits:
+- Asking price >= new retail:         score MUST be ≤ 4. Buying used at or above new retail price is objectively a bad deal — the buyer gets no discount, no warranty, no return protection.
+- Asking price >= 85% of new retail:  score MUST be ≤ 5. The savings vs. buying new are marginal and don't justify the risks of a used purchase.
+These caps apply regardless of condition claimed or accessories included. A "new in box" item from a private seller is still riskier than buying new from a retailer at the same price.
+
 ## RESPONSE FORMAT
 Respond ONLY with a valid JSON object. No preamble, no explanation, no markdown fences.
 Use exactly this structure:
