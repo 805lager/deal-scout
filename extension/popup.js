@@ -4,27 +4,17 @@ async function getApiBase() {
   try {
     const stored = await chrome.storage.local.get("ds_api_base");
     return stored.ds_api_base || API_BASE_DEFAULT;
-  } catch {
-    return API_BASE_DEFAULT;
-  }
+  } catch { return API_BASE_DEFAULT; }
 }
 
 function detectPlatform(url) {
   if (!url) return null;
-  if (url.includes("facebook.com/marketplace/item") || url.match(/facebook\.com\/marketplace\/[^/]+\/item\//)) return "fbm";
+  if (url.includes("facebook.com/marketplace/item") || /facebook\.com\/marketplace\/[^/]+\/item\//.test(url)) return "fbm";
   if (url.includes("craigslist.org")) return "craigslist";
   if (url.includes("offerup.com/item/detail")) return "offerup";
   if (url.includes("ebay.com/itm")) return "ebay";
-  if (url.includes("amazon.com/dp") || url.includes("amazon.com/") && url.includes("/dp/")) return "amazon";
   return null;
 }
-
-const CONTENT_SCRIPT = {
-  fbm:        "content/fbm.js",
-  craigslist: "content/craigslist.js",
-  offerup:    "content/offerup.js",
-  ebay:       "content/ebay.js",
-};
 
 async function checkAPIHealth() {
   const statusEl = document.getElementById("api-status");
@@ -35,68 +25,180 @@ async function checkAPIHealth() {
       const data = await resp.json();
       statusEl.className = "status-card active";
       statusEl.innerHTML = `✅ API connected &nbsp;·&nbsp; <span style="font-size:11px">Claude: ${data.anthropic_key} &nbsp;·&nbsp; eBay: ${data.ebay_key}</span>`;
-    } else {
-      throw new Error(`HTTP ${resp.status}`);
-    }
+    } else { throw new Error(`HTTP ${resp.status}`); }
   } catch (e) {
     statusEl.className = "status-card error";
     statusEl.innerHTML = `❌ API offline &nbsp;·&nbsp; <span style="font-size:11px">${e.message}</span>`;
   }
 }
 
+// ── Inline extractors run directly in the page via executeScript ──────────────
+function extractCraigslist() {
+  const title =
+    document.querySelector("#titletextonly")?.textContent?.trim() ||
+    document.querySelector(".postingtitletext")?.childNodes?.[0]?.textContent?.trim() ||
+    document.title.split(" - ")[0].trim();
+  const priceEl = document.querySelector(".price, [class*='price'][class*='Price']") || document.querySelector(".price");
+  let priceText = priceEl?.textContent?.trim() || "";
+  if (!priceText) { const m = document.body.innerText?.match(/\$\s?([0-9,]+)/); if (m) priceText = "$" + m[1]; }
+  const price = parseFloat(priceText.replace(/[^0-9.]/g, "")) || 0;
+  const bodyText = document.querySelector("#postingbody")?.textContent?.slice(0, 800) || "";
+  const loc = document.querySelector(".mapaddress")?.textContent?.trim() || location.hostname.replace(".craigslist.org", "");
+  return { title, price, raw_price_text: priceText, description: bodyText, location: loc, platform: "craigslist" };
+}
+
+function extractOfferUp() {
+  const title = document.querySelector("h1")?.textContent?.trim() || document.title.split(" | ")[0].trim();
+  let price = 0, priceText = "";
+  for (const sel of ["[data-testid='item-price']", "[class*='price']", "[class*='Price']", "h2", "h3"]) {
+    for (const el of document.querySelectorAll(sel)) {
+      const m = el.textContent?.trim().match(/^\$([0-9,]+(?:\.[0-9]{2})?)$/);
+      if (m) { price = parseFloat(m[1].replace(/,/g, "")); priceText = el.textContent.trim(); break; }
+    }
+    if (price) break;
+  }
+  const loc = document.querySelector("[data-testid='item-location']")?.textContent?.trim() || "";
+  const desc = (() => { for (const sel of ["[data-testid='item-description']","[class*='description']","p"]) { for (const el of document.querySelectorAll(sel)) { const t = el.textContent?.trim(); if (t?.length > 30) return t.slice(0,800); } } return ""; })();
+  return { title, price, raw_price_text: priceText, description: desc, location: loc, platform: "offerup" };
+}
+
+// ── Inline panel renderer injected into the page ──────────────────────────────
+function renderDealPanel(r, panelId) {
+  const existing = document.getElementById(panelId);
+  if (existing) existing.remove();
+  const score = r.score || 0;
+  const sc = score >= 7 ? "#22c55e" : score >= 5 ? "#fbbf24" : "#ef4444";
+  const esc = s => String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  let cta = score <= 3 ? "⚠️ Better Options Below" : score <= 5 ? "💡 You Could Do Better" : score <= 7 ? "✅ Solid — Confirm Price" : "🔥 Great Deal";
+
+  let rows = "";
+  if (r.sold_avg)  rows += `<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.05)"><span style="color:#9ca3af;font-size:12px">Est. sold avg</span><span style="font-weight:700;font-size:14px">$${Math.round(r.sold_avg)}</span></div>`;
+  if (r.new_price) rows += `<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.05)"><span style="color:#9ca3af;font-size:12px">New retail</span><span style="font-size:13px">$${Math.round(r.new_price)}</span></div>`;
+  rows += `<div style="display:flex;justify-content:space-between;padding:3px 0"><span style="color:#9ca3af;font-size:12px">Listed price</span><span style="font-size:13px">$${Math.round(r.price||0)}</span></div>`;
+  if (r.sold_avg && r.price) {
+    const delta = r.price - r.sold_avg, pct = Math.abs(Math.round(delta/r.sold_avg*100));
+    rows += `<div style="margin-top:6px;font-size:12px;font-weight:600;color:${delta<0?"#22c55e":"#ef4444"}">● $${Math.abs(Math.round(delta))} ${delta<0?"below":"above"} market (${delta<0?"-":"+"}${pct}%)</div>`;
+  }
+
+  let flags = "";
+  for (const f of (r.green_flags||[]).slice(0,3)) flags += `<div style="font-size:11.5px;color:#6ee7b7;padding:2px 0">✓ ${esc(f)}</div>`;
+  for (const f of (r.red_flags||[]).slice(0,3))   flags += `<div style="font-size:11.5px;color:#fca5a5;padding:2px 0">⚠ ${esc(f)}</div>`;
+
+  const panel = document.createElement("div");
+  panel.id = panelId;
+  panel.style.cssText = "position:fixed;top:80px;right:20px;width:320px;max-height:calc(100vh - 100px);overflow-y:auto;z-index:2147483647;background:#1e1b2e;border:1px solid #3d3660;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,0.6);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:13px;color:#e0e0e0;line-height:1.5";
+  panel.innerHTML = `
+    <div style="background:#13111f;border-bottom:1px solid #3d3660;border-radius:10px 10px 0 0;padding:10px 12px">
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+        <span style="font-weight:700;font-size:13px;color:#7c8cf8">📊 Deal Scout</span>
+        <button onclick="document.getElementById('${panelId}').remove()" style="background:none;border:none;color:#6b7280;font-size:15px;cursor:pointer">✕</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <div style="width:52px;height:52px;border-radius:50%;border:3px solid ${sc};display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <span style="font-size:22px;font-weight:900;color:${sc}">${score}</span>
+        </div>
+        <div>
+          <div style="font-size:14px;font-weight:800;color:#e2e8f0">${esc(r.verdict||"")}</div>
+          <div style="font-size:11px;color:#94a3b8;margin-top:2px">${r.should_buy===false?"⛔ Skip":r.should_buy?"✅ Worth buying":""}</div>
+          <div style="font-size:10px;color:#6b7280;margin-top:1px">$${Math.round(r.price||0)}</div>
+        </div>
+      </div>
+    </div>
+    ${r.summary?`<div style="margin:10px 12px 0;font-size:12px;color:#c4b5fd;background:rgba(139,92,246,0.08);border:1px solid rgba(139,92,246,0.2);border-radius:8px;padding:9px 10px;line-height:1.5">${esc(r.summary)}</div>`:""}
+    <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:10px;padding:10px 12px;margin:8px 12px">
+      <div style="font-weight:600;font-size:11px;text-transform:uppercase;color:#9ca3af;margin-bottom:8px">📈 Market Comparison</div>
+      ${rows}
+    </div>
+    ${flags?`<div style="margin:0 12px 8px">${flags}</div>`:""}
+    <div style="display:flex;align-items:center;justify-content:center;padding:8px 12px;border-top:1px solid rgba(255,255,255,0.06);margin-top:4px">
+      <span style="font-size:10px;color:#4b5563">${cta}</span>
+    </div>`;
+  document.body.appendChild(panel);
+}
+
+// ── Score Current Listing button ──────────────────────────────────────────────
 document.getElementById("score-current").addEventListener("click", async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const statusEl = document.getElementById("api-status");
   const platform = detectPlatform(tab?.url);
 
-  if (!platform || platform === "amazon") {
+  if (!platform) {
     statusEl.className = "status-card error";
     statusEl.innerText = "⚠️ Navigate to a Craigslist, OfferUp, eBay, or Facebook Marketplace listing first.";
     return;
   }
 
+  // Try RESCORE message first (works if content script is already live)
+  const rescoreWorked = await new Promise(resolve => {
+    chrome.tabs.sendMessage(tab.id, { type: "RESCORE" }, r => {
+      resolve(!chrome.runtime.lastError && r?.ok !== false);
+    });
+  });
+  if (rescoreWorked) { window.close(); return; }
+
+  // Content script not responding — run self-contained extraction + API + render
   statusEl.className = "status-card";
-  statusEl.innerText = "⏳ Triggering score…";
+  statusEl.innerText = "⏳ Extracting listing…";
 
-  const scriptFile = CONTENT_SCRIPT[platform];
-  const guardKey = { craigslist: "__dsCLInjected", offerup: "__dsOUInjected", ebay: "__dsEBInjected", fbm: "__dsFBMInjected" }[platform];
+  const extractor = platform === "craigslist" ? extractCraigslist : extractOfferUp;
 
+  let listing;
   try {
-    // Step 1: clear the injection guard so the file can run fresh
-    await chrome.scripting.executeScript({
+    const extracted = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      func: (key) => { if (key) delete window[key]; },
-      args: [guardKey || ""],
+      func: extractor,
     });
-
-    // Step 2: inject the content script file fresh
-    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: [scriptFile] });
-
-    // Step 3: call global trigger directly via executeScript (no messaging)
-    const triggerResult = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: (plat) => {
-        const fnMap = { craigslist: "__dsScoreCL", offerup: "__dsScoreOU", ebay: "__dsScoreEB", fbm: "__dsFBMRescore" };
-        const fn = fnMap[plat];
-        const injectedFlag = { craigslist: "__dsCLInjected", offerup: "__dsOUInjected", ebay: "__dsEBInjected", fbm: "__dsFBMInjected" }[plat];
-        if (fn && typeof window[fn] === "function") { window[fn](); return "ok"; }
-        return "fn=" + typeof window[fn] + " guard=" + window[injectedFlag] + " url=" + location.href.slice(-60);
-      },
-      args: [platform],
-    });
-
-    const diag = triggerResult?.[0]?.result;
-    if (diag === "ok") { window.close(); return; }
-
-    statusEl.className = "status-card error";
-    statusEl.innerText = `⚠️ Debug info — please share this: ${diag}`;
+    listing = extracted?.[0]?.result;
   } catch (e) {
     statusEl.className = "status-card error";
-    statusEl.innerText = `⚠️ Blocked: ${e.message || "unknown error"}. Reload the page and try again.`;
+    statusEl.innerText = `⚠️ Could not read page: ${e.message}`;
+    return;
   }
+
+  if (!listing?.price) {
+    statusEl.className = "status-card error";
+    statusEl.innerText = `⚠️ Could not find a price on this listing. Make sure you're on an individual listing page.`;
+    return;
+  }
+
+  statusEl.className = "status-card";
+  statusEl.innerText = `⏳ Scoring "${listing.title?.slice(0, 40)}…"`;
+
+  let result;
+  try {
+    const API_BASE = await getApiBase();
+    const resp = await fetch(`${API_BASE}/score`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(listing),
+      signal: AbortSignal.timeout(35000),
+    });
+    result = await resp.json();
+  } catch (e) {
+    statusEl.className = "status-card error";
+    statusEl.innerText = `⚠️ API error: ${e.message}`;
+    return;
+  }
+
+  const panelId = { craigslist: "deal-scout-cl-panel", offerup: "deal-scout-ou-panel", ebay: "deal-scout-eb-panel", fbm: "deal-scout-fbm-panel" }[platform];
+
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: renderDealPanel,
+      args: [result, panelId],
+    });
+  } catch (e) {
+    statusEl.className = "status-card error";
+    statusEl.innerText = `⚠️ Could not render panel: ${e.message}`;
+    return;
+  }
+
+  window.close();
 });
 
 
+// ── Report Issue ──────────────────────────────────────────────────────────────
 const modal     = document.getElementById("report-modal");
 const modalForm = document.getElementById("modal-form");
 const modalSent = document.getElementById("modal-sent");
@@ -120,12 +222,7 @@ document.getElementById("modal-send").addEventListener("click", async () => {
   if (!text) return;
   const API_BASE = await getApiBase();
   try {
-    await fetch(`${API_BASE}/report`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ report: text, ts: new Date().toISOString() }),
-      signal: AbortSignal.timeout(4000),
-    });
+    await fetch(`${API_BASE}/report`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ report: text, ts: new Date().toISOString() }), signal: AbortSignal.timeout(4000) });
   } catch {}
   modalForm.style.display = "none";
   modalSent.style.display = "block";
@@ -139,6 +236,7 @@ function closeModal() {
   document.getElementById("report-text").value = "";
 }
 
+// ── Settings ──────────────────────────────────────────────────────────────────
 document.getElementById("settings-toggle").addEventListener("click", async () => {
   const panel = document.getElementById("settings-panel");
   panel.classList.toggle("open");
