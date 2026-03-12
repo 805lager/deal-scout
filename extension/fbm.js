@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION   = "0.26.27";
+  const VERSION  = "0.26.28";
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -41,15 +41,14 @@
   // background.js re-injects fbm.js on every pushState. Without this guard,
   // multiple instances would race and create duplicate sidebars.
   if (window.__dealScoutInjected) {
-    // Already running — just trigger a rescore if we're on a new listing page
+    // Already running — re-injection from background.js on SPA navigation.
+    // prevTitle was already saved by the pushState intercept at t=0 (see bottom
+    // of this file). Don't overwrite it here — by now the DOM may already show
+    // the new listing, which would make prevTitle useless.
     if (isListingPage()) {
-      // Snapshot the CURRENT title before the SPA swaps the DOM.
-      // autoScore will wait until this title changes → guaranteed fresh data.
-      window.__dealScoutPrevTitle = document.querySelector('h1[dir="auto"]')?.textContent?.trim() ?? '';
-      // Show spinner immediately so the old score never lingers on a new URL.
       renderNavigating();
       clearTimeout(window.__dealScoutRescanTimer);
-      window.__dealScoutRescanTimer = setTimeout(autoScore, 200);
+      window.__dealScoutRescanTimer = setTimeout(autoScore, 100);
     }
     return;
   }
@@ -76,10 +75,27 @@
   }
 
   // ── Auto-score on listing pages ───────────────────────────────────────────────
+  // Poll until h1[dir="auto"] has a real non-generic title, THEN score.
+  // FBM's React hydration can take 1-3s on a hard page load — a flat timeout
+  // fires too early. We poll every 300ms up to 10s, then fall back.
+
+  function waitForFreshContent() {
+    let attempts = 0;
+    const check = () => {
+      attempts++;
+      const h1 = document.querySelector('h1[dir="auto"]')?.textContent?.trim() ?? '';
+      if (h1 && !_GENERIC_TITLES.has(h1.toLowerCase())) {
+        autoScore();
+        return;
+      }
+      if (attempts < 33) setTimeout(check, 300); // up to ~10s
+      else autoScore(); // fallback: try anyway
+    };
+    check();
+  }
 
   if (isListingPage()) {
-    clearTimeout(window.__dealScoutRescanTimer);
-    window.__dealScoutRescanTimer = setTimeout(autoScore, 1500);
+    waitForFreshContent();
   }
 
   // ── Message Handler (from background.js / popup) ──────────────────────────────
@@ -1499,5 +1515,31 @@
     if (price < 1000) return '500_1000';
     return 'over_1000';
   }
+
+  // ── SPA Navigation — capture prevTitle at t=0 ────────────────────────────────
+  // background.js re-injects fbm.js 800ms after the LAST pushState. By then FBM
+  // may have already swapped the DOM to the new listing. If we save prevTitle in
+  // the guard (at 800ms) we capture the NEW title, not the old one — useless.
+  //
+  // Fix: intercept pushState HERE (set up once, on first injection) so we save
+  // the OLD listing's title at the exact moment the user navigates (t=0), before
+  // React has a chance to touch the DOM.
+  //
+  // Only runs in the first fbm.js instance (guard prevents re-setup on re-injection).
+
+  const _fbmOrigPush    = history.pushState.bind(history);
+  const _fbmOrigReplace = history.replaceState.bind(history);
+
+  function _onFbmNav() {
+    if (isListingPage()) {
+      // Save the title RIGHT NOW — DOM still shows the listing we're leaving
+      window.__dealScoutPrevTitle = document.querySelector('h1[dir="auto"]')?.textContent?.trim() ?? '';
+      console.debug('[DealScout] Saved prevTitle at navigation:', window.__dealScoutPrevTitle);
+    }
+  }
+
+  history.pushState    = function(...a) { _onFbmNav(); _fbmOrigPush(...a);    };
+  history.replaceState = function(...a) { _onFbmNav(); _fbmOrigReplace(...a); };
+  window.addEventListener('popstate', _onFbmNav);
 
 })();
