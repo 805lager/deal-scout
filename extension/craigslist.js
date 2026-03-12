@@ -17,7 +17,7 @@
 (function () {
   "use strict";
 
-  const VERSION  = "1.0.0";
+  const VERSION  = "1.0.1";
   const PANEL_ID = "deal-scout-cl-panel";
   const PLATFORM = "craigslist";
 
@@ -34,7 +34,7 @@
 
   // ── Detection ──────────────────────────────────────────────────────────────
   function isListingPage() {
-    return /\.craigslist\.org\/[^/]+\/d\/[^/]+\/\d+\.html/.test(location.href);
+    return /\.craigslist\.org(?:\/[^/]+){1,2}\/d\/[^/]+\/\d+(?:\.html)?/.test(location.href);
   }
 
   // ── Extraction ─────────────────────────────────────────────────────────────

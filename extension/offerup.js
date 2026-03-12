@@ -20,7 +20,7 @@
 (function () {
   "use strict";
 
-  const VERSION  = "1.0.0";
+  const VERSION  = "1.0.1";
   const PANEL_ID = "deal-scout-ou-panel";
   const PLATFORM = "offerup";
 
@@ -436,6 +436,32 @@
     }
     return true;
   });
+
+  // ── SPA Navigation Detection ───────────────────────────────────────────────
+  let _lastUrl = location.href;
+  function onUrlChange() {
+    const cur = location.href;
+    if (cur === _lastUrl) return;
+    _lastUrl = cur;
+    if (isListingPage()) {
+      _scored = false;
+      removePanel();
+      setTimeout(waitForContent, 1500);
+    }
+  }
+
+  window.addEventListener("popstate", onUrlChange);
+
+  const _origPushState = history.pushState.bind(history);
+  history.pushState = function (...args) {
+    _origPushState(...args);
+    onUrlChange();
+  };
+  const _origReplaceState = history.replaceState.bind(history);
+  history.replaceState = function (...args) {
+    _origReplaceState(...args);
+    onUrlChange();
+  };
 
   // ── Init ───────────────────────────────────────────────────────────────────
   if (isListingPage()) {
