@@ -1,96 +1,84 @@
-# Workspace
+# Deal Scout API — Replit Backend
 
 ## Overview
 
-pnpm workspace monorepo using TypeScript. Each package manages its own dependencies.
+FastAPI backend for the Deal Scout Chrome extension. Scores deals on Facebook Marketplace, Craigslist, and Amazon using Claude AI + eBay pricing data. Migrated from Railway. Zero external AI API keys needed — uses Replit's built-in Claude AI proxy.
 
 ## Stack
 
-- **Monorepo tool**: pnpm workspaces
-- **Node.js version**: 24
-- **Package manager**: pnpm
-- **TypeScript version**: 5.9
-- **API framework**: Express 5
-- **Database**: PostgreSQL + Drizzle ORM
-- **Validation**: Zod (`zod/v4`), `drizzle-zod`
-- **API codegen**: Orval (from OpenAPI spec)
-- **Build**: esbuild (CJS bundle)
+- **Language**: Python 3.11
+- **Framework**: FastAPI + Uvicorn
+- **AI**: Claude Haiku (via Replit AI integration — no API key needed)
+- **Pricing**: eBay Finding API + Claude AI fallback
+- **Monorepo tool**: pnpm workspaces (Node.js side)
 
-## Structure
+## Architecture
 
-```text
-artifacts-monorepo/
-├── artifacts/              # Deployable applications
-│   └── api-server/         # Express API server
-├── lib/                    # Shared libraries
-│   ├── api-spec/           # OpenAPI spec + Orval codegen config
-│   ├── api-client-react/   # Generated React Query hooks
-│   ├── api-zod/            # Generated Zod schemas from OpenAPI
-│   └── db/                 # Drizzle ORM schema + DB connection
-├── scripts/                # Utility scripts (single workspace package)
-│   └── src/                # Individual .ts scripts, run via `pnpm --filter @workspace/scripts run <script>`
-├── pnpm-workspace.yaml     # pnpm workspace (artifacts/*, lib/*, lib/integrations/*, scripts)
-├── tsconfig.base.json      # Shared TS options (composite, bundler resolution, es2022)
-├── tsconfig.json           # Root TS project references
-└── package.json            # Root package with hoisted devDeps
+```
+artifacts/deal-scout-api/
+├── main.py                   # FastAPI app, routes, request/response models
+├── requirements.txt          # Python dependencies
+└── scoring/                  # Pipeline modules
+    ├── deal_scorer.py         # Claude scoring (main AI call)
+    ├── product_extractor.py   # Claude extracts brand/model from vague title
+    ├── ebay_pricer.py         # eBay Finding API comps
+    ├── claude_pricer.py       # Claude AI price fallback (replaces Gemini)
+    ├── product_evaluator.py   # Reddit + Google reliability signals
+    ├── security_scorer.py     # Claude scam/fraud detection
+    ├── affiliate_router.py    # Buy suggestion cards
+    ├── vehicle_pricer.py      # Car pricing via CarGurus
+    ├── suggestion_engine.py   # Deal card generation
+    ├── corrections.py         # Manual query corrections
+    └── google_pricer.py       # Google Shopping price scraper
 ```
 
-## TypeScript & Composite Projects
+## API Endpoints
 
-Every package extends `tsconfig.base.json` which sets `composite: true`. The root `tsconfig.json` lists all packages as project references. This means:
+- `POST /score` — main endpoint, scores a deal listing
+- `GET /health` — health check with key status
+- `GET /test-claude` — tests Claude pricing integration end-to-end
+- `GET /test-claude-connection` — tests Claude API connection
+- `GET /test-ebay` — tests eBay API connection
+- `GET /docs` — FastAPI auto-generated API docs
 
-- **Always typecheck from the root** — run `pnpm run typecheck` (which runs `tsc --build --emitDeclarationOnly`). This builds the full dependency graph so that cross-package imports resolve correctly. Running `tsc` inside a single package will fail if its dependencies haven't been built yet.
-- **`emitDeclarationOnly`** — we only emit `.d.ts` files during typecheck; actual JS bundling is handled by esbuild/tsx/vite...etc, not `tsc`.
-- **Project references** — when package A depends on package B, A's `tsconfig.json` must list B in its `references` array. `tsc --build` uses this to determine build order and skip up-to-date packages.
+## Environment Variables / Secrets
 
-## Root Scripts
+| Variable | Status | Notes |
+|---|---|---|
+| `AI_INTEGRATIONS_ANTHROPIC_BASE_URL` | ✅ Set by Replit | Claude AI proxy URL |
+| `AI_INTEGRATIONS_ANTHROPIC_API_KEY` | ✅ Set by Replit | Claude AI proxy key |
+| `EBAY_APP_ID` | ⚠️ Required | eBay Developer App ID (Client ID) |
 
-- `pnpm run build` — runs `typecheck` first, then recursively runs `build` in all packages that define it
-- `pnpm run typecheck` — runs `tsc --build --emitDeclarationOnly` using project references
+Get your free eBay key at: https://developer.ebay.com/my/keys
 
-## Packages
+## Running Locally
 
-### `artifacts/api-server` (`@workspace/api-server`)
+The workflow `Deal Scout API` runs:
+```
+cd artifacts/deal-scout-api && uvicorn main:app --host 0.0.0.0 --port 8000
+```
 
-Express 5 API server. Routes live in `src/routes/` and use `@workspace/api-zod` for request and response validation and `@workspace/db` for persistence.
+API available at `http://localhost:8000` within Replit.
 
-- Entry: `src/index.ts` — reads `PORT`, starts Express
-- App setup: `src/app.ts` — mounts CORS, JSON/urlencoded parsing, routes at `/api`
-- Routes: `src/routes/index.ts` mounts sub-routers; `src/routes/health.ts` exposes `GET /health` (full path: `/api/health`)
-- Depends on: `@workspace/db`, `@workspace/api-zod`
-- `pnpm --filter @workspace/api-server run dev` — run the dev server
-- `pnpm --filter @workspace/api-server run build` — production esbuild bundle (`dist/index.cjs`)
-- Build bundles an allowlist of deps (express, cors, pg, drizzle-orm, zod, etc.) and externalizes the rest
+## Extension Configuration
 
-### `lib/db` (`@workspace/db`)
+The Chrome extension (`background.js`, `fbm.js`) uses `chrome.storage.local` to store the API URL. The default URL (`API_BASE_DEFAULT`) needs to be updated to the deployed Replit URL.
 
-Database layer using Drizzle ORM with PostgreSQL. Exports a Drizzle client instance and schema models.
+Updated extension files (with Replit dev URL for testing) are at:
+- `extension/background.js`
+- `extension/fbm.js`
 
-- `src/index.ts` — creates a `Pool` + Drizzle instance, exports schema
-- `src/schema/index.ts` — barrel re-export of all models
-- `src/schema/<modelname>.ts` — table definitions with `drizzle-zod` insert schemas (no models definitions exist right now)
-- `drizzle.config.ts` — Drizzle Kit config (requires `DATABASE_URL`, automatically provided by Replit)
-- Exports: `.` (pool, db, schema), `./schema` (schema only)
+**After deploying to Replit**, update `API_BASE_DEFAULT` in both files to your production URL (e.g., `https://your-repl.username.replit.app`).
 
-Production migrations are handled by Replit when publishing. In development, we just use `pnpm --filter @workspace/db run push`, and we fallback to `pnpm --filter @workspace/db run push-force`.
+## Migration Changes (from Railway)
 
-### `lib/api-spec` (`@workspace/api-spec`)
+1. **Anthropic client**: `api_key=ANTHROPIC_API_KEY` → `api_key=AI_INTEGRATIONS_ANTHROPIC_API_KEY, base_url=AI_INTEGRATIONS_ANTHROPIC_BASE_URL`
+2. **Model names**: `claude-haiku-4-5-20251001` → `claude-haiku-4-5`
+3. **Gemini pricer replaced**: `scoring/gemini_pricer.py` → `scoring/claude_pricer.py` (Claude-based)
+4. **Product evaluator**: Gemini reputation calls → Claude reputation calls
+5. **Port**: `API_PORT` env var → `PORT` env var (Replit standard)
+6. **No external AI keys needed**: All AI calls go through Replit's built-in Claude proxy
 
-Owns the OpenAPI 3.1 spec (`openapi.yaml`) and the Orval config (`orval.config.ts`). Running codegen produces output into two sibling packages:
+## TypeScript API Server (pre-existing)
 
-1. `lib/api-client-react/src/generated/` — React Query hooks + fetch client
-2. `lib/api-zod/src/generated/` — Zod schemas
-
-Run codegen: `pnpm --filter @workspace/api-spec run codegen`
-
-### `lib/api-zod` (`@workspace/api-zod`)
-
-Generated Zod schemas from the OpenAPI spec (e.g. `HealthCheckResponse`). Used by `api-server` for response validation.
-
-### `lib/api-client-react` (`@workspace/api-client-react`)
-
-Generated React Query hooks and fetch client from the OpenAPI spec (e.g. `useHealthCheck`, `healthCheck`).
-
-### `scripts` (`@workspace/scripts`)
-
-Utility scripts package. Each script is a `.ts` file in `src/` with a corresponding npm script in `package.json`. Run scripts via `pnpm --filter @workspace/scripts run <script>`. Scripts can import any workspace package (e.g., `@workspace/db`) by adding it as a dependency in `scripts/package.json`.
+The workspace also has a TypeScript/Express API server at `artifacts/api-server/` (separate from Deal Scout, runs on port 8080 at path `/api`). This was pre-existing and is unrelated to the Deal Scout backend.
