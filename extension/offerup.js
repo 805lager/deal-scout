@@ -233,14 +233,34 @@
     const verdict = r.verdict || (score >= 7 ? "Good Deal" : score >= 5 ? "Fair Deal" : "Overpriced");
     const hdr = document.createElement("div");
     hdr.style.cssText = "background:#13111f;border-bottom:1px solid #3d3660;border-radius:10px 10px 0 0;padding:10px 12px;cursor:move";
+
     const topRow = document.createElement("div");
     topRow.style.cssText = "display:flex;align-items:center;justify-content:space-between;margin-bottom:6px";
-    topRow.innerHTML = '<span style="font-weight:700;font-size:13px;color:#7c8cf8">📊 Deal Scout</span>';
+    const brandSpan = document.createElement("span");
+    brandSpan.style.cssText = "font-weight:700;font-size:13px;color:#7c8cf8";
+    brandSpan.textContent = "📊 Deal Scout";
     const closeBtn = document.createElement("button");
     closeBtn.textContent = "✕";
     closeBtn.style.cssText = "background:none;border:none;color:#6b7280;font-size:15px;cursor:pointer;padding:1px 4px";
-    closeBtn.onclick = removePanel;
+    closeBtn.addEventListener("click", removePanel);
+    topRow.appendChild(brandSpan);
     topRow.appendChild(closeBtn);
+
+    const scoreRow = document.createElement("div");
+    scoreRow.style.cssText = "display:flex;align-items:center;gap:10px";
+    const ring = document.createElement("div");
+    ring.style.cssText = "width:52px;height:52px;border-radius:50%;border:3px solid " + scoreColor + ";display:flex;align-items:center;justify-content:center;flex-shrink:0";
+    const scoreNum = document.createElement("span");
+    scoreNum.style.cssText = "font-size:22px;font-weight:900;color:" + scoreColor;
+    scoreNum.textContent = score;
+    ring.appendChild(scoreNum);
+    const meta = document.createElement("div");
+    meta.innerHTML = '<div style="font-size:14px;font-weight:800;color:#e2e8f0">' + escHtml(verdict) + "</div>" +
+      '<div style="font-size:11px;color:#94a3b8;margin-top:2px">' + (r.should_buy === false ? "⛔ Skip" : r.should_buy ? "✅ Worth buying" : "") + "</div>" +
+      '<div style="font-size:10px;color:#6b7280;margin-top:1px">🏷 OfferUp · $' + (r.price || 0).toFixed(0) + "</div>";
+    scoreRow.appendChild(ring);
+    scoreRow.appendChild(meta);
+
     hdr.addEventListener("mousedown", (e) => {
       if (e.target === closeBtn) return;
       const p = getPanel();
@@ -248,12 +268,7 @@
       p._ds_drag = { on: true, ox: e.clientX - rect.left, oy: e.clientY - rect.top };
     });
     hdr.appendChild(topRow);
-    hdr.innerHTML += '<div style="display:flex;align-items:center;gap:10px">' +
-      '<div style="width:52px;height:52px;border-radius:50%;border:3px solid ' + scoreColor + ';display:flex;align-items:center;justify-content:center;flex-shrink:0">' +
-      '<span style="font-size:22px;font-weight:900;color:' + scoreColor + '">' + score + "</span></div>" +
-      '<div><div style="font-size:14px;font-weight:800;color:#e2e8f0">' + escHtml(verdict) + "</div>" +
-      '<div style="font-size:11px;color:#94a3b8;margin-top:2px">' + (r.should_buy === false ? "⛔ Skip" : r.should_buy ? "✅ Worth buying" : "") + "</div>" +
-      '<div style="font-size:10px;color:#6b7280;margin-top:1px">🏷 OfferUp · $' + (r.price || 0).toFixed(0) + "</div></div></div>";
+    hdr.appendChild(scoreRow);
     container.appendChild(hdr);
   }
 
@@ -443,25 +458,24 @@
     const cur = location.href;
     if (cur === _lastUrl) return;
     _lastUrl = cur;
+    _scored = false;
+    removePanel();
     if (isListingPage()) {
-      _scored = false;
-      removePanel();
-      setTimeout(waitForContent, 1500);
+      setTimeout(waitForContent, 1200);
     }
   }
 
   window.addEventListener("popstate", onUrlChange);
 
   const _origPushState = history.pushState.bind(history);
-  history.pushState = function (...args) {
-    _origPushState(...args);
-    onUrlChange();
-  };
+  history.pushState = function (...args) { _origPushState(...args); onUrlChange(); };
   const _origReplaceState = history.replaceState.bind(history);
-  history.replaceState = function (...args) {
-    _origReplaceState(...args);
-    onUrlChange();
-  };
+  history.replaceState = function (...args) { _origReplaceState(...args); onUrlChange(); };
+
+  // Interval backup — catches navigations that bypass pushState/replaceState
+  setInterval(() => {
+    if (location.href !== _lastUrl) onUrlChange();
+  }, 800);
 
   // ── Init ───────────────────────────────────────────────────────────────────
   if (isListingPage()) {
