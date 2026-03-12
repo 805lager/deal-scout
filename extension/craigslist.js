@@ -25,7 +25,7 @@
   window.__dsCLInjected = true;
 
   // ── API Base (from chrome.storage, same as fbm.js) ─────────────────────────
-  let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev";
+  let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
   try {
     chrome.storage.local.get("ds_api_base", (r) => {
       if (r && r.ds_api_base) API_BASE = r.ds_api_base;

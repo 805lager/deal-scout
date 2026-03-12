@@ -19,7 +19,7 @@
 // ── Config ────────────────────────────────────────────────────────────────────
 // WHY ASYNC: background.js can't read chrome.storage.local synchronously.
 // Every caller that needs API_BASE must await getApiBase().
-const API_BASE_DEFAULT = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev";
+const API_BASE_DEFAULT = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
 
 async function getApiBase() {
   try {

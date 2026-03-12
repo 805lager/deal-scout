@@ -47,7 +47,7 @@
   // ── Config ────────────────────────────────────────────────────────────────────
   // API_BASE is read from chrome.storage at runtime.
   // Default is the Railway production URL — local dev sets this via the popup Settings panel.
-  let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev";
+  let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
 
   // Load stored API base (set via popup Settings panel)
   try {
