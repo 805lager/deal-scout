@@ -172,9 +172,9 @@ document.getElementById("score-current").addEventListener("click", async () => {
   statusEl.className = "status-card";
   statusEl.innerText = `⏳ Scoring "${listing.title?.slice(0, 40)}…"`;
 
+  const API_BASE = await getApiBase();
   let result;
   try {
-    const API_BASE = await getApiBase();
     const resp = await fetch(`${API_BASE}/score`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
