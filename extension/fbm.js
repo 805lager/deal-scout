@@ -678,6 +678,13 @@
       if (r.active_avg)              rows.push({ label: 'Est. active avg',     value: ps + r.active_avg.toFixed(0) });
       if (r.new_price)               rows.push({ label: 'New retail',          value: ps + r.new_price.toFixed(0) });
       if (r.sold_low && r.sold_high) rows.push({ label: 'Sold range',          value: ps + r.sold_low.toFixed(0) + ' \u2013 ' + ps + r.sold_high.toFixed(0) });
+      // Craigslist asking prices (supplementary — city-level data, no fees/shipping)
+      if (r.craigslist_asking_avg > 0) rows.push({
+        label: 'CL asking avg',
+        value: ps + r.craigslist_asking_avg.toFixed(0),
+        sub:   '(' + (r.craigslist_count || 0) + '\u00a0local listings)',
+        color: '#67e8f9',
+      });
       // Always show listed price for context
       rows.push({ label: 'Listed price', value: ps + r.price.toFixed(0) });
     }
@@ -701,8 +708,8 @@
       const rowEl = document.createElement('div');
       rowEl.style.cssText = 'display:flex;justify-content:space-between;align-items:baseline;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.05)';
       rowEl.innerHTML = `
-        <span style="color:#9ca3af;font-size:12px">${escHtml(row.label)}</span>
-        <span style="font-weight:${row.bold ? '700' : '500'};font-size:${row.bold ? '14px' : '13px'};${row.mono ? 'font-family:monospace;font-size:11px;color:#a78bfa' : ''}">${escHtml(row.value)}</span>
+        <span style="color:#9ca3af;font-size:12px">${escHtml(row.label)}${row.sub ? '<span style="color:#4b5563;font-size:10px;margin-left:4px">' + escHtml(row.sub) + '</span>' : ''}</span>
+        <span style="font-weight:${row.bold ? '700' : '500'};font-size:${row.bold ? '14px' : '13px'};${row.color ? 'color:' + row.color + ';' : ''}${row.mono ? 'font-family:monospace;font-size:11px;color:#a78bfa' : ''}">${escHtml(row.value)}</span>
       `;
       section.appendChild(rowEl);
     }

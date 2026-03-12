@@ -80,15 +80,25 @@ cd artifacts/deal-scout-api && uvicorn main:app --host 0.0.0.0 --port 8000
 
 API available at `http://localhost:8000` within Replit.
 
-## Extension Configuration
+## Extension Content Scripts
 
-The Chrome extension (`background.js`, `fbm.js`) uses `chrome.storage.local` to store the API URL. The default URL (`API_BASE_DEFAULT`) needs to be updated to the deployed Replit URL.
+All four content scripts use `chrome.runtime.sendMessage({type: 'SCORE_LISTING', listing})` to route through `background.js`, which calls the FastAPI `/score` endpoint. Each includes the `platform` field on the listing object so the data pipeline labels signals correctly.
 
-Updated extension files (with Replit dev URL for testing) are at:
-- `extension/background.js`
-- `extension/fbm.js`
+| File | Platform | URL Pattern | Detection Method |
+|---|---|---|---|
+| `extension/fbm.js` | `facebook_marketplace` | `facebook.com/marketplace/item/*` | URL regex |
+| `extension/craigslist.js` | `craigslist` | `*.craigslist.org/*/d/*.html` | URL regex + DOM (`#postingbody`) |
+| `extension/ebay.js` | `ebay` | `www.ebay.com/itm/*` | URL regex |
+| `extension/offerup.js` | `offerup` | `offerup.com/item/detail/*` | URL regex + 500ms retry (React SPA) |
 
-**After deploying to Replit**, update `API_BASE_DEFAULT` in both files to your production URL (e.g., `https://your-repl.username.replit.app`).
+**Manifest entries needed** (add to `manifest.json` `content_scripts`):
+```json
+{ "matches": ["https://*.craigslist.org/*/d/*.html"], "js": ["craigslist.js"], "run_at": "document_idle" },
+{ "matches": ["https://www.ebay.com/itm/*"], "js": ["ebay.js"], "run_at": "document_idle" },
+{ "matches": ["https://offerup.com/item/detail/*"], "js": ["offerup.js"], "run_at": "document_idle" }
+```
+
+**After deploying to Replit**, update `API_BASE` at the top of each content script to your production URL.
 
 ## Migration Changes (from Railway)
 

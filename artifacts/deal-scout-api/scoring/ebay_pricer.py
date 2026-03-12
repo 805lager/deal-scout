@@ -127,9 +127,9 @@ class MarketValue:
     # Which pricing source produced this data — surfaced in sidebar and used
     # by Claude to calibrate how much to trust the market comps.
     data_source: str = "claude_knowledge"  # "claude_knowledge" | "claude_knowledge" | "ebay" | "ebay_mock" | "correction_range"
-    # Gemini AI metadata — only populated when data_source is claude_knowledge/claude_knowledge.
-    # item_id: the specific product Gemini identified (e.g. "Celestron NexStar 6SE")
-    # ai_notes: Gemini's 1-sentence market context (e.g. "Prices vary by condition")
+    # Claude AI metadata — only populated when data_source is claude_knowledge/gemini_search.
+    # item_id: the specific product Claude identified (e.g. "Celestron NexStar 6SE")
+    # ai_notes: Claude's 1-sentence market context (e.g. "Prices vary by condition")
     # These surface in the sidebar Market Comparison panel beneath the price rows.
     ai_item_id: str = ""
     ai_notes:   str = ""
@@ -189,7 +189,7 @@ def build_search_query(title: str) -> str:
 #   Gemini (Training Knowledge) → fallback if search fails → still better than mock
 #   eBay API → runs in parallel → ONLY used for sidebar affiliate cards now
 
-async def _try_gemini_pricing(query: str, condition: str, listing_price: float = 0.0) -> Optional[dict]:
+async def _try_claude_ai_pricing(query: str, condition: str, listing_price: float = 0.0) -> Optional[dict]:
     """
     Attempt Gemini AI pricing. Returns a stats-format dict on success, None on failure.
 
@@ -624,15 +624,15 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
             confidence="none", data_source="vehicle_not_applicable",
         )
 
-    # ── Step 1: Try Gemini AI pricing first ─────────────────────────────────────
-    # Gemini uses Google Search grounding to find actual USED selling prices.
-    # Falls back to its training knowledge if grounding fails.
-    # See scoring/gemini_pricer.py for full details.
-    gemini_stats = await _try_gemini_pricing(query, condition=listing_condition, listing_price=listing_price)
+    # ── Step 1: Try Claude AI pricing first ─────────────────────────────────────
+    # Claude analyzes the query to return actual USED market prices.
+    # Falls back to eBay comps if Claude call fails or returns unreliable data.
+    # Claude client is in scoring/gemini_pricer.py (historical naming).
+    ai_pricing_stats = await _try_claude_ai_pricing(query, condition=listing_condition, listing_price=listing_price)
     # Capture Gemini metadata before it goes out of scope — MarketValue will carry it
     # to the API response and eventually to the sidebar for display.
-    _gemini_ai_item_id = gemini_stats.get("item_id", "") if gemini_stats else ""
-    _gemini_ai_notes   = gemini_stats.get("notes",   "") if gemini_stats else ""
+    _ai_item_id = ai_pricing_stats.get("item_id", "") if ai_pricing_stats else ""
+    _ai_notes   = ai_pricing_stats.get("notes",   "") if ai_pricing_stats else ""
 
     # ── Step 2: Always fetch eBay + Craigslist in parallel ───────────────────
     # WHY ALWAYS: Even when Gemini succeeds, we want eBay listing cards for
@@ -653,12 +653,12 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
     new_items    = parse_ebay_items(new_raw,    sold=False)
 
     # ── Step 3: Build market stats from whichever source won ──────────────────
-    if gemini_stats:
+    if ai_pricing_stats:
         # Gemini is primary — it returns USED market prices, not retail
-        sold_avg        = gemini_stats["avg"]
-        sold_low        = gemini_stats["low"]
-        sold_high       = gemini_stats["high"]
-        sold_count      = gemini_stats["count"]
+        sold_avg        = ai_pricing_stats["avg"]
+        sold_low        = ai_pricing_stats["low"]
+        sold_high       = ai_pricing_stats["high"]
+        sold_count      = ai_pricing_stats["count"]
         # Use eBay active data for the asking-price column if we have it
         if active_items and not ebay_is_mock:
             active_prices = [p.price for p in active_items]
@@ -666,15 +666,15 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
             active_low    = min(active_prices)
             active_count  = len(active_items)
         else:
-            active_avg   = round(gemini_stats["avg"] * 1.05, 2)
-            active_low   = gemini_stats["low"]
+            active_avg   = round(ai_pricing_stats["avg"] * 1.05, 2)
+            active_low   = ai_pricing_stats["low"]
             active_count = 0
 
         # Gemini knows new retail too — use it if eBay new-condition data is missing
-        new_price       = min(p.price for p in new_items) if new_items else gemini_stats.get("new_retail", 0.0)
-        estimated_value = gemini_stats["avg"]
-        confidence      = gemini_stats["confidence"]
-        data_source     = gemini_stats["data_source"]  # "claude_knowledge" | "claude_knowledge"
+        new_price       = min(p.price for p in new_items) if new_items else ai_pricing_stats.get("new_retail", 0.0)
+        estimated_value = ai_pricing_stats["avg"]
+        confidence      = ai_pricing_stats["confidence"]
+        data_source     = ai_pricing_stats["data_source"]  # "claude_knowledge" | "claude_knowledge"
 
     else:
         # eBay fallback — use its data directly
@@ -767,8 +767,8 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         sold_items_sample    = sold_items_sample,
         active_items_sample  = active_items_sample,
         data_source          = data_source,
-        ai_item_id           = _gemini_ai_item_id,
-        ai_notes             = _gemini_ai_notes,
+        ai_item_id           = _ai_item_id,
+        ai_notes             = _ai_notes,
         craigslist_avg       = round(_cl_result["avg"],   2) if _cl_result else 0.0,
         craigslist_low       = round(_cl_result["low"],   2) if _cl_result else 0.0,
         craigslist_high      = round(_cl_result["high"],  2) if _cl_result else 0.0,

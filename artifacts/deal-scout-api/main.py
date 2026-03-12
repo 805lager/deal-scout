@@ -152,6 +152,7 @@ class ListingRequest(BaseModel):
     original_price: float = 0.0   # Crossed-out price if seller reduced it (from DOM dual-price container)
     shipping_cost:  float = 0.0   # Cost to ship — 0 means free or local pickup
     image_urls:     Optional[list] = None  # Listing photo URLs — first one sent to Claude Vision
+    platform:       str  = "facebook_marketplace"  # Source platform: facebook_marketplace | craigslist | ebay | offerup
 
     class Config:
         json_schema_extra = {
@@ -495,7 +496,7 @@ async def score_listing(listing: ListingRequest, request: Request):
             deal_score       = deal_score.score,
             buy_new_trigger  = bool(buy_new),
             affiliate_programs = _affil_shown,
-            platform         = "facebook_marketplace",
+            platform         = listing.platform or "facebook_marketplace",
         ))
     except Exception:
         pass  # Signal recording must never affect the API response
