@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION   = "0.26.22";
+  const VERSION   = "0.26.26";
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -43,8 +43,11 @@
   if (window.__dealScoutInjected) {
     // Already running — just trigger a rescore if we're on a new listing page
     if (isListingPage()) {
+      // Snapshot the CURRENT title before the SPA swaps the DOM.
+      // autoScore will wait until this title changes → guaranteed fresh data.
+      window.__dealScoutPrevTitle = document.querySelector('h1[dir="auto"]')?.textContent?.trim() ?? '';
       clearTimeout(window.__dealScoutRescanTimer);
-      window.__dealScoutRescanTimer = setTimeout(autoScore, 1200);
+      window.__dealScoutRescanTimer = setTimeout(autoScore, 500);
     }
     return;
   }
@@ -352,64 +355,43 @@
   async function autoScore(attempt = 0) {
     if (!isListingPage()) return;
 
-    // ── DOM Stability Check ──────────────────────────────────────────────────
-    // FBM is a React SPA. When navigating between listings the URL changes
-    // instantly but the DOM content (title, price, images) can lag 500-1500ms.
-    // Without this check we'd score the OLD listing's data against the new URL.
-    //
-    // Strategy: extract now, wait 650ms, extract again.
-    // If anything meaningful changed → DOM was still hydrating → retry.
-    // If the URL changed mid-wait → user navigated away → abort.
-    // Cap at 4 total attempts so we don't loop forever.
-    const snapUrl = location.href;
-    const snap1   = extractListing();
+    const snapUrl  = location.href;
+    const prevTitle = window.__dealScoutPrevTitle; // set by guard on SPA re-injection
 
-    if (!snap1.price) {
+    // ── Wait for the DOM to show the NEW listing ─────────────────────────────
+    // On SPA navigation FBM changes the URL but swaps DOM content 500-2000ms
+    // later. We saved the OLD title at injection time (window.__dealScoutPrevTitle).
+    // Poll until h1[dir="auto"] differs from that saved value → DOM is fresh.
+    // On a hard page load prevTitle is undefined → skip the wait entirely.
+    if (typeof prevTitle === 'string' && attempt < 10) {
+      const currentTitle = document.querySelector('h1[dir="auto"]')?.textContent?.trim() ?? '';
+      const isStillOld   = currentTitle === prevTitle;
+      const isGeneric    = _GENERIC_TITLES.has(currentTitle.toLowerCase());
+
+      if (isStillOld || isGeneric) {
+        await new Promise(r => setTimeout(r, 400));
+        if (location.href !== snapUrl) return; // user navigated away
+        return autoScore(attempt + 1);
+      }
+
+      // h1 has changed to a real new title — clear the sentinel and proceed
+      window.__dealScoutPrevTitle = undefined;
+    }
+
+    const listing = extractListing();
+    if (!listing.price) {
       console.debug('[DealScout] No price found — skipping auto-score');
       return;
     }
 
-    if (attempt < 4) {
-      await new Promise(r => setTimeout(r, 650));
-      if (location.href !== snapUrl) return; // navigated away
-
-      const snap2 = extractListing();
-      const titleChanged = snap2.title !== snap1.title;
-      const priceChanged = snap2.price !== snap1.price;
-      const imageChanged = (snap2.image_urls?.[0] || '') !== (snap1.image_urls?.[0] || '');
-
-      if (titleChanged || priceChanged || imageChanged) {
-        // DOM still updating — recurse with the fresher snapshot
-        console.debug(`[DealScout] DOM still hydrating (attempt ${attempt + 1}) — retrying`);
-        return autoScore(attempt + 1);
-      }
-
-      // Stable — use snap2 (the freshest data)
-      const titleLow = (snap2.title || '').trim().toLowerCase();
-      if (_GENERIC_TITLES.has(titleLow)) {
-        console.debug(`[DealScout] Title still generic after stability check — proceeding anyway`);
-      }
-
-      showPanel();
-      renderLoading(snap2);
-      try {
-        const result = await sendToBackground(snap2);
-        renderScore(result);
-      } catch (err) {
-        const msg = err.message || 'Scoring failed';
-        renderError(msg.includes('listing title') ? '⏳ Page still loading — try the Score button' : msg);
-      }
-      return;
-    }
-
-    // Fallback: max attempts reached, score whatever we have
     showPanel();
-    renderLoading(snap1);
+    renderLoading(listing);
     try {
-      const result = await sendToBackground(snap1);
+      const result = await sendToBackground(listing);
       renderScore(result);
     } catch (err) {
-      renderError(err.message || 'Scoring failed');
+      const msg = err.message || 'Scoring failed';
+      renderError(msg.includes('listing title') ? '⏳ Page still loading — try the Score button' : msg);
     }
   }
 

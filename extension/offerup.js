@@ -449,37 +449,16 @@
   let _scored = false;
   let _observer = null;
 
-  async function autoScore(attempt = 0) {
+  async function autoScore() {
     if (_scored) return;
-    const snap1 = extractListing();
-    if (!snap1.price || !snap1.title) return;
-
-    // ── DOM Stability Check ────────────────────────────────────────────────
-    // OfferUp is a React SPA. URL changes instantly but DOM content (title,
-    // price) can lag 500-1500ms — same problem as FBM. Without this check
-    // the old listing's data gets scored against the new listing's URL.
-    // Strategy: extract, wait 650ms, extract again. If data changed, DOM was
-    // still hydrating — retry. If URL changed mid-wait, user navigated away.
-    const snapUrl = location.href;
-    if (attempt < 4) {
-      await new Promise(r => setTimeout(r, 650));
-      if (location.href !== snapUrl || _scored) return; // navigated away or already scored
-
-      const snap2 = extractListing();
-      const titleChanged = snap2.title !== snap1.title;
-      const priceChanged = snap2.price !== snap1.price;
-      if (titleChanged || priceChanged) {
-        console.debug(`[DealScout] OfferUp DOM still hydrating (attempt ${attempt + 1}) — retrying`);
-        return autoScore(attempt + 1);
-      }
-    }
-
+    const listing = extractListing();
+    if (!listing.price || !listing.title) return;
     _scored = true;
     if (_observer) { _observer.disconnect(); _observer = null; }
     showPanel();
-    renderLoading(snap1);
+    renderLoading(listing);
     try {
-      const result = await sendToBackground(snap1);
+      const result = await sendToBackground(listing);
       renderScore(result);
     } catch (err) {
       renderError(err.message || "Scoring failed");
@@ -487,16 +466,21 @@
   }
 
   function waitForContent() {
-    // OfferUp React app — wait for the price to appear in the DOM
+    // OfferUp React app — wait for the price AND a NEW title to appear.
+    // window.__dsOUPrevTitle holds the old listing's title (set in onUrlChange).
+    // We poll until the h1 differs from that value so we never score stale data.
+    const prevTitle = window.__dsOUPrevTitle; // undefined on fresh page load
     let attempts = 0;
     const check = () => {
       attempts++;
       const listing = extractListing();
-      if (listing.price && listing.title) {
+      const titleChanged = typeof prevTitle !== 'string' || listing.title !== prevTitle;
+      if (listing.price && listing.title && titleChanged) {
+        window.__dsOUPrevTitle = undefined; // clear sentinel
         autoScore();
         return;
       }
-      if (attempts < 20) setTimeout(check, 500);
+      if (attempts < 30) setTimeout(check, 400);
     };
     check();
   }
@@ -517,11 +501,14 @@
   function onUrlChange() {
     const cur = location.href;
     if (cur === _lastUrl) return;
+    // Snapshot the current listing title BEFORE the SPA swaps the DOM.
+    // waitForContent will poll until this title changes → guaranteed fresh data.
+    window.__dsOUPrevTitle = document.querySelector('h1')?.textContent?.trim() ?? '';
     _lastUrl = cur;
     _scored = false;
     removePanel();
     if (isListingPage()) {
-      setTimeout(waitForContent, 1200);
+      setTimeout(waitForContent, 400);
     }
   }
 
