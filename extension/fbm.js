@@ -24,12 +24,14 @@
   // ── Constants — declared FIRST to avoid TDZ crash in guard path ──────────────
   // CRITICAL: background.js injects this script AND the manifest content_scripts
   // also injects it. The second injection hits the guard below and returns early.
-  // Any `const` declared after that early `return` is in temporal dead zone (TDZ)
-  // for that IIFE instance. If a hoisted function (like autoScore) is scheduled
-  // via setTimeout in the guard path and later references those consts → TDZ crash.
-  // Fix: declare all consts used by hoisted functions BEFORE the guard.
+  // Any `const`/`let` declared after that early `return` is in temporal dead zone
+  // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
+  // the guard path and later references those vars → TDZ crash.
+  // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
   const VERSION   = "0.26.8";
   const PANEL_ID  = "deal-scout-panel";
+  // API_BASE must live here (before guard) — autoScore → renderError uses it.
+  let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
 
   // ── Guard: prevent double-injection on SPA navigation ───────────────────────
   // background.js re-injects fbm.js on every pushState. Without this guard,
@@ -44,12 +46,7 @@
   }
   window.__dealScoutInjected = true;
 
-  // ── Config ────────────────────────────────────────────────────────────────────
-  // API_BASE is read from chrome.storage at runtime.
-  // Default is the Railway production URL — local dev sets this via the popup Settings panel.
-  let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
-
-  // Load stored API base (set via popup Settings panel)
+  // Load stored API base override (set via popup Settings panel)
   try {
     chrome.storage.local.get("ds_api_base", (result) => {
       if (result && result.ds_api_base) API_BASE = result.ds_api_base;
