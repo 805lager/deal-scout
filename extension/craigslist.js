@@ -455,11 +455,17 @@
     }
   }
 
+  // ── Global trigger (called directly by popup via executeScript) ────────────
+  window.__dsScoreCL = () => {
+    _initiated = false;
+    removePanel();
+    setTimeout(autoScore, 300);
+  };
+
   // ── Message Listener ───────────────────────────────────────────────────────
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === "RESCORE") {
-      removePanel();
-      setTimeout(autoScore, 400);
+      window.__dsScoreCL();
       sendResponse({ ok: true });
     }
     return true;

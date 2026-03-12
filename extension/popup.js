@@ -55,21 +55,60 @@ document.getElementById("score-current").addEventListener("click", async () => {
     return;
   }
 
+  statusEl.className = "status-card";
+  statusEl.innerText = "⏳ Triggering score…";
+
+  // Step 1: call the global trigger if the content script is already injected
+  let triggered = false;
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: (plat) => {
+        const fn = { craigslist: "__dsScoreCL", offerup: "__dsScoreOU", ebay: "__dsScoreEB", fbm: "__dsFBMRescore" }[plat];
+        if (fn && typeof window[fn] === "function") { window[fn](); return true; }
+        return false;
+      },
+      args: [platform],
+    });
+    triggered = results?.[0]?.result === true;
+  } catch (e) {
+    statusEl.className = "status-card error";
+    statusEl.innerText = `⚠️ Injection blocked: ${e.message}. Try reloading the page.`;
+    return;
+  }
+
+  if (triggered) { window.close(); return; }
+
+  // Step 2: content script not injected yet — inject the file then retry
   const scriptFile = CONTENT_SCRIPT[platform];
+  try {
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: [scriptFile] });
+  } catch (e) {
+    statusEl.className = "status-card error";
+    statusEl.innerText = `⚠️ Could not inject script: ${e.message}`;
+    return;
+  }
+
+  await new Promise(r => setTimeout(r, 600));
 
   try {
-    await chrome.scripting.executeScript({
+    const results2 = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      files: [scriptFile],
+      func: (plat) => {
+        const fn = { craigslist: "__dsScoreCL", offerup: "__dsScoreOU", ebay: "__dsScoreEB", fbm: "__dsFBMRescore" }[plat];
+        if (fn && typeof window[fn] === "function") { window[fn](); return true; }
+        return false;
+      },
+      args: [platform],
     });
+    if (results2?.[0]?.result === true) { window.close(); return; }
   } catch (_) {}
 
-  await new Promise(r => setTimeout(r, 300));
-
+  // Step 3: fall back to RESCORE message
   chrome.tabs.sendMessage(tab.id, { type: "RESCORE" }, (response) => {
     if (chrome.runtime.lastError) {
       statusEl.className = "status-card error";
-      statusEl.innerText = "⚠️ Could not reach the page script. Try reloading the listing page first.";
+      statusEl.innerText = "⚠️ Could not score this page. Please reload the listing and try again.";
     } else {
       window.close();
     }
