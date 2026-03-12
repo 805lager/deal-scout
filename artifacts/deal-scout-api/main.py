@@ -222,6 +222,11 @@ class DealScoreResponse(BaseModel):
     # Gemini AI metadata — populated when data_source is gemini_search/gemini_knowledge
     ai_item_id:            str  = ""   # Product Gemini identified (e.g. "Celestron NexStar 6SE")
     ai_notes:              str  = ""   # Gemini's 1-sentence market context
+    # Craigslist asking prices — supplementary comparison shown alongside eBay data
+    craigslist_asking_avg:   float = 0.0
+    craigslist_asking_low:   float = 0.0
+    craigslist_asking_high:  float = 0.0
+    craigslist_count:        int   = 0
     # Security scoring
     security_score:        dict = {}   # Scam/fraud risk assessment
 

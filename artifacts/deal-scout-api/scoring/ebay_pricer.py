@@ -133,6 +133,11 @@ class MarketValue:
     # These surface in the sidebar Market Comparison panel beneath the price rows.
     ai_item_id: str = ""
     ai_notes:   str = ""
+    # Craigslist asking prices — supplementary comparison, never affects score
+    craigslist_avg:   float = 0.0
+    craigslist_low:   float = 0.0
+    craigslist_high:  float = 0.0
+    craigslist_count: int   = 0
 
 
 # ── Search Query Builder ──────────────────────────────────────────────────────
@@ -611,14 +616,17 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
     _gemini_ai_item_id = gemini_stats.get("item_id", "") if gemini_stats else ""
     _gemini_ai_notes   = gemini_stats.get("notes",   "") if gemini_stats else ""
 
-    # ── Step 2: Always fetch eBay in parallel for affiliate sidebar cards ──────
+    # ── Step 2: Always fetch eBay + Craigslist in parallel ───────────────────
     # WHY ALWAYS: Even when Gemini succeeds, we want eBay listing cards for
     # the "Like Products" sidebar section. Running them in parallel means
     # zero extra latency. eBay is now ONLY used for affiliate cards + price fallback.
-    sold_raw, active_raw, new_raw = await asyncio.gather(
+    # Craigslist runs concurrently — it's purely informational and never blocks.
+    from scoring.craigslist_pricer import get_craigslist_asking_prices
+    sold_raw, active_raw, new_raw, _cl_result = await asyncio.gather(
         search_ebay(query, "findCompletedItems", max_results=20),
         search_ebay(query, "findItemsAdvanced",  max_results=20),
         search_ebay(query, "findItemsAdvanced",  max_results=10, condition_filter=["1000"]),
+        _safe_craigslist(query),
     )
 
     ebay_is_mock = any(item.get("_is_mock") for item in sold_raw + active_raw)
