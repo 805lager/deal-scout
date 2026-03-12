@@ -449,16 +449,37 @@
   let _scored = false;
   let _observer = null;
 
-  async function autoScore() {
+  async function autoScore(attempt = 0) {
     if (_scored) return;
-    const listing = extractListing();
-    if (!listing.price || !listing.title) return;
+    const snap1 = extractListing();
+    if (!snap1.price || !snap1.title) return;
+
+    // ── DOM Stability Check ────────────────────────────────────────────────
+    // OfferUp is a React SPA. URL changes instantly but DOM content (title,
+    // price) can lag 500-1500ms — same problem as FBM. Without this check
+    // the old listing's data gets scored against the new listing's URL.
+    // Strategy: extract, wait 650ms, extract again. If data changed, DOM was
+    // still hydrating — retry. If URL changed mid-wait, user navigated away.
+    const snapUrl = location.href;
+    if (attempt < 4) {
+      await new Promise(r => setTimeout(r, 650));
+      if (location.href !== snapUrl || _scored) return; // navigated away or already scored
+
+      const snap2 = extractListing();
+      const titleChanged = snap2.title !== snap1.title;
+      const priceChanged = snap2.price !== snap1.price;
+      if (titleChanged || priceChanged) {
+        console.debug(`[DealScout] OfferUp DOM still hydrating (attempt ${attempt + 1}) — retrying`);
+        return autoScore(attempt + 1);
+      }
+    }
+
     _scored = true;
     if (_observer) { _observer.disconnect(); _observer = null; }
     showPanel();
-    renderLoading(listing);
+    renderLoading(snap1);
     try {
-      const result = await sendToBackground(listing);
+      const result = await sendToBackground(snap1);
       renderScore(result);
     } catch (err) {
       renderError(err.message || "Scoring failed");
