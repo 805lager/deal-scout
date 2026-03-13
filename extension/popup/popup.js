@@ -1,99 +1,218 @@
-/**
- * popup.js — Deal Scout Extension Popup
- * v0.20.0
- *
- * DEPLOYMENT NOTE:
- *   API_BASE is read from chrome.storage.local key "ds_api_base" if set.
- *   Default falls back to localhost for local dev.
- *   To point at production: set ds_api_base = "https://your-api.railway.app"
- *   in background.js onInstalled, or hardcode the URL below before packaging.
- */
-
-const API_BASE_DEFAULT = "https://deal-scout-production.up.railway.app";
+const API_BASE_DEFAULT = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
 
 async function getApiBase() {
   try {
     const stored = await chrome.storage.local.get("ds_api_base");
     return stored.ds_api_base || API_BASE_DEFAULT;
-  } catch {
-    return API_BASE_DEFAULT;
-  }
+  } catch { return API_BASE_DEFAULT; }
 }
 
-// ── API Health Check ──────────────────────────────────────────────────────────
+function detectPlatform(url) {
+  if (!url) return null;
+  if (url.includes("facebook.com/marketplace/item") || /facebook\.com\/marketplace\/[^/]+\/item\//.test(url)) return "fbm";
+  if (url.includes("craigslist.org")) return "craigslist";
+  if (url.includes("offerup.com/item/detail")) return "offerup";
+  if (url.includes("ebay.com/itm")) return "ebay";
+  return null;
+}
 
 async function checkAPIHealth() {
   const statusEl = document.getElementById("api-status");
   const API_BASE = await getApiBase();
   try {
-    const resp = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(3000) });
+    const resp = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(4000) });
     if (resp.ok) {
       const data = await resp.json();
       statusEl.className = "status-card active";
-      statusEl.innerHTML = `
-        ✅ API connected<br>
-        <span style="font-size:11px">
-          Claude: ${data.anthropic_key} &nbsp;·&nbsp;
-          eBay: ${data.ebay_key}
-        </span>`;
-    } else {
-      throw new Error(`HTTP ${resp.status}`);
-    }
+      statusEl.innerHTML = `✅ API connected &nbsp;·&nbsp; <span style="font-size:11px">Claude: ${data.anthropic_key} &nbsp;·&nbsp; eBay: ${data.ebay_key}</span>`;
+    } else { throw new Error(`HTTP ${resp.status}`); }
   } catch (e) {
     statusEl.className = "status-card error";
-    statusEl.innerHTML = `
-      ❌ API not running<br>
-      <span style="font-size:11px">
-        Start: <code>uvicorn api.main:app --port 8000</code>
-      </span>`;
+    statusEl.innerHTML = `❌ API offline &nbsp;·&nbsp; <span style="font-size:11px">${e.message}</span>`;
   }
 }
 
+// ── Inline extractors run directly in the page via executeScript ──────────────
+function extractCraigslist() {
+  const title =
+    document.querySelector("#titletextonly")?.textContent?.trim() ||
+    document.querySelector(".postingtitletext")?.childNodes?.[0]?.textContent?.trim() ||
+    document.title.split(" - ")[0].trim();
+  const priceEl = document.querySelector(".price, [class*='price'][class*='Price']") || document.querySelector(".price");
+  let priceText = priceEl?.textContent?.trim() || "";
+  if (!priceText) { const m = document.body.innerText?.match(/\$\s?([0-9,]+)/); if (m) priceText = "$" + m[1]; }
+  const price = parseFloat(priceText.replace(/[^0-9.]/g, "")) || 0;
+  const bodyText = document.querySelector("#postingbody")?.textContent?.slice(0, 800) || "";
+  const loc = document.querySelector(".mapaddress")?.textContent?.trim() || location.hostname.replace(".craigslist.org", "");
+  return { title, price, raw_price_text: priceText, description: bodyText, location: loc, platform: "craigslist" };
+}
 
+function extractOfferUp() {
+  const title = document.querySelector("h1")?.textContent?.trim() || document.title.split(" | ")[0].trim();
+  let price = 0, priceText = "";
+  for (const sel of ["[data-testid='item-price']", "[class*='price']", "[class*='Price']", "h2", "h3"]) {
+    for (const el of document.querySelectorAll(sel)) {
+      const m = el.textContent?.trim().match(/^\$([0-9,]+(?:\.[0-9]{2})?)$/);
+      if (m) { price = parseFloat(m[1].replace(/,/g, "")); priceText = el.textContent.trim(); break; }
+    }
+    if (price) break;
+  }
+  const loc = document.querySelector("[data-testid='item-location']")?.textContent?.trim() || "";
+  const desc = (() => { for (const sel of ["[data-testid='item-description']","[class*='description']","p"]) { for (const el of document.querySelectorAll(sel)) { const t = el.textContent?.trim(); if (t?.length > 30) return t.slice(0,800); } } return ""; })();
+  return { title, price, raw_price_text: priceText, description: desc, location: loc, platform: "offerup" };
+}
 
-// ── Score Current Listing ─────────────────────────────────────────────────────
+// ── Inline panel renderer injected into the page ──────────────────────────────
+function renderDealPanel(r, panelId, apiBase) {
+  const existing = document.getElementById(panelId);
+  if (existing) existing.remove();
+  const score = r.score || 0;
+  const sc = score >= 7 ? "#22c55e" : score >= 5 ? "#fbbf24" : "#ef4444";
+  const esc = s => String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  let cta = score <= 3 ? "⚠️ Better Options Below" : score <= 5 ? "💡 You Could Do Better" : score <= 7 ? "✅ Solid — Confirm Price" : "🔥 Great Deal";
 
+  let rows = "";
+  if (r.sold_avg)  rows += `<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.05)"><span style="color:#9ca3af;font-size:12px">Est. sold avg</span><span style="font-weight:700;font-size:14px">$${Math.round(r.sold_avg)}</span></div>`;
+  if (r.new_price) rows += `<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.05)"><span style="color:#9ca3af;font-size:12px">New retail</span><span style="font-size:13px">$${Math.round(r.new_price)}</span></div>`;
+  rows += `<div style="display:flex;justify-content:space-between;padding:3px 0"><span style="color:#9ca3af;font-size:12px">Listed price</span><span style="font-size:13px">$${Math.round(r.price||0)}</span></div>`;
+  if (r.sold_avg && r.price) {
+    const delta = r.price - r.sold_avg, pct = Math.abs(Math.round(delta/r.sold_avg*100));
+    rows += `<div style="margin-top:6px;font-size:12px;font-weight:600;color:${delta<0?"#22c55e":"#ef4444"}">● $${Math.abs(Math.round(delta))} ${delta<0?"below":"above"} market (${delta<0?"-":"+"}${pct}%)</div>`;
+  }
+
+  let flags = "";
+  for (const f of (r.green_flags||[]).slice(0,3)) flags += `<div style="font-size:11.5px;color:#6ee7b7;padding:2px 0">✓ ${esc(f)}</div>`;
+  for (const f of (r.red_flags||[]).slice(0,3))   flags += `<div style="font-size:11.5px;color:#fca5a5;padding:2px 0">⚠ ${esc(f)}</div>`;
+
+  const panel = document.createElement("div");
+  panel.id = panelId;
+  panel.style.cssText = "position:fixed;top:80px;right:20px;width:320px;max-height:calc(100vh - 100px);overflow-y:auto;z-index:2147483647;background:#1e1b2e;border:1px solid #3d3660;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,0.6);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:13px;color:#e0e0e0;line-height:1.5";
+  panel.innerHTML = `
+    <div style="background:#13111f;border-bottom:1px solid #3d3660;border-radius:10px 10px 0 0;padding:10px 12px">
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+        <span style="font-weight:700;font-size:13px;color:#7c8cf8">📊 Deal Scout</span>
+        <button onclick="document.getElementById('${panelId}').remove()" style="background:none;border:none;color:#6b7280;font-size:15px;cursor:pointer">✕</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <div style="width:52px;height:52px;border-radius:50%;border:3px solid ${sc};display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <span style="font-size:22px;font-weight:900;color:${sc}">${score}</span>
+        </div>
+        <div>
+          <div style="font-size:14px;font-weight:800;color:#e2e8f0">${esc(r.verdict||"")}</div>
+          <div style="font-size:11px;color:#94a3b8;margin-top:2px">${r.should_buy===false?"⛔ Skip":r.should_buy?"✅ Worth buying":""}</div>
+          <div style="font-size:10px;color:#6b7280;margin-top:1px">$${Math.round(r.price||0)}</div>
+        </div>
+      </div>
+    </div>
+    ${r.summary?`<div style="margin:10px 12px 0;font-size:12px;color:#c4b5fd;background:rgba(139,92,246,0.08);border:1px solid rgba(139,92,246,0.2);border-radius:8px;padding:9px 10px;line-height:1.5">${esc(r.summary)}</div>`:""}
+    <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:10px;padding:10px 12px;margin:8px 12px">
+      <div style="font-weight:600;font-size:11px;text-transform:uppercase;color:#9ca3af;margin-bottom:8px">📈 Market Comparison</div>
+      ${rows}
+    </div>
+    ${flags?`<div style="margin:0 12px 8px">${flags}</div>`:""}
+    <div style="border-top:1px solid rgba(255,255,255,0.06);margin-top:4px;padding:10px 12px">
+      ${r.score_id ? `
+      <div style="display:flex;flex-direction:column;align-items:center;gap:6px">
+        <div style="font-size:11px;color:#9ca3af">Was this score accurate?</div>
+        <div id="${panelId}-thumbs" style="display:flex;gap:8px">
+          <button onclick="(function(){fetch('${apiBase}/thumbs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({score_id:${r.score_id},thumbs:1}),signal:AbortSignal.timeout(5000)}).catch(()=>{});document.getElementById('${panelId}-thumbs').innerHTML='<span style=\\'font-size:12px;color:#6ee7b7\\'>✓ Thanks for the feedback!</span>'})()" style="display:flex;align-items:center;gap:5px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:5px 12px;cursor:pointer;font-size:14px;color:#d1d5db">👍 <span style="font-size:11px">Yes, accurate</span></button>
+          <button onclick="(function(){fetch('${apiBase}/thumbs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({score_id:${r.score_id},thumbs:-1}),signal:AbortSignal.timeout(5000)}).catch(()=>{});document.getElementById('${panelId}-thumbs').innerHTML='<span style=\\'font-size:12px;color:#6ee7b7\\'>✓ Thanks for the feedback!</span>'})()" style="display:flex;align-items:center;gap:5px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:5px 12px;cursor:pointer;font-size:14px;color:#d1d5db">👎 <span style="font-size:11px">No, off</span></button>
+        </div>
+      </div>` : ''}
+      <div style="text-align:center;font-size:10px;color:#374151;margin-top:${r.score_id ? '8' : '0'}px">${cta}</div>
+    </div>`;
+  document.body.appendChild(panel);
+}
+
+// ── Score Current Listing button ──────────────────────────────────────────────
 document.getElementById("score-current").addEventListener("click", async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const statusEl = document.getElementById("api-status");
+  const platform = detectPlatform(tab?.url);
 
-  const isSupportedPage =
-    tab.url?.includes("facebook.com/marketplace/item") ||
-    tab.url?.includes("amazon.com/dp");
-
-  if (!isSupportedPage) {
-    const statusEl = document.getElementById("api-status");
+  if (!platform) {
     statusEl.className = "status-card error";
-    statusEl.innerText = "⚠️ Navigate to a Facebook Marketplace listing first";
+    statusEl.innerText = "⚠️ Navigate to a Craigslist, OfferUp, eBay, or Facebook Marketplace listing first.";
     return;
   }
 
-  // Close popup AFTER message confirmed — close-before-deliver drops the message
-  chrome.tabs.sendMessage(tab.id, { type: "RESCORE" }, (response) => {
-    if (chrome.runtime.lastError) {
-      const statusEl = document.getElementById("api-status");
-      statusEl.className = "status-card error";
-      statusEl.innerText = "⚠️ Reload the listing page and try again";
-      setTimeout(() => window.close(), 2000);
-    } else {
-      window.close();
-    }
+  // Try RESCORE message first (works if content script is already live)
+  const rescoreWorked = await new Promise(resolve => {
+    chrome.tabs.sendMessage(tab.id, { type: "RESCORE" }, r => {
+      resolve(!chrome.runtime.lastError && r?.ok !== false);
+    });
   });
+  if (rescoreWorked) { window.close(); return; }
+
+  // Content script not responding — run self-contained extraction + API + render
+  statusEl.className = "status-card";
+  statusEl.innerText = "⏳ Extracting listing…";
+
+  const extractor = platform === "craigslist" ? extractCraigslist : extractOfferUp;
+
+  let listing;
+  try {
+    const extracted = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: extractor,
+    });
+    listing = extracted?.[0]?.result;
+  } catch (e) {
+    statusEl.className = "status-card error";
+    statusEl.innerText = `⚠️ Could not read page: ${e.message}`;
+    return;
+  }
+
+  if (!listing?.price) {
+    statusEl.className = "status-card error";
+    statusEl.innerText = `⚠️ Could not find a price on this listing. Make sure you're on an individual listing page.`;
+    return;
+  }
+
+  statusEl.className = "status-card";
+  statusEl.innerText = `⏳ Scoring "${listing.title?.slice(0, 40)}…"`;
+
+  const API_BASE = await getApiBase();
+  let result;
+  try {
+    const resp = await fetch(`${API_BASE}/score`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(listing),
+      signal: AbortSignal.timeout(35000),
+    });
+    result = await resp.json();
+  } catch (e) {
+    statusEl.className = "status-card error";
+    statusEl.innerText = `⚠️ API error: ${e.message}`;
+    return;
+  }
+
+  const panelId = { craigslist: "deal-scout-cl-panel", offerup: "deal-scout-ou-panel", ebay: "deal-scout-eb-panel", fbm: "deal-scout-fbm-panel" }[platform];
+
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: renderDealPanel,
+      args: [result, panelId, API_BASE],
+    });
+  } catch (e) {
+    statusEl.className = "status-card error";
+    statusEl.innerText = `⚠️ Could not render panel: ${e.message}`;
+    return;
+  }
+
+  window.close();
 });
 
 
-// ── Report Issue Modal ────────────────────────────────────────────────────────
-//
-// POC: POSTs to /report on the local API, which appends to reports.jsonl.
-// Production swap: replace the fetch URL with a Slack webhook, a Sentry
-// dsn, or a simple Airtable form — no other code changes needed.
-
+// ── Report Issue ──────────────────────────────────────────────────────────────
 const modal     = document.getElementById("report-modal");
 const modalForm = document.getElementById("modal-form");
 const modalSent = document.getElementById("modal-sent");
 
 document.getElementById("report-link").addEventListener("click", async (e) => {
   e.preventDefault();
-  // Pre-fill the URL so the user doesn't have to copy-paste it
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const ta = document.getElementById("report-text");
@@ -109,17 +228,10 @@ modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); }
 document.getElementById("modal-send").addEventListener("click", async () => {
   const text = document.getElementById("report-text").value.trim();
   if (!text) return;
-
   const API_BASE = await getApiBase();
   try {
-    await fetch(`${API_BASE}/report`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ report: text, ts: new Date().toISOString() }),
-      signal: AbortSignal.timeout(4000),
-    });
-  } catch { /* fire-and-forget — don't block UX if API is down */ }
-
+    await fetch(`${API_BASE}/report`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ report: text, ts: new Date().toISOString() }), signal: AbortSignal.timeout(4000) });
+  } catch {}
   modalForm.style.display = "none";
   modalSent.style.display = "block";
   setTimeout(closeModal, 2000);
@@ -132,11 +244,7 @@ function closeModal() {
   document.getElementById("report-text").value = "";
 }
 
-
-// ── Settings Panel ───────────────────────────────────────────────────────────
-// Lets you switch between localhost and Railway without touching code.
-// The saved URL persists in chrome.storage.local as "ds_api_base".
-
+// ── Settings ──────────────────────────────────────────────────────────────────
 document.getElementById("settings-toggle").addEventListener("click", async () => {
   const panel = document.getElementById("settings-panel");
   panel.classList.toggle("open");
@@ -153,8 +261,7 @@ document.getElementById("settings-save").addEventListener("click", async () => {
   const saved = document.getElementById("settings-saved");
   saved.style.display = "inline";
   setTimeout(() => { saved.style.display = "none"; }, 2000);
-  checkAPIHealth(); // re-ping with new URL
+  checkAPIHealth();
 });
 
-// ── Init ──────────────────────────────────────────────────────────────────────
 checkAPIHealth();

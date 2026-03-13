@@ -19,7 +19,7 @@
 // ── Config ────────────────────────────────────────────────────────────────────
 // WHY ASYNC: background.js can't read chrome.storage.local synchronously.
 // Every caller that needs API_BASE must await getApiBase().
-const API_BASE_DEFAULT = "https://deal-scout-production.up.railway.app";
+const API_BASE_DEFAULT = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
 
 async function getApiBase() {
   try {
@@ -69,6 +69,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "GET_AFFILIATE_LINKS") {
     const links = buildAffiliateLinks(message.query, message.price);
     sendResponse({ success: true, links });
+    return true;
+  }
+
+  if (message.type === "BADGE_UPDATE") {
+    // Content script now calls the scoring API directly (for AbortController support).
+    // It sends this message after a successful score so the badge still updates.
+    const color = message.score >= 7 ? "#22c55e"
+                : message.score >= 5 ? "#fbbf24" : "#ef4444";
+    setBadge(sender.tab.id, String(message.score), color);
+    sendResponse({ ok: true });
     return true;
   }
 
@@ -268,8 +278,11 @@ chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
 // ── Installation Handler ──────────────────────────────────────────────────────
 
 chrome.runtime.onInstalled.addListener(({ reason }) => {
-  if (reason === "install") {
-    console.log("Deal Scout installed — ready to score deals");
+  if (reason === "install" || reason === "update") {
+    // Clear any previously stored API URL so the hardcoded default always wins.
+    // Without this, an old saved URL in chrome.storage silently overrides the default.
+    chrome.storage.local.remove("ds_api_base");
+    console.log(`Deal Scout ${reason === "install" ? "installed" : "updated"} — API URL reset to default`);
   }
 });
 

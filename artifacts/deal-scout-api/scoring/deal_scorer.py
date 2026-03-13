@@ -1,0 +1,574 @@
+"""
+Claude Deal Scoring Engine — Week 3
+
+WHY THIS IS THE CORE VALUE PROPOSITION:
+  Anyone can compare a price to eBay averages. What makes this product
+  valuable is the AI layer that reasons about the WHOLE picture:
+    - Is the condition claim believable given the description?
+    - Are the accessories included worth extra?
+    - Is the dent mentioned a real concern or irrelevant?
+    - Is $500 actually bad given current market conditions?
+    - What should the buyer do — offer, pass, or jump on it?
+
+  That nuanced reasoning is what users will pay for.
+
+WHAT THIS MODULE DOES:
+  1. Loads a listing + its market value data from /data
+  2. Sends both to Claude with a structured scoring prompt
+  3. Parses Claude's response into a clean DealScore object
+  4. Saves the result and prints a final report
+
+DEAL SCORE SCALE (1-10):
+  9-10  Exceptional deal — act immediately
+  7-8   Good deal — worth buying at asking price
+  5-6   Fair — priced at market, negotiate if possible
+  3-4   Overpriced — only buy with significant discount
+  1-2   Bad deal — avoid or lowball heavily
+
+RUN STANDALONE:
+  python scoring/deal_scorer.py
+  (uses most recent listing + market value files from /data)
+"""
+
+import asyncio
+import json
+import logging
+import os
+from dataclasses import dataclass, asdict
+from pathlib import Path
+from typing import Optional
+
+import anthropic
+from dotenv import load_dotenv
+
+load_dotenv()
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
+log = logging.getLogger(__name__)
+
+DATA_DIR = Path(__file__).parent.parent / "data"
+
+# Lazy-initialized client — not created until first API call.
+# WHY LAZY (not module-level eager init):
+#   1. Consistent with product_extractor.py and suggestion_engine.py
+#   2. If API key is rotated after server start, next call picks it up from os.getenv
+#   3. Avoids a client object with api_key=None if .env isn't loaded at import time
+_scoring_client: Optional[anthropic.Anthropic] = None
+
+def _get_scoring_client() -> anthropic.Anthropic:
+    global _scoring_client
+    if _scoring_client is None:
+        _scoring_client = anthropic.Anthropic(api_key=os.getenv("AI_INTEGRATIONS_ANTHROPIC_API_KEY", "placeholder"), base_url=os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"))
+    return _scoring_client
+
+
+# ── Data Model ────────────────────────────────────────────────────────────────
+
+@dataclass
+class DealScore:
+    """
+    Complete AI-generated deal analysis.
+    This is the final output of the entire POC pipeline.
+    Every field here maps directly to something shown in the Week 4 UI.
+    """
+    score:              int     # 1-10 deal score
+    verdict:            str     # One-line verdict: "Good Deal", "Overpriced", etc.
+    summary:            str     # 2-3 sentence plain English explanation
+    value_assessment:   str     # What Claude thinks the item is actually worth
+    condition_notes:    str     # Claude's read on the condition claim
+    red_flags:          list    # List of concerns (empty if none)
+    green_flags:        list    # List of positive signals
+    recommended_offer:  float   # What price Claude recommends offering
+    should_buy:         bool    # Simple yes/no recommendation
+    confidence:         str     # "high" / "medium" / "low"
+    model_used:         str     # Which Claude model scored this
+    image_analyzed:     bool    = False  # True if Claude Vision analyzed the listing photo
+
+
+# ── Prompt Builder ────────────────────────────────────────────────────────────
+
+def _format_seller_trust(trust: dict) -> str:
+    """
+    Format seller trust data for the Claude prompt.
+
+    WHY A HELPER:
+    The trust dict may be empty (e.g. listing came from the web UI, not the
+    extension). We centralise the formatting logic here so the prompt builder
+    stays clean and we never crash on missing keys.
+    """
+    if not trust:
+        return "No seller trust data available (listing scored via web UI)"
+
+    tier    = trust.get('trust_tier', 'unknown')
+    lines   = [f"Trust tier: {tier.upper()}"]
+
+    if trust.get('member_since'):
+        lines.append(f"Member since: {trust['member_since']}")
+    if trust.get('response_rate') is not None:
+        lines.append(f"Response rate: {trust['response_rate']}%")
+    if trust.get('other_listings') is not None:
+        lines.append(f"Other active listings: {trust['other_listings']}")
+    if trust.get('seller_rating') is not None:
+        lines.append(f"Seller rating: {trust['seller_rating']}/5")
+    if len(lines) == 1:
+        lines.append("No additional seller details visible on this listing")
+
+    return "\n".join(lines)
+
+
+def build_scoring_prompt(listing: dict, market_value: dict, product_evaluation=None) -> str:
+    """
+    Build the prompt that Claude uses to score the deal.
+
+    WHY STRUCTURED OUTPUT (JSON):
+    The Week 4 UI needs to parse Claude's response programmatically.
+    Asking Claude to respond in strict JSON lets us map its reasoning
+    directly to UI components without fragile text parsing.
+
+    WHY WE INCLUDE BOTH LISTING AND MARKET DATA:
+    Claude needs both to reason well. Market data alone misses
+    listing-specific signals (condition, extras, red flags).
+    Listing data alone has no price anchor.
+
+    WHY MULTI-ITEM HANDLING:
+    A "Ryobi 6-tool set for $290" should NOT be compared against
+    single Ryobi tool eBay comps (~$80 each). Without this flag,
+    Claude would wrongly call a $290 bundle overpriced.
+    When is_multi_item=True we tell Claude to reason about
+    aggregate value — what would each item cost individually.
+    """
+    is_multi = listing.get('is_multi_item', False)
+
+    # Build a context-specific instruction block for multi-item listings
+    multi_item_instruction = ""
+    if is_multi:
+        multi_item_instruction = """
+## IMPORTANT: MULTI-ITEM / BUNDLE LISTING
+This listing contains multiple items, a set, lot, kit, or bundle.
+The eBay market data below reflects SINGLE-ITEM prices, not bundle prices.
+
+Adjust your analysis accordingly:
+- Estimate what each included item would cost individually on eBay
+- Sum those individual values to get total bundle market value
+- Compare the asking price against that aggregate value, NOT single-item comps
+- Note which items in the bundle drive most of the value
+- Flag if key items (like batteries, chargers, or cases) appear missing
+"""
+
+    is_vehicle = listing.get('is_vehicle', False)
+    vehicle_instruction = ""
+    if is_vehicle:
+        vehicle_instruction = """
+## IMPORTANT: VEHICLE / POWERSPORTS / MOTORCYCLE LISTING
+This listing is for a vehicle, motorcycle, dirt bike, ATV, or similar.
+Apply vehicle-specific reasoning:
+- DO NOT flag 'no accessories mentioned' — vehicles don't come with accessories by default
+- DO NOT flag 'no original packaging' — N/A for vehicles
+- DO NOT flag 'unknown condition' if the description mentions mechanical state, mileage, or wear
+- Standard attributes (mileage, transmission type, exterior color) are expected, NOT suspicious
+- Clean title is a STRONG green flag — always mention it if present
+- Red flags specific to vehicles: salvage/rebuilt title, no title, flood/fire damage, no VIN, non-running
+- Mileage context: under 5,000 miles on a used dirt bike is very low; over 50,000 on a car is high
+- eBay comps for vehicles vary widely — use the price RANGE, not just the average
+- Modifications / aftermarket parts: assess whether they add or detract from value for this item type
+"""
+
+    # ── Shipping cost context ─────────────────────────────────────────────────
+    # WHY: $275 item + $46.68 shipping = $321.68 true cost to buyer.
+    # Without this Claude evaluates item price alone vs eBay avg, which
+    # dramatically understates how bad the deal is for shipped listings.
+    shipping_cost = listing.get('shipping_cost', 0) or 0
+    price         = listing.get('price', 0) or 0
+    total_cost    = price + shipping_cost
+
+    if shipping_cost > 0:
+        shipping_line = (
+            f"\nShipping:     ${shipping_cost:.2f}"
+            f"\nTotal cost:   ${total_cost:.2f}  ← USE THIS for price-to-market comparison, NOT the item price alone"
+        )
+    else:
+        shipping_line = "\nShipping:     Free / local pickup (no additional cost)"
+
+    return f"""You are an expert deal evaluator for a personal shopping assistant.
+Your job is to analyze a second-hand marketplace listing and produce a structured deal score.
+{multi_item_instruction}{vehicle_instruction}
+## LISTING DETAILS
+Title:        {listing['title']}
+Price:        {listing['raw_price_text']}{f" (reduced from ${listing['original_price']:.0f} — seller has already dropped the price)" if listing.get('original_price') and listing['original_price'] > listing.get('price', 0) else ''}{shipping_line}
+Condition:    {listing.get('condition', 'Not specified')}
+Location:     {listing.get('location', 'Unknown')}
+Seller:       {listing.get('seller_name', 'Unknown')}
+Bundle/Set:   {'Yes — see multi-item instructions above' if is_multi else 'No — single item'}
+Description:  {listing.get('description', 'No description provided')}
+
+## SELLER TRUST
+{_format_seller_trust(listing.get('seller_trust', {}))}
+
+## MARKET VALUE DATA (from eBay — single-item comps)
+eBay sold avg:       ${market_value['sold_avg']:.2f}  ({market_value['sold_count']} completed sales)
+eBay sold range:     ${market_value['sold_low']:.2f} - ${market_value['sold_high']:.2f}
+eBay active avg:     ${market_value['active_avg']:.2f}  ({market_value['active_count']} active listings)
+eBay lowest active:  ${market_value['active_low']:.2f}
+New retail price:    ${market_value['new_price']:.2f}
+Estimated value:     ${market_value['estimated_value']:.2f}
+Data confidence:     {market_value['confidence']}
+
+## YOUR TASK
+Analyze this listing holistically. Consider:
+- How does the asking price compare to real sold comps (adjusted for bundles if applicable)?
+- Does the condition description match the claimed condition?
+- Are there red flags (vague description, suspicious claims, missing accessories)?
+- Are there positive signals (extras included, detailed description, honest disclosure)?
+- What does the seller trust tier tell you about risk? A low-trust seller warrants more caution.
+- What is a reasonable offer price if the buyer wants to negotiate?
+- Would YOU recommend buying this at the listed price?
+
+## PRODUCT REPUTATION
+{product_evaluation.to_prompt_text() if product_evaluation else 'No product reputation data available for this model.'}
+
+## CRITICAL RULES FOR DATA QUALITY
+- If Data confidence is "low", do NOT flag price-to-comp mismatch as a red flag. State in value_assessment that comps are limited and you cannot confirm fair pricing, but do not penalize the score for it.
+- Only fire a "price above market" red flag when confidence is "medium" or "high" AND the gap is significant.
+- Red flags should be grounded in the listing text itself (vague description, implausible claims, inconsistent details), NOT in weak eBay comp data.
+- Never flag standard vehicle attributes (mileage, transmission, color, battery specs) as suspicious.
+- Do not flag missing accessories or original packaging for vehicles, motorcycles, or powersports items.
+
+## CRITICAL RULES FOR NEW RETAIL COMPARISON
+When the "New retail price" above is > 0, apply these hard scoring limits:
+- Asking price >= new retail:         score MUST be ≤ 4. Buying used at or above new retail price is objectively a bad deal — the buyer gets no discount, no warranty, no return protection.
+- Asking price >= 85% of new retail:  score MUST be ≤ 5. The savings vs. buying new are marginal and don't justify the risks of a used purchase.
+These caps apply regardless of condition claimed or accessories included. A "new in box" item from a private seller is still riskier than buying new from a retailer at the same price.
+
+## RESPONSE FORMAT
+Respond ONLY with a valid JSON object. No preamble, no explanation, no markdown fences.
+Use exactly this structure:
+
+{{
+  "score": <integer 1-10>,
+  "verdict": "<10 words or less — e.g. 'Good bundle deal, 30% below aggregate value'>",
+  "summary": "<2-3 sentences explaining the score in plain English>",
+  "value_assessment": "<1-2 sentences on what this item or bundle is actually worth>",
+  "condition_notes": "<1-2 sentences on your read of the condition claim>",
+  "red_flags": ["<flag 1>", "<flag 2>"],
+  "green_flags": ["<flag 1>", "<flag 2>"],
+  "recommended_offer": <float — the price you'd recommend offering>,
+  "should_buy": <true or false>,
+  "confidence": "<high|medium|low>"
+}}
+
+If red_flags or green_flags are empty, use an empty array [].
+recommended_offer should be realistic — not insultingly low, not full ask if overpriced.
+"""
+
+
+# ── Claude API Call ───────────────────────────────────────────────────────────
+
+async def _fetch_image_base64(image_url: str) -> Optional[tuple[str, str]]:
+    """
+    Fetch an image URL and return (base64_data, media_type).
+    Returns None if fetch fails — caller falls back to text-only scoring.
+
+    WHY httpx OVER requests:
+      httpx is async-native, so we can await it without blocking the event loop.
+      requests.get() would block the entire FastAPI server during the image fetch.
+
+    WHY FBM IMAGES WORK SERVER-SIDE:
+      Facebook CDN (fbcdn.net) images are publicly accessible via URL — the
+      security parameters are embedded in the URL itself (no session cookie needed).
+      They're typically valid for several hours after page load.
+    """
+    try:
+        import httpx
+        import base64
+        async with httpx.AsyncClient(timeout=6.0, follow_redirects=True) as http:
+            resp = await http.get(
+                image_url,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            )
+        if resp.status_code != 200:
+            log.warning(f"Image fetch failed: HTTP {resp.status_code} for {image_url[:80]}")
+            return None
+        media_type = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+        if not media_type.startswith("image/"):
+            return None
+        b64 = base64.standard_b64encode(resp.content).decode()
+        log.info(f"Image fetched: {len(resp.content)//1024}KB, {media_type}")
+        return b64, media_type
+    except Exception as e:
+        log.warning(f"Image fetch error: {type(e).__name__}: {e}")
+        return None
+
+
+async def score_deal(
+    listing: dict,
+    market_value: dict,
+    image_url: Optional[str] = None,
+    product_evaluation=None,  # ProductEvaluation from product_evaluator — enriches Claude's context
+) -> Optional[DealScore]:
+    """
+    Send listing + market data to Claude and parse the deal score response.
+
+    image_url: if provided, fetches the image and includes it in the Claude
+    message as a vision input. Claude will analyze actual photo condition
+    vs. the seller's claimed condition — catches "like new" listings with
+    obvious damage. Adds ~1s latency for the image fetch.
+
+    WHY claude-haiku-4-5 for vision:
+      Haiku 4.5 supports multimodal input and is fast enough for real-time
+      sidebar scoring. We can upgrade to Sonnet if vision quality is lacking.
+    """
+    if not os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"):
+        log.error("ANTHROPIC_API_KEY not set in .env")
+        log.error("Get your key at: https://console.anthropic.com")
+        return None
+
+    prompt = build_scoring_prompt(listing, market_value, product_evaluation)
+
+    # Attempt image fetch if URL provided
+    # WHY CONCURRENT: fetch image while building prompt — saves ~0.5s
+    image_result = None
+    if image_url:
+        log.info(f"Fetching listing image for vision analysis...")
+        image_result = await _fetch_image_base64(image_url)
+
+    image_analyzed = image_result is not None
+
+    # Build Claude message — text-only or multimodal depending on image availability
+    if image_analyzed:
+        b64_data, media_type = image_result
+        # WHY IMAGE FIRST: Claude processes content blocks in order.
+        # Seeing the photo before reading the description mirrors how a
+        # human buyer evaluates a listing — you look at the photos first.
+        message_content = [
+            {
+                "type": "image",
+                "source": {
+                    "type":       "base64",
+                    "media_type": media_type,
+                    "data":       b64_data,
+                }
+            },
+            {
+                "type": "text",
+                "text": (
+                    # CRITICAL: Tell Claude exactly what item is for sale and to ignore background objects.
+                    # Without this, Claude sees background items (bikes in a room, decor, etc.) and
+                    # flags them as mismatches with the listing title. This caused a couch listing to
+                    # score 2/10 because Claude saw a bike in the background bookshelf area.
+                    f"This photo is for a listing titled: '{listing.get('title', 'unknown item')}'\n\n"
+                    "IMPORTANT: Focus ONLY on the PRIMARY SUBJECT of this photo (the item being sold). "
+                    "Background objects, room decor, and other items visible in the environment are "
+                    "INCIDENTAL — they are NOT the listing item and should NOT affect your analysis. "
+                    "If you see multiple objects, the item matching the listing title is the one being sold.\n\n"
+                    "Analyze the primary item (the one being sold):\n"
+                    "- Is the visible condition consistent with the seller's claimed condition?\n"
+                    "- Are there signs of damage, wear, or missing parts not mentioned?\n"
+                    "- Are any included accessories visible?\n\n"
+                    + prompt
+                )
+            }
+        ]
+        log.info("Sending listing + photo to Claude Vision...")
+    else:
+        message_content = prompt
+        log.info("Sending listing to Claude (text-only)...")
+
+    try:
+        # WHY executor: anthropic client is synchronous; wrap to avoid blocking FastAPI
+        # WHY get_running_loop() not get_event_loop(): we're inside an async function,
+        # so there's always a running loop. get_running_loop() is the correct call here.
+        loop = asyncio.get_running_loop()
+        response = await loop.run_in_executor(
+            None,
+            lambda: _get_scoring_client().messages.create(
+                model="claude-haiku-4-5",
+                max_tokens=1024,
+                messages=[{"role": "user", "content": message_content}]
+            )
+        )
+
+        raw_text = response.content[0].text.strip()
+        log.debug(f"Claude raw response:\n{raw_text}")
+
+        # Strip markdown fences — Claude often wraps JSON in ```json ... ```
+        # even when told not to. This is the most common silent failure point.
+        clean_text = raw_text
+        if "```" in clean_text:
+            # Extract content between first { and last }
+            import re
+            json_match = re.search(r'\{.*\}', clean_text, re.DOTALL)
+            if json_match:
+                clean_text = json_match.group()
+            else:
+                log.error(f"Claude returned markdown but no JSON object found:\n{raw_text}")
+                return None
+
+        try:
+            data = json.loads(clean_text)
+        except json.JSONDecodeError as e:
+            log.error(f"JSON parse failed: {e}\nRaw text was:\n{raw_text}")
+            return None
+
+        # WHY `or 0` not default=0:
+        #   data.get("recommended_offer", 0) returns None when the key EXISTS
+        #   but has JSON value null — the default only fires when the key is absent.
+        #   float(None) → TypeError. Using `or 0` collapses both None and 0 correctly.
+        raw_offer = data.get("recommended_offer")
+        # Use 0.0 when Claude returns null/None (signal: don't score, fallback to 85% of price)
+        # Use -1.0 when Claude explicitly returns 0 (signal: do not buy / listing is a scam)
+        # The UI reads -1 as 'Not recommended' instead of displaying '$0.00'
+        if raw_offer is None:
+            safe_offer = float(listing.get("price", 0) * 0.85)
+        elif float(raw_offer) == 0.0:
+            safe_offer = -1.0  # Sentinel: tells UI to display 'Not recommended'
+        else:
+            safe_offer = float(raw_offer)
+
+        return DealScore(
+            score             = int(data.get("score", 5)),
+            verdict           = data.get("verdict", "No verdict"),
+            summary           = data.get("summary", ""),
+            value_assessment  = data.get("value_assessment", ""),
+            condition_notes   = data.get("condition_notes", ""),
+            red_flags         = data.get("red_flags") or [],
+            green_flags       = data.get("green_flags") or [],
+            recommended_offer = safe_offer,
+            should_buy        = bool(data.get("should_buy", False)),
+            confidence        = data.get("confidence", "medium"),
+            model_used        = response.model,
+            image_analyzed    = image_analyzed,
+        )
+
+    except anthropic.AuthenticationError as e:
+        # Surface the real error so FastAPI can show it in the sidebar
+        raise RuntimeError(f"Anthropic auth failed — check ANTHROPIC_API_KEY in .env ({e})") from e
+    except anthropic.RateLimitError as e:
+        raise RuntimeError(f"Anthropic rate limit hit — wait a moment and retry ({e})") from e
+    except anthropic.BadRequestError as e:
+        # This usually means billing issue or model not available
+        raise RuntimeError(f"Anthropic bad request — likely billing or model issue ({e})") from e
+    except anthropic.NotFoundError as e:
+        raise RuntimeError(f"Anthropic model not found — check model string ({e})") from e
+    except Exception as e:
+        raise RuntimeError(f"Claude API error: {type(e).__name__}: {e}") from e
+
+
+# ── Output ────────────────────────────────────────────────────────────────────
+
+def print_deal_score(score: DealScore, listing: dict):
+    """Print the full deal analysis report to console."""
+    score_bar = "█" * score.score + "░" * (10 - score.score)
+    buy_label = "✅ BUY" if score.should_buy else "❌ PASS"
+
+    print("\n" + "="*60)
+    print("  AI DEAL SCORE REPORT")
+    print("="*60)
+    print(f"  Item:      {listing['title']}")
+    print(f"  Price:     {listing['raw_price_text']}")
+    print()
+    print(f"  Score:     {score.score}/10  [{score_bar}]")
+    print(f"  Verdict:   {score.verdict}")
+    print(f"  Decision:  {buy_label}")
+    print()
+    print(f"  Summary:")
+    # Word-wrap the summary at 55 chars for clean console output
+    words = score.summary.split()
+    line = "    "
+    for word in words:
+        if len(line) + len(word) > 57:
+            print(line)
+            line = "    "
+        line += word + " "
+    if line.strip():
+        print(line)
+    print()
+    print(f"  Value:     {score.value_assessment}")
+    print(f"  Condition: {score.condition_notes}")
+    print()
+    if score.green_flags:
+        print("  ✅ Green flags:")
+        for flag in score.green_flags:
+            print(f"     • {flag}")
+    if score.red_flags:
+        print("  ⚠️  Red flags:")
+        for flag in score.red_flags:
+            print(f"     • {flag}")
+    print()
+    print(f"  Recommended offer: ${score.recommended_offer:.2f}")
+    print(f"  Confidence:        {score.confidence.upper()}")
+    print(f"  Scored by:         {score.model_used}")
+    print("="*60)
+
+
+def save_deal_score(score: DealScore, listing_title: str) -> Path:
+    """Save the deal score to /data — consumed by the Week 4 React UI."""
+    safe  = "".join(c for c in listing_title if c.isalnum() or c in " _-")[:40]
+    fpath = DATA_DIR / f"deal_score_{safe.strip().replace(' ', '_')}.json"
+    fpath.write_text(json.dumps(asdict(score), indent=2))
+    log.info(f"Deal score saved: {fpath}")
+    return fpath
+
+
+# ── Full Pipeline Runner ──────────────────────────────────────────────────────
+
+async def run_full_pipeline(listing_file: Path, market_value_file: Path):
+    """
+    Run the complete scoring pipeline for a single listing.
+    This is the function the FastAPI endpoint will call in Week 4.
+    """
+    listing      = json.loads(listing_file.read_text())
+    market_value = json.loads(market_value_file.read_text())
+
+    print(f"\n  Scoring: {listing['title']}")
+    print(f"  Price:   ${listing['price']:.2f}")
+    print(f"  eBay est value: ${market_value['estimated_value']:.2f}")
+    print(f"\n  Sending to Claude...")
+
+    deal_score = await score_deal(listing, market_value)
+
+    if deal_score:
+        print_deal_score(deal_score, listing)
+        output = save_deal_score(deal_score, listing["title"])
+        print(f"\n  Saved to: {output}")
+        print(f"  Ready for Week 4 — React UI")
+        return deal_score
+    else:
+        log.error("Scoring failed — check your ANTHROPIC_API_KEY in .env")
+        return None
+
+
+# ── Standalone Entry Point ────────────────────────────────────────────────────
+
+async def main():
+    """
+    Test the scorer against the most recent listing + market value in /data.
+    Requires ANTHROPIC_API_KEY to be set in .env.
+    """
+    # Find most recent listing file
+    listing_files = list(DATA_DIR.glob("listing_*.json"))
+    if not listing_files:
+        log.error("No listing files in /data — run the scraper first")
+        return
+
+    listing_file = max(listing_files, key=lambda f: f.stat().st_mtime)
+
+    # Find matching market value file
+    # Match by looking for market_value_ file with same item name stem
+    market_files = list(DATA_DIR.glob("market_value_*.json"))
+    if not market_files:
+        log.error("No market value files in /data — run ebay_pricer.py first")
+        return
+
+    market_file = max(market_files, key=lambda f: f.stat().st_mtime)
+
+    log.info(f"Listing file:      {listing_file.name}")
+    log.info(f"Market value file: {market_file.name}")
+
+    await run_full_pipeline(listing_file, market_file)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

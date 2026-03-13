@@ -1,30 +1,27 @@
 {
   "manifest_version": 3,
-  "name": "Deal Scout — AI Deal Scorer",
-  "version": "0.26.6",
-  "description": "AI-powered deal scoring for Facebook Marketplace, Craigslist, and Amazon. Scores deals instantly using real market data.",
-
+  "name": "Deal Scout \u2014 AI Deal Scorer",
+  "version": "0.26.39",
+  "description": "AI-powered deal scoring for Facebook Marketplace, Craigslist, eBay, and OfferUp. Scores deals instantly using real market data.",
   "permissions": [
     "activeTab",
     "storage",
-    "notifications",
-    "clipboardWrite",
     "webNavigation",
     "scripting"
   ],
-
   "host_permissions": [
     "https://www.facebook.com/marketplace/*",
     "https://www.craigslist.org/*",
     "https://*.craigslist.org/*",
-    "https://www.amazon.com/*"
+    "https://www.ebay.com/*",
+    "https://offerup.com/*",
+    "https://*.replit.dev/*",
+    "https://*.replit.app/*"
   ],
-
   "background": {
     "service_worker": "background.js",
     "type": "module"
   },
-
   "content_scripts": [
     {
       "matches": [
@@ -36,40 +33,52 @@
         "https://www.facebook.com/marketplace/category/*",
         "https://www.facebook.com/marketplace/*/search/*"
       ],
-      "js": ["content/fbm.js"],
+      "js": [
+        "content/fbm.js"
+      ],
       "run_at": "document_idle"
     },
     {
       "matches": [
-        "https://www.craigslist.org/*/d/*/*",
-        "https://*.craigslist.org/*/d/*/*"
+        "https://*.craigslist.org/*"
       ],
-      "js": ["content/craigslist.js"],
+      "js": [
+        "content/craigslist.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://www.ebay.com/itm/*"
+      ],
+      "js": [
+        "content/ebay.js"
+      ],
       "run_at": "document_idle"
     },
     {
       "matches": [
-        "https://www.amazon.com/dp/*",
-        "https://www.amazon.com/*/dp/*"
+        "https://offerup.com/item/detail/*"
       ],
-      "js": ["content/amazon.js"],
+      "js": [
+        "content/offerup.js"
+      ],
       "run_at": "document_idle"
     }
   ],
-
   "action": {
     "default_popup": "popup/popup.html",
     "default_title": "Deal Scout",
     "default_icon": {
-      "16":  "icons/icon16.png",
-      "48":  "icons/icon48.png",
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
       "128": "icons/icon128.png"
     }
   },
-
   "icons": {
-    "16":  "icons/icon16.png",
-    "48":  "icons/icon48.png",
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   }
 }
