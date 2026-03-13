@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.26.35';
+  const VERSION  = '0.26.36';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -54,6 +54,12 @@
   // and we discard the result — even if location.href happens to look the same
   // (FBM sometimes calls replaceState after navigation, resetting the URL briefly).
   if (window.__dealScoutNonce === undefined) window.__dealScoutNonce = 0;
+
+  // Mutex flag: true while an autoScore is running. Prevents multiple concurrent
+  // autoScores caused by FBM firing 3-4 pushStates per navigation. Each pushState
+  // re-injects fbm.js; only the first autoScore past the flag proceeds. Navigation
+  // (_onFbmNav) resets this flag so the next autoScore for the new listing can run.
+  if (window.__dealScoutRunning === undefined) window.__dealScoutRunning = false;
 
   // ── Guard: prevent double-injection on SPA navigation ───────────────────────
   // background.js re-injects fbm.js on every pushState. Without this guard,
@@ -384,6 +390,17 @@
   async function autoScore(attempt = 0) {
     if (!isListingPage()) return;
 
+    // Mutex: if another autoScore is already running (from a concurrent pushState
+    // re-injection), skip this one entirely. _onFbmNav resets this flag on every
+    // navigation so the next listing always gets a fresh run.
+    if (attempt === 0) {
+      if (window.__dealScoutRunning) {
+        console.debug('[DealScout] autoScore skipped — already running');
+        return;
+      }
+      window.__dealScoutRunning = true;
+    }
+
     const snapUrl  = location.href;
     // Capture the nonce at the very start. If _onFbmNav fires at any point
     // before we render, the window nonce will have incremented and we bail out.
@@ -476,10 +493,34 @@
     try {
       const result = await callScoringAPI(listing, abort.signal);
 
-      // Triple guard: AbortController + nonce + URL.
+      // Guard 1: AbortController — cancelled at network level means user navigated.
       if (abort.signal.aborted) return;
+      // Guard 2: Nonce — user navigated after fetch started.
       if (window.__dealScoutNonce !== myNonce) return;
+      // Guard 3: URL — exact URL must still match.
       if (location.href !== snapUrl) return;
+
+      // Guard 4 — Final data validation: re-read the current DOM title and
+      // confirm it shares meaningful words with the listing we just scored.
+      // This is the last-resort check for any edge case where the DOM swapped
+      // items during the API call but all three guards above somehow passed.
+      const domTitleNow = (() => {
+        for (const el of document.querySelectorAll('h1[dir="auto"]')) {
+          const t = el.textContent.trim();
+          if (t && !_GENERIC_TITLES.has(t.toLowerCase())) return t;
+        }
+        return '';
+      })();
+      if (domTitleNow && listing.title) {
+        const words = s => s.toLowerCase().replace(/[^a-z0-9\s]/g,'').split(/\s+/).filter(w => w.length > 2);
+        const scoredWords = new Set(words(listing.title));
+        const domWords    = words(domTitleNow);
+        const overlap     = domWords.filter(w => scoredWords.has(w)).length;
+        if (overlap === 0) {
+          console.debug('[DealScout] Title mismatch — discarding stale score:', listing.title, '→', domTitleNow);
+          return;
+        }
+      }
 
       renderScore(result);
 
@@ -492,6 +533,10 @@
       if (window.__dealScoutNonce !== myNonce || location.href !== snapUrl) return;
       const msg = err.message || 'Scoring failed';
       renderError(msg.includes('listing title') ? '⏳ Page still loading — try the Score button' : msg);
+    } finally {
+      // Always release the mutex so the next navigation can start a fresh autoScore.
+      // This fires whether we returned early (guard failed) or rendered successfully.
+      window.__dealScoutRunning = false;
     }
   }
 
@@ -1666,6 +1711,12 @@
         window.__dealScoutAbort.abort();
         window.__dealScoutAbort = null;
       }
+
+      // Release the autoScore mutex so the new listing's autoScore can proceed.
+      // Must happen BEFORE the nonce increment because the new autoScore reads
+      // both flags. Clearing here means: at most one autoScore runs per listing
+      // even when FBM fires multiple pushStates for a single navigation.
+      window.__dealScoutRunning = false;
 
       // Increment the navigation nonce FIRST — this immediately invalidates any
       // in-flight autoScore call, preventing a stale score from rendering on the
