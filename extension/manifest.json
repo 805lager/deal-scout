@@ -13,7 +13,6 @@
     "https://www.facebook.com/marketplace/*",
     "https://www.craigslist.org/*",
     "https://*.craigslist.org/*",
-    "https://www.amazon.com/*",
     "https://www.ebay.com/*",
     "https://offerup.com/*",
     "https://*.replit.dev/*",
@@ -48,16 +47,6 @@
       ],
       "run_at": "document_idle",
       "all_frames": false
-    },
-    {
-      "matches": [
-        "https://www.amazon.com/dp/*",
-        "https://www.amazon.com/*/dp/*"
-      ],
-      "js": [
-        "content/amazon.js"
-      ],
-      "run_at": "document_idle"
     },
     {
       "matches": [
