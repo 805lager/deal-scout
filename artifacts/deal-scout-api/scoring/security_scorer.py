@@ -397,12 +397,13 @@ async def score_security(
 
     # Build client if not passed in
     if anthropic_client is None:
-        api_key = os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL", "")
-        if not api_key:  # check AI integration URL
-            log.warning("[Security] No ANTHROPIC_API_KEY — layer1 only")
+        base_url = os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL", "")
+        api_key  = os.getenv("AI_INTEGRATIONS_ANTHROPIC_API_KEY", "placeholder")
+        if not base_url:
+            log.warning("[Security] No AI integration configured — layer1 only")
             anthropic_client = None
         else:
-            anthropic_client = anthropic.Anthropic(api_key=api_key)
+            anthropic_client = anthropic.Anthropic(api_key=api_key, base_url=base_url)
 
     # Layer 1 — always runs
     l1_flags = run_layer1(
