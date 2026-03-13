@@ -1,210 +1,295 @@
 # Deal Scout — AI-Powered Deal Scoring Browser Extension
 
-An AI-powered shopping assistant that scores deals on Facebook Marketplace and Craigslist using Claude AI and real market data from eBay.
+A browser extension that scores deals on Facebook Marketplace, Craigslist, eBay, and OfferUp using Claude AI, Google Shopping price data, and a 3-layer scam detection engine. Revenue via affiliate cards embedded in every score result.
 
 ---
 
 ## Project Structure
+
 ```
-Personal_Shopping_Bot/
-├── scraper/          # POC-only Playwright scraper (superseded by extension)
-├── api/              # FastAPI backend — deal scoring, eBay pricing, affiliate links
-├── scoring/          # Claude API scoring engine, eBay price comparison
-├── extension/        # Chrome browser extension (production data collection layer)
-│   ├── manifest.json         # Extension config — permissions, v0.2.0
-│   ├── background.js         # Service worker — API calls, affiliate injection
+deal-scout/
+├── extension/                    # Chrome extension (Manifest V3)
+│   ├── manifest.json             # v0.26.39 — permissions, host rules
+│   ├── background.js             # Service worker — API calls, badge updates
 │   ├── content/
-│   │   └── fbm.js            # FBM + Craigslist content script (~850 lines)
+│   │   ├── fbm.js                # Facebook Marketplace content script
+│   │   ├── craigslist.js         # Craigslist content script
+│   │   ├── ebay.js               # eBay content script
+│   │   └── offerup.js            # OfferUp content script
 │   ├── popup/
-│   │   ├── popup.html        # Extension popup UI
-│   │   └── popup.js          # Popup logic — API health check, score trigger
-├── ui/               # React web UI — standalone deal scorer (Week 4 — not yet built)
-├── data/             # Flat file storage for POC (JSON)
-├── .env              # Credentials — NEVER commit this to git
-├── check_setup.py    # Setup verification script
-├── requirements.txt
-└── README.md
+│   │   ├── popup.html            # Extension popup UI
+│   │   └── popup.js              # Popup logic — health check, rescore
+│   └── icons/                    # 16px, 48px, 128px PNGs
+│
+├── artifacts/
+│   ├── deal-scout-api/           # FastAPI backend (Python)
+│   │   ├── main.py               # /score endpoint — orchestrates pipeline
+│   │   └── scoring/
+│   │       ├── product_extractor.py   # Claude extracts brand/model/category
+│   │       ├── google_pricer.py       # Google Shopping scraper (primary)
+│   │       ├── ebay_pricer.py         # eBay Finding API (fallback) + circuit breaker
+│   │       ├── claude_pricer.py       # Claude market value estimation
+│   │       ├── deal_scorer.py         # Final scoring logic
+│   │       ├── affiliate_router.py    # 18-program affiliate card engine
+│   │       ├── security_scorer.py     # 3-layer scam detection
+│   │       ├── data_pipeline.py       # Market signals → PostgreSQL
+│   │       ├── suggestion_engine.py   # Deal improvement suggestions
+│   │       ├── product_evaluator.py   # Brand/model reputation (Claude)
+│   │       ├── corrections.py         # Price range correction overrides
+│   │       ├── vehicle_pricer.py      # Vehicle-specific pricing logic
+│   │       └── craigslist_pricer.py   # Craigslist price data
+│   │
+│   └── api-server/               # Node.js proxy (routes /api/ds → FastAPI)
+│       └── src/app.ts
+│
+└── replit.md                     # Architecture notes
 ```
 
 ---
 
-## Product Vision
+## Platform Support
 
-**Phase 1 (Now):** Free browser extension + affiliate revenue
-- Extension detects when user views a FBM/Craigslist listing
-- Scores the deal using Claude AI + eBay market data
-- Sidebar shows deal score, flags, recommended offer, message templates
-- Affiliate links to eBay/Amazon embedded in results — revenue on click-through
-
-**Phase 2:** Freemium — power users pay for alerts + watchlists
-- Free tier: real-time scoring on listings you visit
-- Paid ($9/mo): watchlists, proactive alerts, price history, bulk scoring
-
-**Phase 3:** Acquisition target or raise to scale
-- Data insights product for market research / insurance / financial apps
-- B2B reseller tier for car flippers and power resellers
+| Platform | Status | Notes |
+|----------|--------|-------|
+| Facebook Marketplace | ✅ Live | Full extraction — price, images, seller, shipping |
+| Craigslist | ✅ Live | Price + description extraction |
+| eBay | ✅ Live | Active listing scoring |
+| OfferUp | ✅ Live | Basic extraction |
 
 ---
 
-## Monetization
+## Scoring Pipeline
 
-### Affiliate Revenue (Phase 1)
-Every deal score shows eBay and Amazon comparison links with embedded affiliate IDs.
-Commission on any click-through purchase — zero user friction, zero paywall.
+Every listing goes through this pipeline on the backend:
 
-| Program | Commission | Sign Up |
-|---------|-----------|---------|
-| eBay Partner Network | 50–70% of eBay's revenue on referred sales | https://partnernetwork.ebay.com |
-| Amazon Associates | 1–10% by category | https://affiliate-program.amazon.com |
+```
+Listing text + image
+    → Product Extractor   (Claude: brand, model, category, condition)
+    → Google Pricer       (PRIMARY: Google Shopping scrape — retail + used)
+    → eBay Pricer         (FALLBACK: sold comps via Finding API)
+    → Claude Pricer       (fills gaps with training knowledge, always runs)
+    → Product Evaluator   (brand reputation, known issues)
+    → Deal Scorer         (final 1–10 score + flags + suggested offer)
+    → Affiliate Router    (3 category-matched cards from 18 programs)
+    → Security Scorer     (3-layer scam detection — parallel)
+    → Data Pipeline       (anonymized signal → PostgreSQL — async, non-blocking)
+```
 
 ---
 
-## API Keys
+## Affiliate Program Engine
 
-| Key | Where | .env Variable |
-|-----|-------|---------------|
-| Anthropic | https://console.anthropic.com → API Keys | `ANTHROPIC_API_KEY` |
-| eBay API | https://developer.ebay.com → App Keys | `EBAY_APP_ID` |
+The affiliate router maps each item's detected category to the best-matched programs. 18 programs configured:
+
+| Category | Programs |
+|----------|---------|
+| Electronics | Back Market, Best Buy, Newegg, Amazon, eBay |
+| Phones / Tablets | Back Market, Best Buy, Amazon, eBay |
+| Tools | Home Depot, Lowe's, Amazon, eBay |
+| Appliances | Home Depot, Lowe's, Best Buy, Amazon, eBay |
+| Furniture | Wayfair, Walmart, Amazon |
+| Outdoor / Camping | REI, Amazon, eBay |
+| Fitness | Dick's Sporting Goods, Amazon, Walmart |
+| Vehicles | Autotrader, CarGurus, CarMax, eBay |
+| Auto Parts | Advance Auto Parts, CarParts.com, Amazon, eBay |
+| Musical Instruments | Sweetwater, Amazon, eBay |
+| Baby / Kids / Toys | Target, Amazon, Walmart |
+| Pets | Chewy, Amazon, Walmart |
+| General | Amazon, eBay |
+
+Category detection uses 170+ keyword entries covering brands (DeWalt, Dyson, Surron, Peloton, Traeger...), product types (impact driver, vacuum, grill...), and wearables (Apple Watch, Garmin, Fitbit...).
+
+**Live programs** (earning commission now): Amazon Associates, eBay Partner Network  
+**Search-only programs** (generating traffic links, commission pending credentials): all others
+
+---
+
+## Security Scorer
+
+Runs in parallel with deal scoring — a listing can score 8/10 on price and still be a scam.
+
+| Layer | Method | Cost |
+|-------|--------|------|
+| Layer 1 | Rule-based regex — Zelle/Venmo, off-platform contact, shipping scams, advance-fee patterns | Free |
+| Layer 2 | Claude Haiku — subtle manipulation, inconsistency detection | ~$0.0003/call |
+| Layer 3 | Item-specific risks — iCloud lock, VIN issues, counterfeit indicators, recall status | Included in Layer 2 |
+
+---
+
+## Market Intelligence Data Pipeline
+
+Every scored listing writes an anonymized row to PostgreSQL:
+
+- Category, item label, condition, city/state
+- Asking price, eBay sold avg, Google Shopping avg, new retail price
+- Deal score, price gap %, which affiliate programs were shown
+- Platform (facebook_marketplace / craigslist / ebay / offerup)
+
+**What is NOT collected:** user IDs, seller names, listing URLs, any PII.
+
+This dataset has standalone B2B value — weekly exports for retailers, insurers, and market researchers.
+
+---
+
+## Pricing Architecture
+
+```
+1. Google Shopping (PRIMARY)
+   - No API key required — scrapes real retail + used prices
+   - Broad retailer coverage, not just eBay sellers
+   - Fast with persistent browser (~0.3s after warm-up)
+
+2. eBay Finding API (FALLBACK — when Google returns < 3 prices)
+   - Best source for sold/completed comps (actual transaction prices)
+   - Rate limited: ~5,000 calls/day free tier
+   - Circuit breaker: detects rate limit (error 10001 from HTTP 500 body),
+     opens 30-min cooldown to stop wasted quota usage
+
+3. Claude Knowledge (ALWAYS RUNS)
+   - Training knowledge fills price gaps
+   - Confidence tagged as "medium" when used as primary source
+```
+
+---
+
+## API Keys Required
+
+| Key | Where | Env Variable |
+|-----|-------|--------------|
+| Anthropic (Claude) | https://console.anthropic.com | `AI_INTEGRATIONS_ANTHROPIC_API_KEY` |
+| eBay Finding API | https://developer.ebay.com | `EBAY_APP_ID` |
 | eBay Affiliate | https://partnernetwork.ebay.com | `EBAY_CAMPAIGN_ID` |
-| Amazon API | https://affiliate-program.amazon.com → PA API | `AMAZON_ACCESS_KEY`, `AMAZON_SECRET_KEY` |
-| Amazon Affiliate | Same account | `AMAZON_ASSOCIATE_TAG` |
+| Amazon Associates | https://affiliate-program.amazon.com | `AMAZON_ASSOCIATE_TAG` |
 
----
-
-## Setup
-
-```bash
-# Install dependencies
-python -m pip install -r requirements.txt
-python -m playwright install chromium
-
-# Configure credentials
-cp .env.example .env   # fill in your keys
-
-# Verify setup
-python check_setup.py
-```
+Affiliate programs for Best Buy, Home Depot, REI, etc. are in search-only mode until credentials are added to `affiliate_router.py`.
 
 ---
 
 ## Running the Stack
 
 ```bash
-# API backend (required for extension to function)
-python -m uvicorn api.main:app --reload --port 8000
-# Interactive docs → http://localhost:8000/docs
+# Backend API (FastAPI — port 8000)
+cd artifacts/deal-scout-api
+uvicorn main:app --host 0.0.0.0 --port 8000
 
-# React UI (not yet built — Week 4)
-cd ui && npm install && npm start
-# Will open at http://localhost:3000
+# Node proxy (routes /api/ds → FastAPI)
+pnpm --filter @workspace/api-server run dev
 
-# POC scraper (standalone, not needed for extension)
-python scraper/fbm_scraper.py --mode text
+# Interactive API docs
+open http://localhost:8000/docs
 ```
 
-### Load Extension in Chrome
-1. `chrome://extensions` → Enable **Developer Mode**
-2. **Load Unpacked** → select the `/extension` folder
-3. Navigate to any FBM listing — sidebar appears automatically
+**Load extension in Chrome:**
+1. `chrome://extensions` → Enable Developer Mode
+2. Load Unpacked → select `/extension`
+3. Navigate to any FBM / Craigslist / eBay / OfferUp listing — sidebar appears automatically
 
 ---
 
 ## Build Status
 
-### POC (Weeks 1–4) ✅
-| Week | Goal | Status |
-|------|------|--------|
-| 1 | FBM scraper — 3 modes | ✅ |
-| 2 | eBay price comparison | ✅ (mock data while API approval pending) |
-| 3 | Claude deal scoring engine | ✅ |
-| 4 | React UI | ⏳ Scaffolded, not yet built |
-
-### Phase 1 — Chrome Extension
+### Extension
 | Feature | Status |
 |---------|--------|
-| Manifest v3, permissions, service worker | ✅ |
-| FBM content script — full DOM extraction | ✅ |
+| Manifest V3, service worker | ✅ |
+| Facebook Marketplace content script | ✅ |
 | Craigslist content script | ✅ |
-| Collapsible sidebar — score, flags, offer | ✅ |
-| Draggable sidebar (persists position) | ✅ |
+| eBay content script | ✅ |
+| OfferUp content script | ✅ |
+| Collapsible, draggable sidebar | ✅ |
+| Deal score + flags + suggested offer | ✅ |
 | One-click message templates (clipboard) | ✅ |
 | Price history tracking (chrome.storage) | ✅ |
 | Search results overlay badges | ✅ |
 | Seller trust scoring | ✅ |
 | Strikethrough / price reduction detection | ✅ |
+| Affiliate cards (3 per score) | ✅ |
+| Bleed prevention (4-layer mutex + nonce + URL + title guard) | ✅ |
+| Chrome Web Store submission | 🔲 |
+
+### Backend API
+| Feature | Status |
+|---------|--------|
+| FastAPI /score endpoint | ✅ |
+| Claude product extraction | ✅ |
 | Google Shopping pricing (primary) | ✅ |
-| eBay real API data (fallback) | ⏳ Pending eBay API approval |
-| Amazon price anchor | 🔲 Not started |
-| eBay affiliate link activation | 🔲 Needs campaign ID in .env |
-| Amazon affiliate link activation | 🔲 Needs associate tag in .env |
-| OfferUp support | 🔲 Not started |
-| Chrome Web Store submission | 🔲 Not started |
+| eBay Finding API (fallback + circuit breaker) | ✅ |
+| Claude knowledge pricing (always-on) | ✅ |
+| 18-program affiliate routing engine | ✅ |
+| 170+ category keyword map | ✅ |
+| 3-layer security / scam scorer | ✅ |
+| Market signals → PostgreSQL pipeline | ✅ |
+| /v1/market-data B2B endpoint | ✅ |
+| Reddit reputation data | ⏳ Blocked (403 on cloud IPs) |
+| Craigslist comps | ⏳ Blocked (403 on cloud IPs) |
 
 ---
 
 ## Changelog
 
-### v0.5.0 — Positioning Fix + CORS + Pricing Inversion (Mar 2026)
-- ✅ **CORS fix** — FastAPI `allow_origins` changed from `[localhost:3000]` to `["*"]`; content script requests from `facebook.com` were being rejected even with correct `host_permissions`
-- ✅ **Sidebar positioning fix** — `#ds-tab` and `#ds-panel` changed from `position:fixed` (viewport-relative) to `position:absolute` (root-relative); previous architecture made `makeDraggable()` move an invisible container while tab/panel stayed put
-- ✅ **Facebook transform fix** — root now appended to `document.documentElement` instead of `document.body`; Facebook applies CSS `transform` to body ancestors for scroll animations which breaks child `position:fixed` by repositioning them relative to the transformed element instead of the viewport
-- ✅ **Drag now works** — tab and panel follow root correctly because they are absolute children, not independent fixed elements
-- ✅ **Better error message** — network-level failures (`TypeError`) now show actionable "API not reachable" hint with the uvicorn start command
-- ✅ **Pricing priority inversion** — Google Shopping is now PRIMARY, eBay is FALLBACK (see below)
+### v0.26.39 (Mar 2026) — Bleed Prevention
+- 4-layer bleed prevention: AbortController + nonce guard + URL guard + title-word overlap check before render
+- `_inSidebarCard()` guard on all price and image extraction strategies
+- `_pickImages(minW)` filters by `clientWidth >= 200px` to exclude seller avatars and thumbnail cards
 
+### v0.26.38 (Mar 2026) — Price Bleed Fix
+- FBM "Similar listings" sidebar aria-label prices no longer contaminate current listing price
+- `_inSidebarCard()` applied to all 4 price extraction strategies
 
+### v0.26.37 (Mar 2026) — Image Fix
+- `img[src*="scontent"]` was grabbing seller profile avatars (~72KB, 40–80px)
+- Replaced with `_pickImages(minW)` filtering by `clientWidth >= 200px` with fallback tiers
 
-### v0.4.0 — Extraction Fixes + Full Pipeline (Mar 2026)
-- ✅ **Price extraction fix** — FBM current price is a text node, not a `<span>`; `childNodes` walk correctly extracts it and ignores strikethrough original
-- ✅ **Shipping cost extraction** — regex `/ships? for $X/i`; passed to Claude as `shipping_cost`; sidebar shows `+$X.XX shipping = $XXX total` in orange; Claude factors true total cost into scoring
-- ✅ **Seller rating extraction** — no longer fabricated from trust tier; reads `(N)` review count + "Highly Rated" badge; infers 4.8 if badge, 4.0 if reviews exist, null otherwise
-- ✅ **Strikethrough original price detection** — identifies seller price reductions; shown in sidebar and passed to Claude as context
-- ✅ **CSP compliance** — Facebook strips inline `onclick` from injected HTML; all handlers converted to `addEventListener` post-insertion; fixes tab switching and card clicks
-- ✅ Claude Vision integration — first listing photo sent to Claude Haiku for condition mismatch detection
-- ✅ Suggestion engine — 3 affiliate cards per score (`same_cheaper`, `better_model`, `same_amazon`)
-- ✅ Pro gating — `isPro()` reads `ds_pro` toggle written by popup via `chrome.storage.local`
-- ✅ SPA navigation handler in background.js — debounced re-injection on `history.pushState` (800ms)
-- ✅ Search results overlay — deal score badges injected on FBM listing thumbnails
-- ✅ Multi-item / vehicle detection in Claude prompt — suppresses false flags on bundles and ATVs
+### v0.26.36 (Mar 2026) — Mutex
+- `__dealScoutRunning` mutex prevents concurrent scoring on fast navigation
 
-### v0.2.0 — Extension (Mar 2026)
-- ✅ Chrome extension with FBM + Craigslist content scripts
-- ✅ Full DOM extraction without data-testid (Facebook removed them late 2024)
-- ✅ Collapsible, draggable sidebar with deal score, flags, recommended offer
-- ✅ One-click message templates (offer, condition inquiry, fast offer)
-- ✅ Price history tracking across visits (chrome.storage.local)
-- ✅ Search results overlay — badge each listing thumbnail with cached score
-- ✅ Seller trust scoring — account age, review count, Highly Rated badge
-- ✅ Strikethrough price detection — identifies seller price reductions
-- ✅ Popup: API health check, manual rescore trigger, Open Full Scorer button
+### v0.5.0 (Mar 2026) — Pricing Priority Inversion
+- Google Shopping promoted to PRIMARY; eBay demoted to FALLBACK
+- CORS fix — `allow_origins=["*"]` for content script requests
+- Sidebar positioning: `position:absolute` on root to survive Facebook's CSS transforms
 
-### v0.1.0 — POC (Mar 2026)
-- ✅ Playwright-based FBM scraper (URL, text, batch modes)
-- ✅ eBay Finding API price comparison with mock fallback
-- ✅ Claude API deal scoring with structured JSON output
-- ✅ FastAPI backend wiring scraper → eBay → Claude
-- ✅ Validated on real listings (Orion telescope, Gskyer telescope)
+### v0.4.0 (Mar 2026) — Full Pipeline
+- Shipping cost extraction → shown in sidebar, factored into Claude scoring
+- Seller rating extraction from DOM (no longer inferred)
+- Strikethrough original price detection
+- CSP compliance — all handlers use `addEventListener` post-insertion
+- Claude Vision — first listing photo sent to Claude Haiku for condition mismatch
+- Search results overlay badges on FBM listing thumbnails
+- Pro gating via `chrome.storage.local`
+
+### v0.2.0 (Mar 2026) — Extension Launch
+- Chrome extension with FBM + Craigslist content scripts
+- Full DOM extraction without data-testid
+- Collapsible, draggable sidebar
+- One-click message templates
+- Price history tracking
+
+### v0.1.0 (Mar 2026) — POC
+- Playwright-based FBM scraper
+- eBay Finding API price comparison with mock fallback
+- Claude API deal scoring
+- FastAPI backend
 
 ---
 
-## ⚠️ Notes
-
-**Bot Detection**
-- Extension runs in user's own authenticated session — no bot detection issues
-- POC scraper: always use `HEADLESS=false`, never run from datacenter IP
-
-**Security**
-- `.env` is gitignored — never commit it
-- Extension reads DOM only — never touches credentials
-- Affiliate IDs live server-side in `.env`, never exposed to extension JS
-
 ## Tech Stack
+
 | Layer | Technology |
 |-------|-----------|
 | Browser Extension | JavaScript, Chrome Manifest V3 |
 | Backend API | Python + FastAPI |
-| AI Scoring | Anthropic Claude API |
-| Price Comparison | eBay Finding API + Amazon PA API |
-| Affiliate Revenue | eBay Partner Network + Amazon Associates |
-| Frontend | React (Week 4) |
-| Storage | chrome.storage.local (extension) + flat JSON (POC) |
+| Node Proxy | Express / TypeScript |
+| AI Scoring | Anthropic Claude (Sonnet + Haiku) |
+| Price Data | Google Shopping (scrape) + eBay Finding API |
+| Affiliate Engine | 18-program router — Amazon, eBay, Home Depot, REI, and more |
+| Database | PostgreSQL (market signals, anonymized aggregate data) |
+| Hosting | Replit (dev) |
+
+---
+
+## Security Notes
+
+- `.env` / secrets are never committed — managed via Replit Secrets
+- Extension reads DOM only — never touches credentials
+- Affiliate IDs live server-side, never exposed to extension JS
+- Market signal data is fully anonymized — no seller names, URLs, or user IDs collected
