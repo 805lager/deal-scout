@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.26.30';
+  const VERSION  = '0.26.31';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -273,20 +273,21 @@
       document.querySelector('meta[property="og:title"]')?.content?.trim() ||
       document.title;
 
-    // Description — the long text block after the price
+    // Description — the long text block below the listing details.
+    // IMPORTANT: Never fall back to document.body.innerText.
+    // FBM's navigation always contains "Notifications" / "Inbox" / "Marketplace"
+    // which Claude incorrectly flags as suspicious listing content and contaminates
+    // the score verdict (e.g. "title says Notifications — low transparency").
     let description = '';
     const descEl = document.querySelector('[data-testid="marketplace-pdp-description"]')
-                || document.querySelector('[class*="description"]');
+                || document.querySelector('[class*="xz9dl007"]')  // FBM internal class
+                || document.querySelector('div[dir="auto"][style*="white-space"]');
     if (descEl) {
       description = descEl.textContent.trim().slice(0, 800);
-    } else {
-      // Fallback: grab a block of text after the price region
-      const allText = document.body.innerText;
-      const idx = allText.indexOf(title);
-      if (idx !== -1) {
-        description = allText.slice(idx + title.length, idx + title.length + 600).trim();
-      }
     }
+    // If the description element hasn't mounted yet, leave description empty.
+    // The polling in autoScore waits up to ~4.5s for the element to appear,
+    // so reaching here with an empty description means the listing has no text.
 
     // Condition — FBM shows "Used - Like New", "New", etc.
     const conditionMatch = (document.body.innerText || '').match(
@@ -388,7 +389,17 @@
     // Condition C: price not loaded yet (mounts after title — most common silent-fail cause)
     const priceMissing = !price;
 
-    const notReady = titleIsStale || (titleMissing && !titleIsStale) || priceMissing;
+    // Condition D: description element not yet mounted (loads after price).
+    // Only block for the first 15 attempts (~4.5s). After that, proceed with
+    // empty description rather than waiting forever. Never fall back to
+    // body.innerText — FBM's nav always contains "Notifications" / "Inbox"
+    // which Claude flags as suspicious and contaminates the score verdict.
+    const descEl = document.querySelector('[data-testid="marketplace-pdp-description"]')
+                || document.querySelector('[class*="xz9dl007"]')  // FBM internal class
+                || document.querySelector('div[dir="auto"][style*="white-space"]');
+    const descMissing = !descEl && attempt < 15;
+
+    const notReady = titleIsStale || (titleMissing && !titleIsStale) || priceMissing || descMissing;
 
     if (notReady && attempt < 30) {
       await new Promise(r => setTimeout(r, 300));
