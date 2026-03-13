@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.26.37';
+  const VERSION  = '0.26.38';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -131,10 +131,21 @@
   //   3. Collect-all-candidates, filter below $2, pick shallowest/largest
 
   function findPrices() {
-    // v0.26.1 — Strategy 0 added for FBM concatenated price pattern "$250$300"
-    // FBM renders reduced listings as a single text node with both prices jammed
-    // together: "$250$300". None of the original strategies match this because they
-    // all expect a single clean "$NNN" value. Strategy 0 catches it first.
+    // v0.26.38 — All strategies now exclude elements inside "similar listing" card
+    // links (a[href*="/marketplace/item/"] or div[role="link"]).
+    //
+    // Root cause of price bleed: during SPA navigation, FBM's "Similar items"
+    // sidebar stays mounted. Its listing cards each have an aria-label="$475" price
+    // element. Our extractor was picking that up before the new listing's own price
+    // element rendered — producing a stale price from an unrelated listing.
+    //
+    // Fix: _inSidebarCard(el) returns true if the element is inside another listing's
+    // card. All four strategies skip such elements.
+    const _inSidebarCard = el =>
+      !!el.closest('a[href*="/marketplace/item/"]') ||
+      !!el.closest('div[data-testid="marketplace-search-item"]') ||
+      !!el.closest('[role="listitem"] a');
+
     let price = 0;
     let original = 0;
 
@@ -144,6 +155,7 @@
     {
       const allEls = document.querySelectorAll('span, h2, h3');
       for (const el of allEls) {
+        if (_inSidebarCard(el)) continue;
         const text = (el.textContent || '').trim();
         const m = text.match(/^\$([0-9,]+(?:\.[0-9]{2})?)\$([0-9,]+(?:\.[0-9]{2})?)$/);
         if (!m) continue;
@@ -157,10 +169,12 @@
     }
 
     // Strategy 1: aria-label exact match
-    // FBM stamps the listing price as aria-label="$150" on the h2/span near the title
+    // FBM stamps the listing price as aria-label="$150" on the h2/span near the title.
+    // Similar-listing cards also have aria-label prices — skip those.
     if (!price) {
       const ariaEls = document.querySelectorAll('[aria-label]');
       for (const el of ariaEls) {
+        if (_inSidebarCard(el)) continue;
         const label = el.getAttribute('aria-label') || '';
         const m = label.match(/^\$([0-9,]+(?:\.[0-9]{2})?)$/);
         if (m) {
@@ -178,12 +192,12 @@
     if (!price) {
       const strikeEls = document.querySelectorAll('s, [style*="line-through"]');
       for (const s of strikeEls) {
+        if (_inSidebarCard(s)) continue;
         const oldText = s.textContent.trim();
         const mOld = oldText.match(/\$([0-9,]+)/);
         if (!mOld) continue;
         const oldVal = parseFloat(mOld[1].replace(/,/g, ''));
         if (oldVal < 2) continue;
-        // The new price should be in a sibling/parent nearby
         const container = s.parentElement;
         if (!container) continue;
         const sibs = Array.from(container.querySelectorAll('span, div'))
@@ -203,12 +217,13 @@
       }
     }
 
-    // Strategy 3: collect all $ candidates, filter noise, pick best
+    // Strategy 3: collect all $ candidates, filter noise, pick shallowest/largest.
     // Fallback for single-price listings like "$250" with no reduction.
     if (!price) {
       const allSpans = document.querySelectorAll('span, h2, h3, div[role]');
       const candidates = [];
       for (const el of allSpans) {
+        if (_inSidebarCard(el)) continue;
         const text = (el.textContent || '').trim();
         const m = text.match(/^\$([0-9,]+(?:\.[0-9]{2})?)$/);
         if (!m) continue;
