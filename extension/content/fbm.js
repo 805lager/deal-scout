@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.26.34';
+  const VERSION  = '0.26.35';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -464,19 +464,79 @@
 
     showPanel();
     renderLoading(listing);
+
+    // Create an AbortController for this specific scoring run.
+    // _onFbmNav calls abort() the moment the user clicks a new listing,
+    // cancelling the in-flight HTTP request before it can return a result.
+    // This is the most reliable bleed prevention — a cancelled fetch literally
+    // cannot resolve, regardless of URL or nonce state.
+    const abort = new AbortController();
+    window.__dealScoutAbort = abort;
+
     try {
-      const result = await sendToBackground(listing);
-      // Double guard: check both URL and nonce before rendering.
-      // URL check catches normal cross-listing navigation.
-      // Nonce check catches edge cases where FBM replaceState briefly resets
-      // location.href to an old value, making the URL guard pass incorrectly.
-      if (location.href !== snapUrl || window.__dealScoutNonce !== myNonce) return;
+      const result = await callScoringAPI(listing, abort.signal);
+
+      // Triple guard: AbortController + nonce + URL.
+      if (abort.signal.aborted) return;
+      if (window.__dealScoutNonce !== myNonce) return;
+      if (location.href !== snapUrl) return;
+
       renderScore(result);
+
+      // Badge update is fire-and-forget — does not block rendering.
+      chrome.runtime.sendMessage({ type: 'BADGE_UPDATE', score: result.score })
+        .catch(() => {});
+
     } catch (err) {
-      if (location.href !== snapUrl || window.__dealScoutNonce !== myNonce) return;
+      if (abort.signal.aborted) return; // normal abort — user navigated away
+      if (window.__dealScoutNonce !== myNonce || location.href !== snapUrl) return;
       const msg = err.message || 'Scoring failed';
       renderError(msg.includes('listing title') ? '⏳ Page still loading — try the Score button' : msg);
     }
+  }
+
+  // ── Direct Scoring API Call ───────────────────────────────────────────────────
+
+  async function callScoringAPI(listing, signal) {
+    /**
+     * WHY DIRECT FETCH INSTEAD OF BACKGROUND MESSAGE:
+     * chrome.runtime.sendMessage has no built-in cancellation. Even with URL/nonce
+     * guards, the background's fetch() can return after the user navigates and the
+     * sendResponse callback fires — the content script receives the result and our
+     * guards fire, but there's a narrow race where they can miss.
+     *
+     * A direct fetch with AbortController is cancelled at the network level the
+     * instant _onFbmNav fires. No race. No stale result can ever arrive.
+     */
+    const response = await fetch(`${API_BASE}/score`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(listing),
+      signal,                    // AbortController signal — cancels on navigation
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || `API error ${response.status}`);
+    }
+
+    const result = await response.json();
+
+    // Fetch affiliate links from background (it owns the affiliate IDs).
+    // This is a fast synchronous build — not a network call — so no signal needed.
+    try {
+      const afResp = await new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage(
+          { type: 'GET_AFFILIATE_LINKS', query: listing.title, price: listing.price },
+          (r) => chrome.runtime.lastError
+            ? reject(new Error(chrome.runtime.lastError.message))
+            : resolve(r)
+        );
+      });
+      if (afResp?.success) result.affiliateLinks = afResp.links;
+    } catch (_) { /* non-critical — panel renders without affiliate cards */ }
+
+    return result;
   }
 
   // ── Background Communication ──────────────────────────────────────────────────
@@ -1598,6 +1658,15 @@
 
   function _onFbmNav() {
     if (isListingPage()) {
+      // Abort any in-flight scoring fetch IMMEDIATELY.
+      // AbortController.abort() cancels the HTTP request at the network level —
+      // the fetch promise rejects with AbortError before any score data arrives.
+      // This is the hardest guarantee: a cancelled request cannot bleed.
+      if (window.__dealScoutAbort) {
+        window.__dealScoutAbort.abort();
+        window.__dealScoutAbort = null;
+      }
+
       // Increment the navigation nonce FIRST — this immediately invalidates any
       // in-flight autoScore call, preventing a stale score from rendering on the
       // new listing's page even if the URL guard somehow passes.

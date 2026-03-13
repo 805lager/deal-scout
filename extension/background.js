@@ -72,6 +72,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === "BADGE_UPDATE") {
+    // Content script now calls the scoring API directly (for AbortController support).
+    // It sends this message after a successful score so the badge still updates.
+    const color = message.score >= 7 ? "#22c55e"
+                : message.score >= 5 ? "#fbbf24" : "#ef4444";
+    setBadge(sender.tab.id, String(message.score), color);
+    sendResponse({ ok: true });
+    return true;
+  }
+
   if (message.type === "AFFILIATE_CLICK") {
     /**
      * WHY BATCHED HERE (not fired immediately per click):
