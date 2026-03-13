@@ -505,6 +505,7 @@
         return;
       }
       if (attempts < 30) setTimeout(check, 400);
+      else autoScore(); // fallback: try after 12s even if conditions not met
     };
     check();
   }

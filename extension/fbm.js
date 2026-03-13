@@ -75,27 +75,10 @@
   }
 
   // ── Auto-score on listing pages ───────────────────────────────────────────────
-  // Poll until h1[dir="auto"] has a real non-generic title, THEN score.
-  // FBM's React hydration can take 1-3s on a hard page load — a flat timeout
-  // fires too early. We poll every 300ms up to 10s, then fall back.
-
-  function waitForFreshContent() {
-    let attempts = 0;
-    const check = () => {
-      attempts++;
-      const h1 = document.querySelector('h1[dir="auto"]')?.textContent?.trim() ?? '';
-      if (h1 && !_GENERIC_TITLES.has(h1.toLowerCase())) {
-        autoScore();
-        return;
-      }
-      if (attempts < 33) setTimeout(check, 300); // up to ~10s
-      else autoScore(); // fallback: try anyway
-    };
-    check();
-  }
+  // All waiting logic is inside autoScore itself — see that function's comments.
 
   if (isListingPage()) {
-    waitForFreshContent();
+    autoScore();
   }
 
   // ── Message Handler (from background.js / popup) ──────────────────────────────
@@ -373,32 +356,53 @@
   async function autoScore(attempt = 0) {
     if (!isListingPage()) return;
 
-    const snapUrl  = location.href;
-    const prevTitle = window.__dealScoutPrevTitle; // set by guard on SPA re-injection
+    const snapUrl = location.href;
 
-    // ── Wait for the DOM to show the NEW listing ─────────────────────────────
-    // On SPA navigation FBM changes the URL but swaps DOM content 500-2000ms
-    // later. We saved the OLD title at injection time (window.__dealScoutPrevTitle).
-    // Poll until h1[dir="auto"] differs from that saved value → DOM is fresh.
-    // On a hard page load prevTitle is undefined → skip the wait entirely.
-    if (typeof prevTitle === 'string' && attempt < 10) {
-      const currentTitle = document.querySelector('h1[dir="auto"]')?.textContent?.trim() ?? '';
-      const isStillOld   = currentTitle === prevTitle;
-      const isGeneric    = _GENERIC_TITLES.has(currentTitle.toLowerCase());
+    // ── Unified readiness check ────────────────────────────────────────────────
+    // FBM React hydration loads content in stages:
+    //   t+0ms   — URL changes (pushState)
+    //   t+300ms — h1[dir="auto"] appears with listing title
+    //   t+600ms — price component mounts and renders
+    //   t+900ms — description, seller info, images finish
+    //
+    // Previous approach: wait for title then call extractListing() immediately.
+    // BUG: price isn't loaded yet → listing.price = 0 → silent return → no score.
+    //
+    // Fix: check BOTH title and price on every poll tick. Only proceed when both
+    // are present. Also handles SPA stale-DOM: prevTitle guards against scoring
+    // the old listing's content on the new listing's URL.
+    //
+    // Max 30 attempts × 300ms = 9 seconds, then score whatever is available.
 
-      if (isStillOld || isGeneric) {
-        await new Promise(r => setTimeout(r, 400));
-        if (location.href !== snapUrl) return; // user navigated away
-        return autoScore(attempt + 1);
-      }
+    const currentTitle = document.querySelector('h1[dir="auto"]')?.textContent?.trim() ?? '';
+    const prevTitle    = window.__dealScoutPrevTitle; // set by pushState intercept at t=0
+    const { price }    = findPrices();
 
-      // h1 has changed to a real new title — clear the sentinel and proceed
-      window.__dealScoutPrevTitle = undefined;
+    // Condition A: title is still the OLD listing's title (SPA nav, DOM not yet swapped)
+    const titleIsStale = typeof prevTitle === 'string' &&
+                         (currentTitle === prevTitle || _GENERIC_TITLES.has(currentTitle.toLowerCase()));
+
+    // Condition B: title not loaded yet (hard page load, React still hydrating)
+    const titleMissing = !currentTitle || _GENERIC_TITLES.has(currentTitle.toLowerCase());
+
+    // Condition C: price not loaded yet (mounts after title — most common silent-fail cause)
+    const priceMissing = !price;
+
+    const notReady = titleIsStale || (titleMissing && !titleIsStale) || priceMissing;
+
+    if (notReady && attempt < 30) {
+      await new Promise(r => setTimeout(r, 300));
+      if (location.href !== snapUrl) return; // user navigated away
+      return autoScore(attempt + 1);
     }
+
+    // DOM is settled — clear the SPA sentinel and extract
+    window.__dealScoutPrevTitle = undefined;
 
     const listing = extractListing();
     if (!listing.price) {
-      console.debug('[DealScout] No price found — skipping auto-score');
+      // Price genuinely absent (free items, "make offer" listings) — show error
+      console.debug('[DealScout] No price after full wait — skipping');
       return;
     }
 
