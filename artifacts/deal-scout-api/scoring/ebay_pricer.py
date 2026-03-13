@@ -75,6 +75,11 @@ import time as _time
 _ebay_cache: dict = {}
 EBAY_CACHE_TTL_SECONDS = 3600  # 1 hour — reduces rate-limit exposure
 
+# Circuit breaker: if eBay rate-limits us, stop calling for this window.
+# Resets after EBAY_RATE_LIMIT_COOLDOWN_SECONDS to let the quota recover.
+_ebay_rate_limited_until: float = 0.0
+EBAY_RATE_LIMIT_COOLDOWN_SECONDS = 1800  # 30 min cooldown after rate limit
+
 
 # ── Data Models ───────────────────────────────────────────────────────────────
 
@@ -258,9 +263,21 @@ async def search_ebay(
       findCompletedItems — sold/ended listings (best for valuation)
       findItemsAdvanced  — currently active listings
     """
+    global _ebay_rate_limited_until
+
     if not EBAY_APP_ID or "your_ebay" in EBAY_APP_ID:
         log.warning("No eBay API key — using mock data. Get your key at developer.ebay.com")
         return _mock_ebay_response(query, operation)
+
+    # Circuit breaker: skip call if we know we're rate-limited
+    now = _time.time()
+    if now < _ebay_rate_limited_until:
+        remaining = int(_ebay_rate_limited_until - now)
+        log.info(f"[eBay] Rate-limit circuit open — using mock (resets in {remaining}s)")
+        result = _mock_ebay_response(query, operation)
+        for item in result:
+            item["_is_mock"] = True
+        return result
 
     cache_key = (query.lower().strip(), operation)
     cached = _ebay_cache.get(cache_key)
@@ -289,28 +306,48 @@ async def search_ebay(
             params[f"itemFilter({offset + i}).name"]  = "Condition"
             params[f"itemFilter({offset + i}).value"] = cond_id
 
+    def _parse_error_ids(data: dict, operation: str) -> list[str]:
+        """Extract eBay error IDs from either HTTP-200 ack or HTTP-500 body."""
+        result = data.get(f"{operation}Response", [{}])[0]
+        errors = result.get("errorMessage", [{}])[0].get("error", [])
+        if not errors:
+            errors = data.get("errorMessage", [{}])[0].get("error", [])
+        return [e.get("errorId", ["0"])[0] for e in errors]
+
+    def _activate_rate_limit_circuit():
+        global _ebay_rate_limited_until
+        _ebay_rate_limited_until = _time.time() + EBAY_RATE_LIMIT_COOLDOWN_SECONDS
+        log.warning(
+            f"[eBay] Rate limited (error 10001) — circuit open for "
+            f"{EBAY_RATE_LIMIT_COOLDOWN_SECONDS // 60} min"
+        )
+
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(EBAY_FINDING_API, params=params)
-            resp.raise_for_status()
+
+        # Parse body BEFORE raise_for_status — eBay returns error 10001 (rate
+        # limit) as HTTP 500 with JSON body, so we must read it first.
+        try:
             data = resp.json()
+        except Exception:
+            data = {}
+
+        # Check for rate-limit in any response (200 or 500)
+        error_ids = _parse_error_ids(data, operation)
+        if "10001" in error_ids:
+            _activate_rate_limit_circuit()
+            result = _mock_ebay_response(query, operation)
+            for item in result:
+                item["_is_mock"] = True
+            return result
+
+        resp.raise_for_status()
 
         result = data.get(f"{operation}Response", [{}])[0]
         ack = result.get("ack", [""])[0]
 
         if ack != "Success":
-            # eBay sometimes returns HTTP 200 with a top-level errorMessage dict
-            # (no operation-wrapper) when rate-limited — check both locations.
-            errors = result.get("errorMessage", [{}])[0].get("error", [])
-            if not errors:
-                errors = data.get("errorMessage", [{}])[0].get("error", [])
-            error_ids = [e.get("errorId", ["0"])[0] for e in errors]
-            if "10001" in error_ids:
-                log.warning(f"eBay rate limited — falling back to mock for '{query}'")
-                result = _mock_ebay_response(query, operation)
-                for item in result:
-                    item["_is_mock"] = True
-                return result
             log.warning(f"eBay API non-success ack={ack}, error_ids={error_ids}")
             return []
 
@@ -320,7 +357,7 @@ async def search_ebay(
         return items
 
     except httpx.HTTPStatusError as e:
-        log.error(f"eBay HTTP error {e.response.status_code}")
+        log.error(f"eBay HTTP error {e.response.status_code} for '{query}'")
         if e.response.status_code >= 500:
             result = _mock_ebay_response(query, operation)
             for item in result:
