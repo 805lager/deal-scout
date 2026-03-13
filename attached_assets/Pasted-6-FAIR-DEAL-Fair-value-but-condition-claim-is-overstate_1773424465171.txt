@@ -1,0 +1,66 @@
+6
+✅ FAIR DEAL
+Fair value but condition claim is overstated; below market range.
+medium confidence · haiku-4-5
+Asking price $5700
+Rec. offer $5200
+new
+📍 Vista, CA
+The 2012 BMW 328i is priced at $5,700, which falls in the lower-to-mid range of sold comps ($6,277–$15,980). The asking price is approximately 28% below the estimated market value of $7,950, making it attractive on paper. However, the seller claims 'new' condition for a 12-year-old vehicle, which is implausible and inconsistent with the photo evidence showing normal wear. The lack of detailed description (mileage, service history, title status) creates uncertainty about the vehicle's true condition and maintenance history.
+📈 Market Comparison
+📊 Est. prices
+Est. sold avg
+$9650
+Est. active avg
+$9650
+Sold range
+$6277 – $15980
+Listed price
+$5700
+Confidence
+high
+● $3950 below market (-41%)
+🔍 2012 BMW 328I
+medium confidence · 24 estimated comps
+✅ Price is 28% below estimated market value ($7,950) — good potential savings if condition is verified
+✅ Local pickup in Vista, CA — avoids shipping risk for a vehicle
+✅ Clean, well-maintained exterior appearance visible in photo
+✅ Desirable sedan model with strong chassis and handling reputation
+⚠ Condition claimed as 'new' for a 12-year-old vehicle — factually implausible and inconsistent with photo
+⚠ No mileage disclosed in listing — critical omission for fair valuation
+⚠ No service history, maintenance records, or mechanical inspection mentioned
+⚠ Title status not mentioned (clean, salvage, lien) — high-risk omission
+Market-estimated value is ~$7,950 based on eBay comps (high confidence). The asking price of $5,700 represents a 28% discount to estimated value, which is reasonable for a used 2012 model but contingent on verifying actual condition, mileage, service records, and title status.
+✅ Solid Deal — Confirm Price
+Double-check before you commit.
+Affiliate
+🏷️
+eBay
+Money-back guarantee • Buyer protection
+Browse certified dealers · Free listing search
+Compare on eBay →
+🚗
+Autotrader
+$50-150 lead value • Dealer-verified
+Browse certified dealers · Free listing search
+Compare on Autotrader →
+🛡️
+LOW RISK
+Security
+safe to proceed
+⚠️ Mixed reviews
+🤖 Google AI
+BMW 328i
+✓ Strong engine performance and responsiveness
+✓ Solid chassis and handling dynamics
+✓ Interior build quality and design
+⚠ High-pressure fuel pump failure (N20/N26 engines)
+⚠ Water pump failures leading to coolant leaks
+⚠ Cooling system issues including thermostat problems
+The BMW 328i offers engaging driving dynamics and quality interiors, but ownership can be expensive due to recurring cooling system, fuel pump, and transmission issues that frequently require dealer service beyond warranty periods.
+Was this score accurate?
+👍
+Yes, accurate
+👎
+No, off
+Deal Scout v0.26.32

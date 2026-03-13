@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.26.32';
+  const VERSION  = '0.26.33';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -45,6 +45,15 @@
     'gaming', 'groups', 'home', 'news feed', 'search', 'sponsored',
     'menu', 'messages',
   ]);
+
+  // ── Navigation nonce ─────────────────────────────────────────────────────────
+  // Stored on window so it persists across re-injections of fbm.js. Every time
+  // _onFbmNav fires (user clicks a new listing), the nonce increments.
+  // autoScore captures the nonce at the START of each scoring run and checks it
+  // again before rendering. If they differ, the user navigated away mid-flight
+  // and we discard the result — even if location.href happens to look the same
+  // (FBM sometimes calls replaceState after navigation, resetting the URL briefly).
+  if (window.__dealScoutNonce === undefined) window.__dealScoutNonce = 0;
 
   // ── Guard: prevent double-injection on SPA navigation ───────────────────────
   // background.js re-injects fbm.js on every pushState. Without this guard,
@@ -375,7 +384,10 @@
   async function autoScore(attempt = 0) {
     if (!isListingPage()) return;
 
-    const snapUrl = location.href;
+    const snapUrl  = location.href;
+    // Capture the nonce at the very start. If _onFbmNav fires at any point
+    // before we render, the window nonce will have incremented and we bail out.
+    const myNonce  = window.__dealScoutNonce;
 
     // ── Unified readiness check ────────────────────────────────────────────────
     // FBM React hydration loads content in stages:
@@ -429,7 +441,8 @@
 
     if (notReady && attempt < 30) {
       await new Promise(r => setTimeout(r, 300));
-      if (location.href !== snapUrl) return; // user navigated away
+      // Bail if the user navigated away — both URL and nonce must still match.
+      if (location.href !== snapUrl || window.__dealScoutNonce !== myNonce) return;
       return autoScore(attempt + 1);
     }
 
@@ -437,7 +450,7 @@
     // reconciliation — prevents scoring listing A's price under listing B's title
     // during the brief window when React has swapped the title but not the price.
     await new Promise(r => setTimeout(r, 300));
-    if (location.href !== snapUrl) return;
+    if (location.href !== snapUrl || window.__dealScoutNonce !== myNonce) return;
 
     // Clear the SPA sentinel and extract
     window.__dealScoutPrevTitle = undefined;
@@ -453,13 +466,14 @@
     renderLoading(listing);
     try {
       const result = await sendToBackground(listing);
-      // Guard: user may have navigated to another listing while the API call
-      // was in flight (2-5s). Without this guard the OLD listing's score and
-      // "Better Options" affiliate cards render on the NEW listing's page.
-      if (location.href !== snapUrl) return;
+      // Double guard: check both URL and nonce before rendering.
+      // URL check catches normal cross-listing navigation.
+      // Nonce check catches edge cases where FBM replaceState briefly resets
+      // location.href to an old value, making the URL guard pass incorrectly.
+      if (location.href !== snapUrl || window.__dealScoutNonce !== myNonce) return;
       renderScore(result);
     } catch (err) {
-      if (location.href !== snapUrl) return;
+      if (location.href !== snapUrl || window.__dealScoutNonce !== myNonce) return;
       const msg = err.message || 'Scoring failed';
       renderError(msg.includes('listing title') ? '⏳ Page still loading — try the Score button' : msg);
     }
@@ -1584,6 +1598,11 @@
 
   function _onFbmNav() {
     if (isListingPage()) {
+      // Increment the navigation nonce FIRST — this immediately invalidates any
+      // in-flight autoScore call, preventing a stale score from rendering on the
+      // new listing's page even if the URL guard somehow passes.
+      window.__dealScoutNonce = (window.__dealScoutNonce || 0) + 1;
+
       // Save the title RIGHT NOW — DOM still shows the listing we're leaving.
       // Iterate all h1[dir="auto"] elements and skip known FBM nav terms so we
       // never save "Notifications" or "Inbox" as the previous listing's title.
