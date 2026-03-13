@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.26.38';
+  const VERSION  = '0.26.39';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -131,7 +131,7 @@
   //   3. Collect-all-candidates, filter below $2, pick shallowest/largest
 
   function findPrices() {
-    // v0.26.38 — All strategies now exclude elements inside "similar listing" card
+    // v0.26.39 — All strategies now exclude elements inside "similar listing" card
     // links (a[href*="/marketplace/item/"] or div[role="link"]).
     //
     // Root cause of price bleed: during SPA navigation, FBM's "Similar items"
@@ -369,10 +369,21 @@
     // Fallback tiers: if nothing survives the strict filter, lower the threshold
     // progressively so we always send *something* rather than an empty list.
     const _allScontent = Array.from(document.querySelectorAll('img[src*="scontent"]'));
+
+    // Mirrors the _inSidebarCard check from findPrices() — skip images that live
+    // inside another listing's card/link. FBM's "Similar items" grid renders cards
+    // at ~250-300px so they pass the minW filter; we must also exclude them by DOM
+    // ancestry, not just by size.
+    const _isCardImage = img =>
+      !!img.closest('a[href*="/marketplace/item/"]') ||
+      !!img.closest('div[data-testid="marketplace-search-item"]') ||
+      !!img.closest('[role="listitem"] a');
+
     const _pickImages = minW => _allScontent
       .filter(img => {
+        if (_isCardImage(img)) return false;      // not from a sidebar card
         const w = img.clientWidth || img.offsetWidth || 0;
-        return w >= minW;
+        return w >= minW;                          // large enough to be main photo
       })
       .map(img => img.src)
       .filter(src => src && src.length > 10)
