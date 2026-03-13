@@ -28,14 +28,23 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.26.31';
+  const VERSION  = '0.26.32';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
   // _GENERIC_TITLES must also be before the guard — autoScore references it and
   // autoScore is scheduled from the guard path on SPA re-injection. Any const/let
   // declared after the early return is in TDZ when autoScore runs. (See TDZ note above.)
-  const _GENERIC_TITLES = new Set(['marketplace', 'facebook marketplace', 'facebook', '']);
+  // FBM nav UI terms that appear as h1[dir="auto"] elements before listing content loads.
+  // "Notifications", "Inbox" etc. are FBM tab headings — never valid listing titles.
+  // Adding them here causes the readiness poller to keep waiting until the real
+  // listing title appears, preventing bad extractions on hard page loads and SPA nav.
+  const _GENERIC_TITLES = new Set([
+    '', 'marketplace', 'facebook marketplace', 'facebook',
+    'notifications', 'inbox', 'chats', 'friends', 'watch',
+    'gaming', 'groups', 'home', 'news feed', 'search', 'sponsored',
+    'menu', 'messages',
+  ]);
 
   // ── Guard: prevent double-injection on SPA navigation ───────────────────────
   // background.js re-injects fbm.js on every pushState. Without this guard,
@@ -254,24 +263,33 @@
     const { price, original } = findPrices();
 
     // Title — try selectors from most to least specific.
-    // FBM marks user-generated content (listing title) with dir="auto" on h1.
-    // The nav heading "Marketplace" does NOT have dir="auto".
-    let title =
-      document.querySelector('h1[dir="auto"]')?.textContent?.trim() ||
-      (() => {
-        for (const el of document.querySelectorAll('h1')) {
-          const t = el.textContent.trim();
-          if (t && !/^(marketplace|facebook marketplace|facebook)$/i.test(t)) return t;
-        }
-        return '';
-      })() ||
-      (() => {
-        // document.title on listing pages: "Item title | Facebook"
-        const parts = document.title.split(/\s*[|]\s*/);
-        return parts.find(p => !/^(facebook|marketplace|facebook marketplace)$/i.test(p.trim())) || '';
-      })() ||
-      document.querySelector('meta[property="og:title"]')?.content?.trim() ||
-      document.title;
+    // FBM renders multiple h1[dir="auto"] elements — nav headings like "Notifications"
+    // and "Inbox" appear BEFORE the listing title in DOM order. Grabbing querySelector's
+    // first match returns the wrong element. Instead, iterate ALL h1[dir="auto"] elements
+    // and pick the first one that is NOT a known FBM nav/UI term.
+    let title = (() => {
+      for (const el of document.querySelectorAll('h1[dir="auto"]')) {
+        const t = el.textContent.trim();
+        if (t && !_GENERIC_TITLES.has(t.toLowerCase())) return t;
+      }
+      return '';
+    })() ||
+    (() => {
+      // Any h1 that isn't a nav term
+      for (const el of document.querySelectorAll('h1')) {
+        const t = el.textContent.trim();
+        if (t && !_GENERIC_TITLES.has(t.toLowerCase())) return t;
+      }
+      return '';
+    })() ||
+    (() => {
+      // document.title on listing pages: "Item title | Facebook Marketplace, City | Facebook"
+      // Reliable on hard page loads (server-rendered). Pipe-split to isolate listing name.
+      const parts = document.title.split(/\s*[|]\s*/);
+      return parts.find(p => !_GENERIC_TITLES.has(p.trim().toLowerCase())) || '';
+    })() ||
+    document.querySelector('meta[property="og:title"]')?.content?.trim() ||
+    document.title;
 
     // Description — the long text block below the listing details.
     // IMPORTANT: Never fall back to document.body.innerText.
@@ -375,7 +393,15 @@
     //
     // Max 30 attempts × 300ms = 9 seconds, then score whatever is available.
 
-    const currentTitle = document.querySelector('h1[dir="auto"]')?.textContent?.trim() ?? '';
+    // Iterate ALL h1[dir="auto"] elements and pick the first non-nav term.
+    // querySelector grabs the first match which on FBM is often "Notifications" or "Inbox".
+    const currentTitle = (() => {
+      for (const el of document.querySelectorAll('h1[dir="auto"]')) {
+        const t = el.textContent.trim();
+        if (t && !_GENERIC_TITLES.has(t.toLowerCase())) return t;
+      }
+      return '';
+    })();
     const prevTitle    = window.__dealScoutPrevTitle; // set by pushState intercept at t=0
     const { price }    = findPrices();
 
@@ -1558,8 +1584,16 @@
 
   function _onFbmNav() {
     if (isListingPage()) {
-      // Save the title RIGHT NOW — DOM still shows the listing we're leaving
-      window.__dealScoutPrevTitle = document.querySelector('h1[dir="auto"]')?.textContent?.trim() ?? '';
+      // Save the title RIGHT NOW — DOM still shows the listing we're leaving.
+      // Iterate all h1[dir="auto"] elements and skip known FBM nav terms so we
+      // never save "Notifications" or "Inbox" as the previous listing's title.
+      window.__dealScoutPrevTitle = (() => {
+        for (const el of document.querySelectorAll('h1[dir="auto"]')) {
+          const t = el.textContent.trim();
+          if (t && !_GENERIC_TITLES.has(t.toLowerCase())) return t;
+        }
+        return '';
+      })();
       console.debug('[DealScout] Saved prevTitle at navigation:', window.__dealScoutPrevTitle);
       // Clear the panel IMMEDIATELY at t=0 — don't wait 800ms for bg re-injection.
       // Without this the old listing's score (including "Better Options" cards) is

@@ -20,7 +20,7 @@
 (function () {
   "use strict";
 
-  const VERSION  = '0.26.31';
+  const VERSION  = '0.26.32';
   const PANEL_ID = "deal-scout-ou-panel";
   const PLATFORM = "offerup";
 
