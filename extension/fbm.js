@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = "0.26.28";
+  const VERSION  = '0.26.30';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -396,7 +396,13 @@
       return autoScore(attempt + 1);
     }
 
-    // DOM is settled — clear the SPA sentinel and extract
+    // DOM is settled. Wait one extra tick to let React finish any in-flight
+    // reconciliation — prevents scoring listing A's price under listing B's title
+    // during the brief window when React has swapped the title but not the price.
+    await new Promise(r => setTimeout(r, 300));
+    if (location.href !== snapUrl) return;
+
+    // Clear the SPA sentinel and extract
     window.__dealScoutPrevTitle = undefined;
 
     const listing = extractListing();
@@ -410,8 +416,13 @@
     renderLoading(listing);
     try {
       const result = await sendToBackground(listing);
+      // Guard: user may have navigated to another listing while the API call
+      // was in flight (2-5s). Without this guard the OLD listing's score and
+      // "Better Options" affiliate cards render on the NEW listing's page.
+      if (location.href !== snapUrl) return;
       renderScore(result);
     } catch (err) {
+      if (location.href !== snapUrl) return;
       const msg = err.message || 'Scoring failed';
       renderError(msg.includes('listing title') ? '⏳ Page still loading — try the Score button' : msg);
     }
@@ -1539,6 +1550,11 @@
       // Save the title RIGHT NOW — DOM still shows the listing we're leaving
       window.__dealScoutPrevTitle = document.querySelector('h1[dir="auto"]')?.textContent?.trim() ?? '';
       console.debug('[DealScout] Saved prevTitle at navigation:', window.__dealScoutPrevTitle);
+      // Clear the panel IMMEDIATELY at t=0 — don't wait 800ms for bg re-injection.
+      // Without this the old listing's score (including "Better Options" cards) is
+      // visible for almost a second after the user clicks to navigate.
+      const panel = document.getElementById(PANEL_ID);
+      if (panel) renderNavigating();
     }
   }
 

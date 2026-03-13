@@ -20,7 +20,7 @@
 (function () {
   "use strict";
 
-  const VERSION  = "0.26.28";
+  const VERSION  = '0.26.30';
   const PANEL_ID = "deal-scout-ou-panel";
   const PLATFORM = "offerup";
 
@@ -479,12 +479,16 @@
     if (!listing.price || !listing.title) return;
     _scored = true;
     if (_observer) { _observer.disconnect(); _observer = null; }
+    const snapUrl = location.href;
     showPanel();
     renderLoading(listing);
     try {
       const result = await sendToBackground(listing);
+      // Guard: don't render stale score if user navigated during the API call
+      if (location.href !== snapUrl) return;
       renderScore(result);
     } catch (err) {
+      if (location.href !== snapUrl) return;
       renderError(err.message || "Scoring failed");
     }
   }
