@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.26.36';
+  const VERSION  = '0.26.37';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -338,12 +338,35 @@
     const sellerEl = document.querySelector('[href*="/marketplace/profile/"]');
     const sellerName = sellerEl ? sellerEl.textContent.trim().slice(0, 60) : '';
 
-    // Image URLs — first few listing images
-    const imageEls = document.querySelectorAll('img[src*="scontent"]');
-    const imageUrls = Array.from(imageEls)
+    // Image URLs — listing product photos only.
+    //
+    // Problem: document.querySelectorAll('img[src*="scontent"]') returns EVERY
+    // Facebook CDN image on the page — product photos, seller profile avatar,
+    // "similar listings" thumbnails, navbar icons. Passing a profile portrait to
+    // Claude Vision causes it to analyze the wrong item and produce garbage scores.
+    //
+    // Fix: filter by clientWidth (the rendered layout size).
+    //   • Profile avatars are displayed at ~40-80px.
+    //   • Listing product photos are displayed at 300-600px.
+    // We only keep images whose displayed width is ≥ 200px — these are always
+    // the main product photos, never avatars or icons.
+    //
+    // Fallback tiers: if nothing survives the strict filter, lower the threshold
+    // progressively so we always send *something* rather than an empty list.
+    const _allScontent = Array.from(document.querySelectorAll('img[src*="scontent"]'));
+    const _pickImages = minW => _allScontent
+      .filter(img => {
+        const w = img.clientWidth || img.offsetWidth || 0;
+        return w >= minW;
+      })
       .map(img => img.src)
       .filter(src => src && src.length > 10)
       .slice(0, 3);
+
+    const imageUrls =
+      _pickImages(200).length  ? _pickImages(200)  :  // strict: product photos only
+      _pickImages(100).length  ? _pickImages(100)  :  // relaxed: includes some thumbs
+      _allScontent.map(i => i.src).filter(s => s).slice(0, 3);  // last resort: any CDN img
 
     // Vehicle detection — strong signals only to avoid false positives on electronics/audio/etc.
     // "miles", "transmission", "cylinders" are excluded — too common in non-vehicle contexts.
