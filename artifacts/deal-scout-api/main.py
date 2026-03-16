@@ -212,10 +212,12 @@ class DealScoreResponse(BaseModel):
     should_buy:        bool
     ai_confidence:     str
     model_used:        str
-    image_analyzed:     bool  = False  # True when Claude Vision was used on listing photo
-    affiliate_category: str   = ""    # Category Claude picked for affiliate routing (e.g. "collectibles")
-    original_price:     float = 0.0   # Seller's original price if reduced (strikethrough)
-    shipping_cost:      float = 0.0   # Shipping cost extracted from listing (0 = free/pickup)
+    image_analyzed:      bool  = False  # True when Claude Vision was used on listing photo
+    affiliate_category:  str   = ""    # Category Claude picked for affiliate routing (e.g. "collectibles")
+    negotiation_message: str   = ""    # Ready-to-copy buyer message — uses real price context
+    bundle_items:        list  = []    # [{item, value}] breakdown for multi-item listings (empty if single item)
+    original_price:      float = 0.0  # Seller's original price if reduced (strikethrough)
+    shipping_cost:       float = 0.0  # Shipping cost extracted from listing (0 = free/pickup)
 
     # Product intelligence
     product_info:          dict = {}   # Extracted brand/model/search_query
@@ -495,9 +497,11 @@ async def score_listing(listing: ListingRequest, request: Request):
         recommended_offer = deal_score.recommended_offer,
         should_buy        = deal_score.should_buy,
         ai_confidence     = deal_score.confidence,
-        model_used         = deal_score.model_used,
-        image_analyzed     = deal_score.image_analyzed,
-        affiliate_category = deal_score.affiliate_category,
+        model_used          = deal_score.model_used,
+        image_analyzed      = deal_score.image_analyzed,
+        affiliate_category  = deal_score.affiliate_category,
+        negotiation_message = deal_score.negotiation_message,
+        bundle_items        = deal_score.bundle_items or [],
 
         # Product intelligence + affiliate
         product_info       = dc_asdict_top(product_info),
@@ -600,7 +604,104 @@ async def score_listing(listing: ListingRequest, request: Request):
     except Exception:
         pass  # Signal recording must never affect the API response
 
+    # ── Step 8: Background query validation (Task 4 — zero latency) ──────────
+    # After the response is returned, Claude checks whether the eBay results
+    # were actually relevant to this listing. If not, it auto-saves a correction
+    # so NEXT TIME this type of listing is scored it uses the better query.
+    # WHY asyncio.create_task: the result doesn't affect the current response —
+    # this is purely a learning signal for future accuracy. Zero user wait time.
+    try:
+        _sample_titles = [s.get("title", "") for s in sold_items_sample[:3] if s.get("title")]
+        _qused = market_value.query_used if market_value else ""
+        if _qused and _sample_titles:
+            asyncio.create_task(
+                _validate_query_background(
+                    listing_title  = listing.title,
+                    query_used     = _qused,
+                    sample_titles  = _sample_titles,
+                )
+            )
+    except Exception:
+        pass  # Validator must never block or crash the response
+
     return response
+
+
+async def _validate_query_background(
+    listing_title: str,
+    query_used: str,
+    sample_titles: list,
+) -> None:
+    """
+    Background task: ask Claude Haiku whether eBay results are relevant comps.
+    If not, auto-save a correction so future identical listings use the better query.
+
+    WHY HAIKU (not Sonnet): this is a simple binary classification + rewrite task.
+    Haiku costs ~10x less and is fast enough for a background job.
+
+    WHY AUTO-SAVE: the user never sees this. If Claude flags a bad query AND
+    suggests a better one, it gets written to corrections.jsonl and picked up
+    on the next score for a similar listing — no manual admin intervention needed.
+    """
+    import anthropic as _anthropic
+    from scoring.corrections import save_correction as _save_correction
+
+    try:
+        results_block = "\n".join(f"  - {t}" for t in sample_titles[:3])
+        prompt = (
+            f'Listing title: "{listing_title}"\n'
+            f'eBay search query used: "{query_used}"\n'
+            f"Top eBay results returned:\n{results_block}\n\n"
+            "Are the eBay results relevant price comps for this listing?\n"
+            "A result is relevant if it is the same product type, not an accessory, "
+            "not a completely different item, and not a wildly different tier/brand.\n\n"
+            'Respond ONLY with a JSON object:\n'
+            '{"relevant": true/false, "reason": "<one sentence>", '
+            '"better_query": "<improved eBay search query if not relevant, otherwise repeat the original>"}'
+        )
+
+        _client = _anthropic.Anthropic(
+            api_key  = os.getenv("AI_INTEGRATIONS_ANTHROPIC_API_KEY", "placeholder"),
+            base_url = os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"),
+        )
+        loop = asyncio.get_event_loop()
+        resp = await loop.run_in_executor(
+            None,
+            lambda: _client.messages.create(
+                model      = "claude-haiku-4-5",
+                max_tokens = 120,
+                messages   = [{"role": "user", "content": prompt}],
+            ),
+        )
+        import json as _json2
+        raw = resp.content[0].text.strip()
+        # Strip markdown fences if present
+        if "```" in raw:
+            import re as _re2
+            m = _re2.search(r"\{.*\}", raw, _re2.DOTALL)
+            raw = m.group() if m else raw
+        result = _json2.loads(raw)
+
+        if result.get("relevant") is False:
+            better = (result.get("better_query") or "").strip()
+            if better and better.lower() != query_used.lower():
+                _save_correction(
+                    listing_title = listing_title,
+                    bad_query     = query_used,
+                    good_query    = better,
+                    notes         = f"auto-detected · {result.get('reason', '')[:80]}",
+                )
+                log.info(
+                    f"[QueryValidator] Auto-corrected: '{query_used}' → '{better}' "
+                    f"({result.get('reason','')[:60]})"
+                )
+            else:
+                log.debug(f"[QueryValidator] Bad query but no better suggestion — skipping save")
+        else:
+            log.debug(f"[QueryValidator] Query OK: '{query_used}'")
+
+    except Exception as _ve:
+        log.debug(f"[QueryValidator] Background check failed (non-fatal): {_ve}")
 
 
 @app.get("/test-claude-connection")
