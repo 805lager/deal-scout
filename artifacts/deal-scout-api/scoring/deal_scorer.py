@@ -302,6 +302,77 @@ async def _fetch_image_base64(image_url: str) -> Optional[tuple[str, str]]:
         return None
 
 
+def _market_fallback_score(listing: dict, market_value: dict, image_analyzed: bool = False) -> DealScore:
+    """
+    Rule-based deal score using only market data — returned when Claude is unavailable.
+    No AI call. Uses price vs estimated_value ratio to produce a simple score.
+
+    Score bands:
+      < 50% of market  → 9  (exceptional)
+      50–65%           → 8  (great)
+      65–80%           → 7  (good)
+      80–90%           → 6  (fair)
+      90–100%          → 5  (at market)
+      100–115%         → 4  (slightly above)
+      > 115%           → 3  (overpriced)
+      no market data   → 5  (neutral)
+    """
+    price = float(listing.get("price", 0))
+    est   = float(market_value.get("estimated_value", 0) or 0)
+
+    if est > 0 and price > 0:
+        ratio = price / est
+        if ratio < 0.50:
+            score, verdict = 9, "Exceptional Deal"
+            summary = f"Asking ${price:.0f} vs ~${est:.0f} market — well below market value."
+            should_buy = True
+        elif ratio < 0.65:
+            score, verdict = 8, "Great Deal"
+            summary = f"Asking ${price:.0f} vs ~${est:.0f} market — significantly below market."
+            should_buy = True
+        elif ratio < 0.80:
+            score, verdict = 7, "Good Deal"
+            summary = f"Asking ${price:.0f} vs ~${est:.0f} market — priced below market."
+            should_buy = True
+        elif ratio < 0.90:
+            score, verdict = 6, "Fair Deal"
+            summary = f"Asking ${price:.0f} vs ~${est:.0f} market — slightly below market."
+            should_buy = True
+        elif ratio < 1.00:
+            score, verdict = 5, "At Market"
+            summary = f"Asking ${price:.0f} vs ~${est:.0f} market — at market price."
+            should_buy = False
+        elif ratio < 1.15:
+            score, verdict = 4, "Slightly Overpriced"
+            summary = f"Asking ${price:.0f} vs ~${est:.0f} market — slightly above market."
+            should_buy = False
+        else:
+            score, verdict = 3, "Overpriced"
+            summary = f"Asking ${price:.0f} vs ~${est:.0f} market — above market value."
+            should_buy = False
+    else:
+        score, verdict = 5, "Unable to Score"
+        summary = "No market data available for comparison."
+        should_buy = False
+
+    offer = price * 0.88 if should_buy else price * 0.80
+
+    return DealScore(
+        score             = score,
+        verdict           = verdict,
+        summary           = summary + " (AI scoring temporarily unavailable — market data only.)",
+        value_assessment  = f"Market estimate: ~${est:.0f}" if est > 0 else "No market data",
+        condition_notes   = "Condition analysis unavailable (AI offline)",
+        red_flags         = [],
+        green_flags       = [],
+        recommended_offer = round(offer, -1),
+        should_buy        = should_buy,
+        confidence        = "low",
+        model_used        = "market-data-fallback",
+        image_analyzed    = False,
+    )
+
+
 async def score_deal(
     listing: dict,
     market_value: dict,
@@ -446,14 +517,22 @@ async def score_deal(
         # Surface the real error so FastAPI can show it in the sidebar
         raise RuntimeError(f"Anthropic auth failed — check ANTHROPIC_API_KEY in .env ({e})") from e
     except anthropic.RateLimitError as e:
-        raise RuntimeError(f"Anthropic rate limit hit — wait a moment and retry ({e})") from e
+        log.warning(f"[Scorer] Claude rate limit — using market-data fallback: {e}")
+        return _market_fallback_score(listing, market_value, image_analyzed)
     except anthropic.BadRequestError as e:
         # This usually means billing issue or model not available
         raise RuntimeError(f"Anthropic bad request — likely billing or model issue ({e})") from e
     except anthropic.NotFoundError as e:
         raise RuntimeError(f"Anthropic model not found — check model string ({e})") from e
+    except anthropic.InternalServerError as e:
+        # Transient server-side outage — return a market-data-only fallback score
+        # so the user still gets a result instead of a hard error.
+        log.warning(f"[Scorer] Claude 500 (server outage) — using market-data fallback: {e}")
+        return _market_fallback_score(listing, market_value, image_analyzed)
     except Exception as e:
-        raise RuntimeError(f"Claude API error: {type(e).__name__}: {e}") from e
+        # Any other unexpected error — also fall back gracefully
+        log.warning(f"[Scorer] Unexpected Claude error ({type(e).__name__}) — using market-data fallback: {e}")
+        return _market_fallback_score(listing, market_value, image_analyzed)
 
 
 # ── Output ────────────────────────────────────────────────────────────────────
