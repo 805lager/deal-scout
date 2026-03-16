@@ -98,23 +98,43 @@ def _format_seller_trust(trust: dict) -> str:
     The trust dict may be empty (e.g. listing came from the web UI, not the
     extension). We centralise the formatting logic here so the prompt builder
     stays clean and we never crash on missing keys.
+
+    KEY MAPPING — FBM content script (fbm.js) sends:
+      joined_date, rating, rating_count
+    Legacy / other platforms may use:
+      member_since, seller_rating, trust_tier, response_rate, other_listings
+    We check both so neither key set silently drops data.
     """
     if not trust:
         return "No seller trust data available (listing scored via web UI)"
 
-    tier    = trust.get('trust_tier', 'unknown')
-    lines   = [f"Trust tier: {tier.upper()}"]
+    lines = []
 
-    if trust.get('member_since'):
-        lines.append(f"Member since: {trust['member_since']}")
+    # Join date — FBM sends "joined_date", older code used "member_since"
+    joined = trust.get('joined_date') or trust.get('member_since')
+    if joined:
+        lines.append(f"Member since: {joined}")
+
+    # Rating — FBM sends "rating" + "rating_count", older code used "seller_rating"
+    rating = trust.get('rating') or trust.get('seller_rating')
+    count  = trust.get('rating_count', 0) or 0
+    if rating is not None:
+        rating_str = f"{float(rating):.1f}/5"
+        if count:
+            rating_str += f" ({count} ratings)"
+        lines.append(f"Seller rating: {rating_str}")
+
+    # Additional signals (older / platform-specific)
+    tier = trust.get('trust_tier')
+    if tier:
+        lines.append(f"Trust tier: {tier.upper()}")
     if trust.get('response_rate') is not None:
         lines.append(f"Response rate: {trust['response_rate']}%")
     if trust.get('other_listings') is not None:
         lines.append(f"Other active listings: {trust['other_listings']}")
-    if trust.get('seller_rating') is not None:
-        lines.append(f"Seller rating: {trust['seller_rating']}/5")
-    if len(lines) == 1:
-        lines.append("No additional seller details visible on this listing")
+
+    if not lines:
+        return "Seller profile visible but no trust details extracted"
 
     return "\n".join(lines)
 

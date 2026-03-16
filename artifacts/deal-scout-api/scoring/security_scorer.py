@@ -294,6 +294,8 @@ Price: ${price}
 Description: {description}
 Condition: {condition}
 Seller joined: {seller_joined}
+Seller rating: {seller_rating}
+Photos provided: {photo_count}
 Category: {category}
 Layer 1 flags already detected: {layer1_flags}
 
@@ -341,12 +343,25 @@ async def run_layer2(
     """
     layer1_summary = "; ".join(f["flag"] for f in layer1_flags) if layer1_flags else "None"
 
-    # WHY: listing.seller_trust is a dict with a "member_since" key, not a
-    # top-level attribute. getattr(listing, "seller_join_date") always returned
-    # "unknown", causing Claude to flag every listing as "unknown seller" even
-    # for accounts that have been on FB since 2008. (Bug B-S1)
+    # Extract seller trust signals from the dict the content script sends.
+    # FBM sends: { joined_date, rating, rating_count }
+    # Some older code used "member_since" — check both keys for compatibility.
     seller_trust_dict = (getattr(listing, "seller_trust", None) or {})
-    seller_joined = seller_trust_dict.get("member_since", "unknown") or "unknown"
+    seller_joined = (
+        seller_trust_dict.get("joined_date")       # FBM key (fbm.js v0.19+)
+        or seller_trust_dict.get("member_since")   # legacy / other platforms
+        or "unknown"
+    )
+
+    raw_rating = seller_trust_dict.get("rating")
+    raw_count  = seller_trust_dict.get("rating_count", 0) or 0
+    if raw_rating:
+        seller_rating = f"{raw_rating:.1f}/5 ({raw_count} ratings)"
+    else:
+        seller_rating = "unknown"
+
+    photo_count = len(getattr(listing, "image_urls", None) or [])
+    photo_str   = f"{photo_count} photo(s)" if photo_count else "none"
 
     # Use effective_title if passed, fall back to raw listing title
     title_for_prompt = (effective_title or listing.title or "")[:100]
@@ -356,6 +371,8 @@ async def run_layer2(
         description   = (listing.description or "")[:600],
         condition     = listing.condition or "unknown",
         seller_joined = seller_joined,
+        seller_rating = seller_rating,
+        photo_count   = photo_str,
         category      = category,
         layer1_flags  = layer1_summary,
     )
