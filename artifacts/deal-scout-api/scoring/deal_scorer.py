@@ -86,6 +86,7 @@ class DealScore:
     confidence:         str     # "high" / "medium" / "low"
     model_used:         str     # Which Claude model scored this
     image_analyzed:     bool    = False  # True if Claude Vision analyzed the listing photo
+    affiliate_category: str     = ""    # Claude's read on what product category this is for affiliate routing
 
 
 # ── Prompt Builder ────────────────────────────────────────────────────────────
@@ -276,11 +277,43 @@ Use exactly this structure:
   "green_flags": ["<flag 1>", "<flag 2>"],
   "recommended_offer": <float — the price you'd recommend offering>,
   "should_buy": <true or false>,
-  "confidence": "<high|medium|low>"
+  "confidence": "<high|medium|low>",
+  "affiliate_category": "<one of the exact strings below>"
 }}
 
 If red_flags or green_flags are empty, use an empty array [].
 recommended_offer should be realistic — not insultingly low, not full ask if overpriced.
+
+## AFFILIATE CATEGORY
+Pick exactly ONE affiliate_category from this list that best describes what is being sold.
+This tells our affiliate engine which stores to recommend — pick the most specific match.
+
+  electronics       — TVs, monitors, speakers, projectors, general electronics
+  computers         — laptops, desktops, PC components, graphics cards, monitors, peripherals
+  tablets           — iPads, Android tablets, e-readers
+  phones            — smartphones, cell phones, smartwatches
+  cameras           — DSLR, mirrorless, action cams, lenses, tripods
+  gaming            — consoles, video games, controllers, gaming headsets, gaming chairs
+  audio             — headphones, earbuds, studio monitors, turntables, hi-fi equipment, guitar amps
+  tools             — power tools, hand tools, tool sets, drills, saws
+  appliances        — refrigerators, washing machines, dishwashers, microwaves, vacuums
+  furniture         — sofas, beds, desks, chairs, tables, shelving
+  home              — home decor, lighting, rugs, kitchenware, small appliances
+  outdoor           — patio furniture, garden tools, lawn equipment, outdoor recreation
+  camping           — tents, sleeping bags, camping gear, hiking equipment, backpacks
+  bikes             — bicycles, e-bikes, bike parts, cycling gear
+  fitness           — treadmills, weights, gym equipment, yoga mats, sports clothing
+  sports            — sporting goods, team sports equipment, water sports, winter sports
+  vehicles          — cars, trucks, motorcycles, ATVs, boats, RVs, jet skis, snowmobiles
+  auto_parts        — car parts, car accessories, floor mats, dash cams, car stereos, jump starters, wiper blades
+  baby              — car seats, strollers, cribs, baby monitors, infant gear
+  kids              — children's clothing, school supplies, backpacks, kids' bikes
+  toys              — toys, games, puzzles, RC cars, Hot Wheels, diecast models, LEGO, action figures
+  musical_instruments — guitars, pianos, keyboards, drums, brass, woodwind instruments
+  pets              — pets themselves, pet food, pet grooming
+  pet_supplies      — pet accessories, crates, leashes, toys, litter boxes
+  collectibles      — trading cards (Pokemon, sports, MTG, Yu-Gi-Oh), graded cards, coins, stamps, action figures (collectible grade)
+  general           — anything that doesn't clearly fit the above categories
 """
 
 
@@ -518,19 +551,21 @@ async def score_deal(
         else:
             safe_offer = float(raw_offer)
 
+        raw_aff_cat = (data.get("affiliate_category") or "").strip().lower()
         return DealScore(
-            score             = int(data.get("score", 5)),
-            verdict           = data.get("verdict", "No verdict"),
-            summary           = data.get("summary", ""),
-            value_assessment  = data.get("value_assessment", ""),
-            condition_notes   = data.get("condition_notes", ""),
-            red_flags         = data.get("red_flags") or [],
-            green_flags       = data.get("green_flags") or [],
-            recommended_offer = safe_offer,
-            should_buy        = bool(data.get("should_buy", False)),
-            confidence        = data.get("confidence", "medium"),
-            model_used        = response.model,
-            image_analyzed    = image_analyzed,
+            score              = int(data.get("score", 5)),
+            verdict            = data.get("verdict", "No verdict"),
+            summary            = data.get("summary", ""),
+            value_assessment   = data.get("value_assessment", ""),
+            condition_notes    = data.get("condition_notes", ""),
+            red_flags          = data.get("red_flags") or [],
+            green_flags        = data.get("green_flags") or [],
+            recommended_offer  = safe_offer,
+            should_buy         = bool(data.get("should_buy", False)),
+            confidence         = data.get("confidence", "medium"),
+            model_used         = response.model,
+            image_analyzed     = image_analyzed,
+            affiliate_category = raw_aff_cat,
         )
 
     except anthropic.AuthenticationError as e:
