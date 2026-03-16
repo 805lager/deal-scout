@@ -14,15 +14,10 @@
   const PANEL_ID = "deal-scout-cl-panel";
   const PLATFORM = "craigslist";
 
-  // Diagnostic: log at the absolute start so we can confirm the script loads.
-  // Check DevTools → Console on any CL page for "[DealScout CL] ..." messages.
-  console.log("[DealScout CL] v" + VERSION + " loaded on", location.href);
-
   // Version-keyed guard: if the extension reloads with a new VERSION, the old
   // guard key doesn't match and the new script runs on the existing page.
   const _GUARD_KEY = "__dsCLInjected_" + VERSION;
   if (window[_GUARD_KEY]) {
-    console.log("[DealScout CL] Already injected (guard), skipping");
     return;
   }
   window[_GUARD_KEY] = true;
@@ -42,31 +37,26 @@
     // formats regardless of how many category segments precede the item ID.
     const pathId = location.pathname.match(/\/\d{10}(?:\.html)?(?:\/|$)/);
     if (pathId) {
-      console.log("[DealScout CL] isListingPage: URL match (10-digit ID)", pathId[0]);
       return true;
     }
 
     // Strategy 2: broader URL pattern — 7+ digit ID (older CL IDs)
     const pathId7 = location.pathname.match(/\/\d{7,}(?:\.html)?(?:\/|$)/);
     if (pathId7) {
-      console.log("[DealScout CL] isListingPage: URL match (7+ digit ID)", pathId7[0]);
       return true;
     }
 
     // Strategy 3: old CL DOM — #postingbody or #titletextonly
     if (document.getElementById("postingbody") || document.getElementById("titletextonly")) {
-      console.log("[DealScout CL] isListingPage: DOM match (old CL elements)");
       return true;
     }
 
     // Strategy 4: new CL DOM — look for any element with 'posting' in id/class
     const postingEl = document.querySelector('[id*="posting"], [class*="posting"]');
     if (postingEl) {
-      console.log("[DealScout CL] isListingPage: DOM match (new CL posting element)", postingEl.tagName, postingEl.id || postingEl.className);
       return true;
     }
 
-    console.log("[DealScout CL] isListingPage: NO match — not a listing page");
     return false;
   }
 
@@ -133,7 +123,6 @@
       if (m) priceText = "$" + m[1];
     }
 
-    console.log("[DealScout CL] Price found:", priceText || "(none)");
     const price = parseFloat(priceText.replace(/[^0-9.]/g, "")) || 0;
 
     // ── Description ────────────────────────────────────────────────────────
@@ -196,7 +185,6 @@
       image_urls: images.slice(0, 5),
       platform: PLATFORM,
     };
-    console.log("[DealScout CL] extractListing():", result);
     return result;
   }
 
@@ -569,28 +557,20 @@
 
   // ── Auto-Score ─────────────────────────────────────────────────────────────
   async function autoScore() {
-    console.log("[DealScout CL] autoScore() called");
-
-    if (!isListingPage()) {
-      console.log("[DealScout CL] autoScore: isListingPage() returned false — aborting");
-      return;
-    }
+    if (!isListingPage()) return;
 
     // Poll up to 5 seconds (25 × 200ms) for a price to appear.
     let listing = extractListing();
-    console.log("[DealScout CL] Initial extraction:", { title: listing.title, price: listing.price, rawPrice: listing.raw_price_text });
     let waited  = 0;
     while (!listing.price && waited < 25) {
       await new Promise(r => setTimeout(r, 200));
       waited++;
       listing = extractListing();
     }
-    console.log("[DealScout CL] After polling (waited " + waited + "×200ms):", { title: listing.title, price: listing.price });
 
     showPanel();
 
     if (!listing.price) {
-      console.log("[DealScout CL] No price found after polling — rendering error panel");
       renderError("Could not detect a price on this listing. Try refreshing or use the Score button.");
       return;
     }
@@ -601,10 +581,8 @@
     window.__dsCLAbort = abort;
 
     try {
-      console.log("[DealScout CL] Calling scoring API…");
       const result = await callScoringAPIDirect(listing, abort.signal);
       if (abort.signal.aborted) return;
-      console.log("[DealScout CL] API returned score:", result.score);
 
       const afLinks = await fetchAffiliateLinks(listing.title, listing.price);
       if (afLinks && afLinks.length) result.affiliateLinks = afLinks;
@@ -618,7 +596,6 @@
 
     } catch (err) {
       if (abort.signal.aborted) return;
-      console.error("[DealScout CL] Scoring error:", err);
       renderError(err.message || "Scoring failed");
     } finally {
       if (window.__dsCLAbort === abort) window.__dsCLAbort = null;
@@ -627,7 +604,6 @@
 
   // ── Global trigger (called directly by popup via executeScript) ────────────
   window.__dsScoreCL = () => {
-    console.log("[DealScout CL] Manual rescore triggered");
     if (window.__dsCLAbort) { window.__dsCLAbort.abort(); window.__dsCLAbort = null; }
     _initiated = false;
     removePanel();
@@ -645,8 +621,7 @@
 
   // ── Init ───────────────────────────────────────────────────────────────────
   let _initiated = false;
-  function tryInit(reason) {
-    console.log("[DealScout CL] tryInit() called —", reason || "no reason", "| readyState:", document.readyState, "| _initiated:", _initiated);
+  function tryInit() {
     if (_initiated) return;
     if (!isListingPage()) return;
     _initiated = true;
@@ -654,12 +629,12 @@
   }
 
   // CL is a traditional multi-page site. Run immediately at document_idle.
-  tryInit("document_idle");
+  tryInit();
 
   // Belt-and-suspenders: retry at window load if page wasn't ready yet.
-  window.addEventListener("load", () => tryInit("load event"), { once: true });
+  window.addEventListener("load", tryInit, { once: true });
 
   // Additional 2-second backup: handles edge cases where both fire too early.
-  setTimeout(() => tryInit("2s timeout"), 2000);
+  setTimeout(tryInit, 2000);
 
 })();
