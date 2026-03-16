@@ -424,13 +424,38 @@ CATEGORY_MAP = {
     "desktop":             "computers",
     "tablet":              "tablets",
     "ipad":                "tablets",
+    "kindle":              "tablets",
+    "e-reader":            "tablets",
+    "ereader":             "tablets",
     "monitor":             "electronics",
+    "smart tv":            "electronics",
+    "oled tv":             "electronics",
+    "qled tv":             "electronics",
+    "led tv":              "electronics",
     "tv":                  "electronics",
     "television":          "electronics",
     "camera":              "cameras",
     "dslr":                "cameras",
     "mirrorless":          "cameras",
+    "action camera":       "cameras",
+    "gopro":               "cameras",
+    "dash cam":            "cameras",
+    "dashcam":             "cameras",
+    "dash camera":         "cameras",
+    "security camera":     "cameras",
+    "security cam":        "cameras",
+    "trail camera":        "cameras",
+    "ring camera":         "electronics",
+    "ring doorbell":       "electronics",
+    "ring video":          "electronics",
+    "nest cam":            "electronics",
+    "smart thermostat":    "electronics",
+    "nest thermostat":     "electronics",
+    "ecobee":              "electronics",
     "drone":               "electronics",
+    "power bank":          "electronics",
+    "portable charger":    "electronics",
+    "charging station":    "electronics",
     "headphones":          "electronics",
     "earbuds":             "electronics",
     "airpods":             "electronics",
@@ -450,6 +475,14 @@ CATEGORY_MAP = {
     "fitbit":              "electronics",
     "galaxy watch":        "electronics",
     "polar":               "electronics",
+    # VR / AR headsets
+    "meta quest":          "gaming",
+    "oculus quest":        "gaming",
+    "oculus rift":         "gaming",
+    "oculus":              "gaming",
+    "psvr":                "gaming",
+    "vr headset":          "gaming",
+    "virtual reality":     "gaming",
 
     # ── Optics / Astronomy ────────────────────────────────────────────────────
     "telescope":           "cameras",
@@ -469,12 +502,29 @@ CATEGORY_MAP = {
     "smartphone":          "phones",
     "iphone":              "phones",
     "android":             "phones",
-    "samsung":             "phones",
+    # Samsung: specific model families → phones; bare "samsung" removed because
+    # Samsung also sells TVs, washers, monitors — bare brand causes misrouting.
+    "samsung galaxy":      "phones",
+    "galaxy s":            "phones",
+    "galaxy a":            "phones",
+    "galaxy z":            "phones",
+    "galaxy note":         "phones",
     "pixel":               "phones",
     "oneplus":             "phones",
     "motorola":            "phones",
+    "moto g":              "phones",
+    "moto e":              "phones",
 
     # ── Gaming ────────────────────────────────────────────────────────────────
+    # Furniture-type gaming items — listed BEFORE generic "gaming"
+    "gaming chair":        "furniture",
+    "gaming desk":         "furniture",
+    "gaming table":        "furniture",
+    # Computer peripherals that mention gaming
+    "gaming keyboard":     "computers",
+    "gaming mouse":        "computers",
+    "gaming headset":      "electronics",
+    "gaming monitor":      "electronics",
     "gaming":              "gaming",
     "console":             "gaming",
     "playstation":         "gaming",
@@ -517,7 +567,15 @@ CATEGORY_MAP = {
     "hedge trimmer":       "tools",
     "nail gun":            "tools",
     "staple gun":          "tools",
-    "router":              "tools",
+    # Specific router types — listed BEFORE bare "router" (wood router = tools)
+    "wifi router":         "electronics",
+    "wireless router":     "electronics",
+    "mesh router":         "electronics",
+    "network router":      "electronics",
+    "mesh network":        "electronics",
+    "router":              "tools",          # wood router; wifi/wireless caught above
+    # Oscillating fan → appliances; oscillating tool → tools (tool/multi-tool caught above)
+    "oscillating fan":     "appliances",
     "oscillating":         "tools",
     # Tool brands
     "dewalt":              "tools",
@@ -693,7 +751,14 @@ CATEGORY_MAP = {
     "dirt bike":           "vehicles",
     "golf cart":           "vehicles",
     "boat":                "vehicles",
+    "pontoon":             "vehicles",
+    "motorboat":           "vehicles",
+    "bass boat":           "vehicles",
+    "ski boat":            "vehicles",
+    "inflatable boat":     "vehicles",
+    "jon boat":            "vehicles",
     "jet ski":             "vehicles",
+    "waverunner":          "vehicles",
     "snowmobile":          "vehicles",
     "side by side":        "vehicles",
     "utv":                 "vehicles",
@@ -770,25 +835,115 @@ CATEGORY_MAP = {
     "guitar":              "musical_instruments",
     "bass guitar":         "musical_instruments",
     "piano":               "musical_instruments",
-    "keyboard":            "musical_instruments",
+    # Computer peripherals
+    "mechanical keyboard": "computers",
+    "wireless keyboard":   "computers",
+    "computer keyboard":   "computers",
+    "bluetooth keyboard":  "computers",
+    "keyboard":            "musical_instruments",   # piano/synth keyboard
+    "computer mouse":      "computers",
+    "gaming mouse":        "computers",
+    "wireless mouse":      "computers",
+    "mouse":               "computers",
+    "webcam":              "computers",
+    "usb hub":             "computers",
+    "hard drive":          "computers",
+    "ssd":                 "computers",
+    "ram":                 "computers",
+    "gpu":                 "computers",
+    "graphics card":       "computers",
+    "cpu":                 "computers",
+    "processor":           "computers",
+    "motherboard":         "computers",
+    "computer case":       "computers",
+    "pc case":             "computers",
+    "synthesizer":         "musical_instruments",
+    "synth":               "musical_instruments",
     "drums":               "musical_instruments",
     "drum kit":            "musical_instruments",
+    "drum set":            "musical_instruments",
+    "drum machine":        "musical_instruments",
     "instrument":          "musical_instruments",
     "violin":              "musical_instruments",
     "cello":               "musical_instruments",
     "trumpet":             "musical_instruments",
     "saxophone":           "musical_instruments",
+    "ukulele":             "musical_instruments",
+    "mandolin":            "musical_instruments",
+    "banjo":               "musical_instruments",
+    "flute":               "musical_instruments",
+    "clarinet":            "musical_instruments",
+    "trombone":            "musical_instruments",
+    "tuba":                "musical_instruments",
     "amplifier":           "audio",
+    "guitar amp":          "audio",
     "amp":                 "audio",
     "subwoofer":           "audio",
+    "av receiver":         "audio",
+    "home receiver":       "audio",
+    "receiver":            "audio",
+    "turntable":           "audio",
+    "record player":       "audio",
+    "vinyl":               "audio",
+    "dj controller":       "audio",
+    "dj mixer":            "audio",
+    "dj equipment":        "audio",
+    "dj deck":             "audio",
+    "audio interface":     "audio",
+    "microphone":          "audio",
+    "condenser mic":       "audio",
+    "dynamic mic":         "audio",
+    "mic stand":           "audio",
+    "studio monitor":      "audio",
 
     # ── Pets ──────────────────────────────────────────────────────────────────
     "pet":                 "pets",
     "dog":                 "pets",
     "cat":                 "pets",
+    "dog crate":           "pets",
+    "dog kennel":          "pets",
+    "cat tree":            "pets",
+    "cat tower":           "pets",
+    "dog bed":             "pets",
+    "pet carrier":         "pets",
     "aquarium":            "pets",
     "fish tank":           "pets",
     "bird cage":           "pets",
+    "hamster":             "pets",
+    "rabbit":              "pets",
+    "reptile":             "pets",
+    "terrarium":           "pets",
+
+    # ── Outdoor / Camping extras ───────────────────────────────────────────────
+    "hammock":             "camping",
+    "sleeping bag":        "camping",
+    "camping stove":       "camping",
+    "camp stove":          "camping",
+    "backpacking":         "camping",
+    "wetsuit":             "outdoor",
+    "climbing":            "outdoor",
+    "wakeboard":           "outdoor",
+    "paddleboard":         "outdoor",
+    "stand up paddle":     "outdoor",
+    "saddle":              "outdoor",
+    "horse":               "outdoor",
+
+    # ── Furniture extras ──────────────────────────────────────────────────────
+    "standing desk":       "furniture",
+    "stand up desk":       "furniture",
+    "murphy bed":          "furniture",
+    "bunk bed":            "furniture",
+    "wardrobe":            "furniture",
+    "armoire":             "furniture",
+    "cabinet":             "furniture",
+    "bar stool":           "furniture",
+    "bar cart":            "furniture",
+    "patio furniture":     "furniture",
+    "outdoor furniture":   "furniture",
+    "deck chair":          "furniture",
+    "adirondack":          "furniture",
+    "accent chair":        "furniture",
+    "office chair":        "furniture",
 }
 
 # Which programs serve each category — ordered by priority (best first)
@@ -867,9 +1022,27 @@ def _build_amazon_link(query: str, tag: str) -> str:
     return f"https://www.amazon.com/s?k={encoded}&tag={tag}"
 
 
-def _build_ebay_link(query: str, campaign_id: str, new_only: bool = False) -> str:
+def _build_ebay_link(query: str, campaign_id: str, new_only: bool = False, all_conditions: bool = False) -> str:
+    """
+    Build an eBay affiliate search link.
+
+    new_only=True      → LH_ItemCondition=1000  (New — for price reference)
+    all_conditions=True → no condition filter    (shows Used, Very Good, Good, Acceptable)
+    default            → LH_ItemCondition=3000  (Used only — legacy behaviour)
+
+    WHY all_conditions for used_comp cards:
+      eBay condition=3000 ("Used") is just ONE of several used-condition labels.
+      Sellers who list items as "Very Good" (4000) or "Good" (5000) won't appear
+      in the results, even though those are legitimate used-price comparisons.
+      Removing the filter lets the buyer see the full used-market price range.
+    """
     encoded = urllib.parse.quote_plus(query)
-    cond = "&LH_ItemCondition=1000" if new_only else "&LH_ItemCondition=3000"
+    if new_only:
+        cond = "&LH_ItemCondition=1000"
+    elif all_conditions:
+        cond = ""   # no condition restriction — all used variants show up
+    else:
+        cond = "&LH_ItemCondition=3000"
     return (
         f"https://www.ebay.com/sch/i.html?_nkw={encoded}{cond}&_sop=15"
         f"&mkevt=1&mkcid=1&mkrid=711-53200-19255-0"
@@ -938,9 +1111,26 @@ def detect_category(product_info) -> str:
 
     combined = " ".join(candidates).lower()
 
-    # Exact + substring matching against CATEGORY_MAP
+    # WHY WORD-BOUNDARY (not plain substring):
+    # Naive substring matching has a class of false-positive bugs where a short
+    # keyword appears inside a longer unrelated word:
+    #   "inflatable" contains "table"  → furniture  (should be outdoor/vehicles)
+    #   "amplifier"  contains "amp"    → audio (OK here, but pattern is fragile)
+    #   "baseball"   contains "base"   → would match if "base" were a key
+    # Sorting by keyword length descending helps but doesn't fully prevent it —
+    # a 4-char key like "boat" is checked after a 5-char key like "table", so
+    # "inflatable pontoon boat" matches furniture via "table" before reaching "boat".
+    #
+    # Fix: require keyword to appear as a complete word (or phrase) using \b.
+    # Multi-word keywords like "gaming chair" also benefit — "gaming chair"
+    # won't be triggered by "bargaining chairlift". The re.escape() call ensures
+    # any special regex chars in the keyword (e.g. hyphens in "sur-ron") are
+    # treated as literals. Pattern is precompiled per-keyword in the loop;
+    # the CATEGORY_MAP is O(200) entries so the overhead is negligible.
+    import re as _re
     for keyword, cat_key in sorted(CATEGORY_MAP.items(), key=lambda x: -len(x[0])):
-        if keyword in combined:
+        pattern = r'\b' + _re.escape(keyword) + r'\b'
+        if _re.search(pattern, combined):
             return cat_key
 
     return "general"
@@ -1006,6 +1196,12 @@ def get_affiliate_recommendations(
 
     log.info(f"[AffiliateRouter] Category='{category}'{' (override)' if category_override else ''} for '{query}' @ ${listing_price:.0f}")
 
+    # Programs that need model-number precision (same level as Amazon).
+    # These are electronics-catalog sites where "Pioneer SP-BS21-LR" will
+    # land on the right product page, but "bookshelf speaker" will not.
+    # We use amazon_query (brand + model) rather than search_query (eBay-style).
+    _PRECISION_PROGRAMS = {"best_buy", "newegg", "back_market"}
+
     # Get program priority list for this category
     program_keys = CATEGORY_PROGRAMS.get(category, ["amazon", "ebay"])
 
@@ -1052,20 +1248,49 @@ def get_affiliate_recommendations(
         p   = cand["program"]
         tag = cand["tag"] or ""
 
+        # ── Per-platform query routing ──────────────────────────────────────
+        # Different affiliate platforms have different catalog structures and
+        # search engines. Using the wrong query means the user lands on a page
+        # full of unrelated items — which kills clicks and trains bad patterns.
+        #
+        # Three tiers:
+        #  1. amazon_query  — brand + model number (e.g. "Sony WH-1000XM5")
+        #     Used by: Amazon, Best Buy, Newegg, Back Market
+        #     WHY: These are electronics-catalog sites. Model numbers find the
+        #          exact product page; generic terms return noisy results.
+        #
+        #  2. search_query  — eBay-optimized 3-6 word query
+        #     Used by: eBay, Wayfair, Home Depot, REI, Sweetwater, etc.
+        #     WHY: Category stores search by description, not model number.
+        #          "Pioneer bookshelf speaker pair" works on Wayfair; the full
+        #          model number doesn't exist in their furniture catalog.
+        #
+        #  3. Fallback: if either query is empty, use the other one.
+        # ────────────────────────────────────────────────────────────────────
+        if key in _PRECISION_PROGRAMS:
+            platform_q = amazon_q or query   # electronics catalog — needs model precision
+        else:
+            platform_q = query or amazon_q   # category/general sites — eBay-style query
+
         # Generate the affiliate link
         if key == "amazon":
             url = _build_amazon_link(amazon_q, tag or "dealscout03f-20")
         elif key == "ebay":
-            url = _build_ebay_link(query, tag or "5339144027", new_only=False)
+            # all_conditions=True: show Used, Very Good, Good, Acceptable listings.
+            # Filtering to only LH_ItemCondition=3000 ("Used") misses sellers who
+            # listed the same item as "Very Good" (4000) or "Good" (5000).
+            url = _build_ebay_link(query, tag or "5339144027", new_only=False, all_conditions=True)
         else:
-            url = _build_search_link(key, query, tag)
+            url = _build_search_link(key, platform_q, tag)
+
+        log.info(f"[AffiliateRouter]   {key}: query='{platform_q[:50]}' url={url[:80]}...")
 
         # Build card copy based on program type and deal context
         card = _build_card(
             key            = key,
             p              = p,
             url            = url,
-            query          = query,
+            query          = platform_q,
             listing_price  = listing_price,
             true_cost      = true_cost,
             deal_score     = deal_score,
