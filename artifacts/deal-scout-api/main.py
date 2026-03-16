@@ -512,16 +512,44 @@ async def score_listing(listing: ListingRequest, request: Request):
         from scoring.data_pipeline import _get_pool
         pool = await _get_pool()
         if pool:
+            # eBay comps: sold items used to calculate the market average —
+            # stored in their own column so training queries can join on them
+            # without parsing the entire score_json blob.
+            _ebay_comps = {
+                "sold":   sold_items_sample,
+                "active": active_items_sample,
+                "query":  market_value.search_query if hasattr(market_value, "search_query") else "",
+                "data_source": market_value.data_source if hasattr(market_value, "data_source") else "",
+            }
+
+            # Affiliate impressions: each card shown, in display order.
+            # Captures what was offered (not just what was clicked) for CTR training.
+            _affil_impressions = [
+                {
+                    "position":        idx + 1,
+                    "program_key":     c.get("program_key", ""),
+                    "card_type":       c.get("card_type", ""),
+                    "selection_reason": c.get("reason", ""),
+                    "commission_live": c.get("commission_live", False),
+                    "estimated_revenue": c.get("estimated_revenue", 0.0),
+                    "price_hint":      c.get("price_hint", ""),
+                }
+                for idx, c in enumerate(affiliate_dicts)
+            ]
+
             row = await pool.fetchrow(
                 """INSERT INTO deal_scores
-                   (platform, listing_url, listing_json, score_json, score)
-                   VALUES ($1, $2, $3::jsonb, $4::jsonb, $5)
+                   (platform, listing_url, listing_json, score_json, score,
+                    ebay_comps_json, affiliate_impressions_json)
+                   VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6::jsonb, $7::jsonb)
                    RETURNING id""",
                 listing.platform or "unknown",
                 listing.listing_url or "",
                 _json.dumps(listing.model_dump()),
                 _json.dumps(response.model_dump()),
                 deal_score.score,
+                _json.dumps(_ebay_comps),
+                _json.dumps(_affil_impressions),
             )
             if row:
                 score_id = row["id"]
@@ -688,12 +716,16 @@ async def health():
 
 class AnalyticsEvent(BaseModel):
     """Privacy-safe analytics event from the extension."""
-    event:        str
-    program:      str   = ""
-    category:     str   = ""
-    price_bucket: str   = ""
-    card_type:    str   = ""
-    deal_score:   int   = 0
+    event:             str
+    program:           str   = ""
+    category:          str   = ""
+    price_bucket:      str   = ""
+    card_type:         str   = ""
+    deal_score:        int   = 0
+    # Affiliate-specific training fields (added for affiliate scoring improvement)
+    position:          int   = 0    # 1/2/3 — which card slot was clicked (position bias)
+    selection_reason:  str   = ""   # The "reason" text the router attached to the card
+    commission_live:   bool  = False  # Whether this click was earning real commission
 
 
 @app.post("/event")
@@ -705,7 +737,7 @@ async def record_event(evt: AnalyticsEvent):
       Affiliate click data is the foundation of the market intelligence product.
       Over time, aggregate data tells us: which categories have the biggest
       used-vs-new price gap, which affiliate programs convert best per category,
-      and which item types are most in-demand on used marketplaces.
+      which card positions get the most clicks, and what selection reasons drive action.
 
     PRIVACY:
       No user ID, IP, listing URL, or identifiable data is stored.
@@ -713,13 +745,16 @@ async def record_event(evt: AnalyticsEvent):
       GDPR/CCPA compliant by design — nothing to delete.
     """
     record = {
-        "event":        evt.event,
-        "program":      evt.program,
-        "category":     evt.category,
-        "price_bucket": evt.price_bucket,
-        "card_type":    evt.card_type,
-        "deal_score":   evt.deal_score,
-        "hour":         __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:00"),
+        "event":            evt.event,
+        "program":          evt.program,
+        "category":         evt.category,
+        "price_bucket":     evt.price_bucket,
+        "card_type":        evt.card_type,
+        "deal_score":       evt.deal_score,
+        "position":         evt.position,
+        "selection_reason": evt.selection_reason[:120] if evt.selection_reason else "",
+        "commission_live":  evt.commission_live,
+        "hour":             __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:00"),
     }
     _event_buffer.append(record)
 
@@ -951,7 +986,8 @@ class FeedbackRequest(BaseModel):
 
 class ThumbsRequest(BaseModel):
     score_id: int
-    thumbs:   int  # 1 = up, -1 = down
+    thumbs:   int   # 1 = up, -1 = down
+    reason:   str   = ""   # labeled reason for 👎 (e.g. "score_too_high", "price_wrong")
 
 
 @app.post("/thumbs")
@@ -959,22 +995,28 @@ async def submit_thumbs(body: ThumbsRequest):
     """
     Record a thumbs-up or thumbs-down on a scored listing.
     score_id comes from the /score response. thumbs: 1 or -1.
-    Used to build a training dataset for prompt improvement.
+    reason is only expected on thumbs=-1 (down) — one of:
+      score_too_high | score_too_low | price_wrong | wrong_category | missing_info
+    Used to build a labeled training dataset for prompt improvement.
     """
     if body.thumbs not in (1, -1):
         raise HTTPException(status_code=400, detail="thumbs must be 1 or -1")
+    _valid_reasons = {"score_too_high", "score_too_low", "price_wrong", "wrong_category", "missing_info", ""}
+    clean_reason = body.reason.strip().lower() if body.reason else ""
+    if clean_reason not in _valid_reasons:
+        clean_reason = ""
     try:
         from scoring.data_pipeline import _get_pool
         pool = await _get_pool()
         if not pool:
             raise HTTPException(status_code=503, detail="DB unavailable")
         result = await pool.execute(
-            "UPDATE deal_scores SET thumbs=$1, thumbs_at=NOW() WHERE id=$2",
-            body.thumbs, body.score_id,
+            "UPDATE deal_scores SET thumbs=$1, thumbs_at=NOW(), thumbs_reason=$3 WHERE id=$2",
+            body.thumbs, body.score_id, clean_reason or None,
         )
         if result == "UPDATE 0":
             raise HTTPException(status_code=404, detail=f"score_id {body.score_id} not found")
-        log.info(f"[Thumbs] score_id={body.score_id} thumbs={body.thumbs}")
+        log.info(f"[Thumbs] score_id={body.score_id} thumbs={body.thumbs} reason={clean_reason or '—'}")
         return {"ok": True}
     except HTTPException:
         raise

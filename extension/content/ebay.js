@@ -211,7 +211,7 @@
     renderBuyNewSection(r, panel);
     renderFlags(r, panel);
     renderSecurityScore(r, panel);
-    renderFooter(panel);
+    renderFooter(r, panel);
   }
 
   function renderHeader(r, container) {
@@ -368,7 +368,7 @@
     const ICONS  = { amazon:"📦",ebay:"🏪",best_buy:"💻",target:"🎯",walmart:"🛒",home_depot:"🏠",back_market:"♻️",newegg:"💻",autotrader:"🚗",cargurus:"🔍",carmax:"🏢",advance_auto:"🔧",carparts_com:"⚙️" };
     const TRUST  = { amazon:"Prime eligible • Free returns",ebay:"Money-back guarantee",best_buy:"Geek Squad warranty",back_market:"Certified refurb • 1-yr warranty",newegg:"Tech deals • Flash sales",autotrader:"Dealer-verified",cargurus:"Price analysis",carmax:"5-day return",advance_auto:"Free pickup",carparts_com:"Fast shipping" };
 
-    for (const card of r.affiliate_cards.slice(0, 3)) {
+    for (const [idx, card] of r.affiliate_cards.slice(0, 3).entries()) {
       const key   = card.program_key || card.program || "";
       const color = COLORS[key] || "#7c8cf8";
       const icon  = card.icon || ICONS[key] || "🛒";
@@ -393,7 +393,7 @@
         (card.subtitle ? '<div style="font-size:11px;color:#94a3b8;margin-bottom:8px">' + escHtml(card.subtitle) + "</div>" : "") +
         '<div style="display:flex;align-items:center;justify-content:center;background:' + color + ';color:#fff;font-size:12px;font-weight:800;border-radius:7px;padding:8px 0">' + (cardPrice > 0 ? "Shop " : "Compare on ") + escHtml(name) + " →</div>";
       cardEl.addEventListener("click", () => {
-        try { chrome.runtime.sendMessage({ type:"AFFILIATE_CLICK", program:key, category:r.category_detected||"", price_bucket:priceBucket(r.price), deal_score:score }); } catch(e) {}
+        try { chrome.runtime.sendMessage({ type:"AFFILIATE_CLICK", program:key, category:r.category_detected||"", price_bucket:priceBucket(r.price), deal_score:score, position:idx+1, card_type:card.card_type||"", selection_reason:card.reason||"", commission_live:!!card.commission_live }); } catch(e) {}
       });
       section.appendChild(cardEl);
     }
@@ -433,10 +433,65 @@
     container.appendChild(section);
   }
 
-  function renderFooter(container) {
+  function renderFooter(r, container) {
     const footer = document.createElement("div");
-    footer.style.cssText = "display:flex;align-items:center;justify-content:center;padding:8px 12px;border-top:1px solid rgba(255,255,255,0.06);margin-top:4px";
-    footer.innerHTML = '<span style="font-size:10px;color:#4b5563">Deal Scout v' + VERSION + ' · eBay</span>';
+    footer.style.cssText = "border-top:1px solid rgba(255,255,255,0.06);margin-top:4px;padding:10px 12px";
+    if (r && r.score_id) {
+      const thumbSection = document.createElement("div");
+      thumbSection.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:6px";
+      const prompt = document.createElement("div");
+      prompt.style.cssText = "font-size:11px;color:#9ca3af";
+      prompt.textContent = "Was this score accurate?";
+      const thumbWrap = document.createElement("div");
+      thumbWrap.style.cssText = "display:flex;gap:8px";
+      const makeThumb = (emoji, label, val) => {
+        const btn = document.createElement("button");
+        btn.style.cssText = "display:flex;align-items:center;gap:5px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:5px 12px;cursor:pointer;font-size:14px;color:#d1d5db";
+        btn.innerHTML = emoji + ' <span style="font-size:11px">' + label + "</span>";
+        btn.addEventListener("click", () => {
+          if (val === 1) {
+            fetch(API_BASE + "/thumbs", {
+              method: "POST", headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({score_id: r.score_id, thumbs: 1, reason: ""}),
+              signal: AbortSignal.timeout(5000),
+            }).catch(() => {});
+            thumbWrap.innerHTML = '<span style="font-size:12px;color:#6ee7b7">✓ Thanks!</span>';
+          } else {
+            thumbWrap.innerHTML = "";
+            const reasonRow = document.createElement("div");
+            reasonRow.style.cssText = "display:flex;flex-wrap:wrap;gap:4px;justify-content:center;max-width:230px";
+            [["Score too high","score_too_high"],["Score too low","score_too_low"],
+             ["Price wrong","price_wrong"],["Wrong category","wrong_category"],["Missing info","missing_info"]
+            ].forEach(([lbl, key]) => {
+              const pill = document.createElement("button");
+              pill.style.cssText = "font-size:10px;padding:3px 8px;border-radius:6px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.05);color:#d1d5db;cursor:pointer";
+              pill.textContent = lbl;
+              pill.addEventListener("click", (e) => {
+                e.stopPropagation();
+                fetch(API_BASE + "/thumbs", {
+                  method: "POST", headers: {"Content-Type": "application/json"},
+                  body: JSON.stringify({score_id: r.score_id, thumbs: -1, reason: key}),
+                  signal: AbortSignal.timeout(5000),
+                }).catch(() => {});
+                thumbWrap.innerHTML = '<span style="font-size:12px;color:#6ee7b7">✓ Got it, thanks!</span>';
+              });
+              reasonRow.appendChild(pill);
+            });
+            thumbWrap.appendChild(reasonRow);
+          }
+        });
+        return btn;
+      };
+      thumbWrap.appendChild(makeThumb("👍", "Yes, accurate", 1));
+      thumbWrap.appendChild(makeThumb("👎", "No, off", -1));
+      thumbSection.appendChild(prompt);
+      thumbSection.appendChild(thumbWrap);
+      footer.appendChild(thumbSection);
+    }
+    const versionEl = document.createElement("div");
+    versionEl.style.cssText = "text-align:center;font-size:10px;color:#374151;margin-top:" + (r && r.score_id ? "8px" : "0");
+    versionEl.textContent = "Deal Scout v" + VERSION + " · eBay";
+    footer.appendChild(versionEl);
     container.appendChild(footer);
   }
 
