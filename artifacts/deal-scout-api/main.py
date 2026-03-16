@@ -1087,6 +1087,157 @@ async def admin_page():
     except Exception as _e:
         log.warning(f"[admin] DB query failed: {_e}")
 
+    # ── Affiliate analytics ───────────────────────────────────────────────────
+    affiliate_stats   = {}   # program_key → {impressions, clicks, positions, categories}
+    affiliate_by_pos  = {1: {"impressions": 0, "clicks": 0},
+                         2: {"impressions": 0, "clicks": 0},
+                         3: {"impressions": 0, "clicks": 0}}
+    affiliate_by_type = {}   # card_type → {impressions, clicks}
+    try:
+        pool = await _get_pool()
+        if pool:
+            imp_rows = await pool.fetch(
+                """
+                SELECT
+                    el->>'program_key'  AS program,
+                    (el->>'position')::int AS pos,
+                    el->>'card_type'    AS card_type
+                FROM deal_scores,
+                     jsonb_array_elements(affiliate_impressions_json) AS el
+                WHERE affiliate_impressions_json IS NOT NULL
+                  AND affiliate_impressions_json != 'null'::jsonb
+                LIMIT 50000
+                """
+            )
+            for row in imp_rows:
+                prog = row["program"] or "unknown"
+                pos  = row["pos"] or 0
+                ctype = row["card_type"] or "unknown"
+                if prog not in affiliate_stats:
+                    affiliate_stats[prog] = {"impressions": 0, "clicks": 0, "positions": [], "categories": []}
+                affiliate_stats[prog]["impressions"] += 1
+                affiliate_stats[prog]["positions"].append(pos)
+                if 1 <= pos <= 3:
+                    affiliate_by_pos[pos]["impressions"] += 1
+                if ctype not in affiliate_by_type:
+                    affiliate_by_type[ctype] = {"impressions": 0, "clicks": 0}
+                affiliate_by_type[ctype]["impressions"] += 1
+    except Exception as _ae:
+        log.warning(f"[admin] affiliate impressions query failed: {_ae}")
+
+    # Read click events from JSONL
+    events_path = "data/analytics_events.jsonl"
+    try:
+        import json as _json
+        if os.path.exists(events_path):
+            with open(events_path) as _ef:
+                for line in _ef:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        ev = _json.loads(line)
+                        if ev.get("event_type") != "AFFILIATE_CLICK":
+                            continue
+                        prog  = ev.get("program") or ev.get("program_key") or "unknown"
+                        pos   = int(ev.get("position") or 0)
+                        ctype = ev.get("card_type") or "unknown"
+                        if prog not in affiliate_stats:
+                            affiliate_stats[prog] = {"impressions": 0, "clicks": 0, "positions": [], "categories": []}
+                        affiliate_stats[prog]["clicks"] += 1
+                        if 1 <= pos <= 3:
+                            affiliate_by_pos[pos]["clicks"] += 1
+                        if ctype not in affiliate_by_type:
+                            affiliate_by_type[ctype] = {"impressions": 0, "clicks": 0}
+                        affiliate_by_type[ctype]["clicks"] += 1
+                    except Exception:
+                        pass
+    except Exception as _ce:
+        log.warning(f"[admin] click event read failed: {_ce}")
+
+    def _ctr(clicks, impressions):
+        if impressions == 0:
+            return "—"
+        return f"{(clicks/impressions*100):.1f}%"
+
+    def _avg_pos(positions):
+        return f"{sum(positions)/len(positions):.1f}" if positions else "—"
+
+    # Build affiliate program table rows sorted by impressions desc
+    aff_prog_rows = ""
+    for prog, d in sorted(affiliate_stats.items(), key=lambda x: -x[1]["impressions"]):
+        ctr_str = _ctr(d["clicks"], d["impressions"])
+        pos_str = _avg_pos(d["positions"])
+        ctr_color = "#22c55e" if d["clicks"] > 0 else "#6b7280"
+        aff_prog_rows += (
+            f"<tr>"
+            f"<td style='font-weight:600;color:#7c8cf8'>{prog}</td>"
+            f"<td style='text-align:right'>{d['impressions']}</td>"
+            f"<td style='text-align:right'>{d['clicks']}</td>"
+            f"<td style='text-align:right;color:{ctr_color}'>{ctr_str}</td>"
+            f"<td style='text-align:right;color:#aaa'>{pos_str}</td>"
+            f"</tr>"
+        )
+
+    # Build position table rows
+    pos_rows = ""
+    for pos in [1, 2, 3]:
+        d = affiliate_by_pos[pos]
+        pos_rows += (
+            f"<tr>"
+            f"<td style='text-align:center;font-weight:700;color:#fbbf24'>#{pos}</td>"
+            f"<td style='text-align:right'>{d['impressions']}</td>"
+            f"<td style='text-align:right'>{d['clicks']}</td>"
+            f"<td style='text-align:right;color:#22c55e'>{_ctr(d['clicks'], d['impressions'])}</td>"
+            f"</tr>"
+        )
+
+    # Build card type table rows
+    type_rows = ""
+    for ctype, d in sorted(affiliate_by_type.items(), key=lambda x: -x[1]["impressions"]):
+        type_rows += (
+            f"<tr>"
+            f"<td style='color:#a0a0c0'>{ctype}</td>"
+            f"<td style='text-align:right'>{d['impressions']}</td>"
+            f"<td style='text-align:right'>{d['clicks']}</td>"
+            f"<td style='text-align:right;color:#22c55e'>{_ctr(d['clicks'], d['impressions'])}</td>"
+            f"</tr>"
+        )
+
+    has_aff_data = bool(affiliate_stats)
+    aff_analytics_html = ""
+    if has_aff_data:
+        aff_analytics_html = f"""
+  <div style='display:grid;grid-template-columns:2fr 1fr 1fr;gap:24px;margin-top:16px'>
+    <div>
+      <h3 style='color:#a0a0c0;margin-bottom:8px;font-size:13px'>By Program</h3>
+      <table>
+        <tr><th>Program</th><th style='text-align:right'>Shown</th>
+            <th style='text-align:right'>Clicks</th><th style='text-align:right'>CTR</th>
+            <th style='text-align:right'>Avg Pos</th></tr>
+        {aff_prog_rows}
+      </table>
+    </div>
+    <div>
+      <h3 style='color:#a0a0c0;margin-bottom:8px;font-size:13px'>By Position</h3>
+      <table>
+        <tr><th>Pos</th><th style='text-align:right'>Shown</th>
+            <th style='text-align:right'>Clicks</th><th style='text-align:right'>CTR</th></tr>
+        {pos_rows}
+      </table>
+    </div>
+    <div>
+      <h3 style='color:#a0a0c0;margin-bottom:8px;font-size:13px'>By Card Type</h3>
+      <table>
+        <tr><th>Type</th><th style='text-align:right'>Shown</th>
+            <th style='text-align:right'>Clicks</th><th style='text-align:right'>CTR</th></tr>
+        {type_rows}
+      </table>
+    </div>
+  </div>"""
+    else:
+        aff_analytics_html = "<p style='color:#6b7280'>No affiliate impression data yet. Score some listings to populate.</p>"
+
     rows = ""
     for c in corrections:
         rows += f"""
@@ -1188,6 +1339,14 @@ async def admin_page():
   <h2>Correction Log ({len(corrections)} total)</h2>
   {"<p style='color:#6b7280'>No corrections yet. Score some listings and fix the bad ones above.</p>" if not corrections else ""}
   {f"<table><tr><th>Time</th><th>Listing</th><th>Bad Query</th><th>Good Query</th><th>Notes</th></tr>{rows}</table>" if corrections else ""}
+
+  <h2>Affiliate Card Analytics</h2>
+  <p style='color:#6b7280;font-size:12px'>
+    CTR = clicks ÷ impressions. Use this to reorder programs in the router when you have
+    enough data (~50+ clicks per program). Position 1 always gets more clicks due to
+    placement bias — compare within-position CTR across programs to spot winners.
+  </p>
+  {aff_analytics_html}
 
   <h2>Recent Scored Listings</h2>
   <p style='color:#6b7280;font-size:12px'>Total: {score_stats['total']} &nbsp;&middot;&nbsp;
