@@ -113,12 +113,30 @@
       }
     });
 
+    // Seller trust signals — OfferUp shows "Joined Dec 2017" and "(14) offer up reviews"
+    // on the listing page. Parse from page text since OfferUp doesn't use stable test IDs.
+    const joinedMatch  = bodyText.match(/Joined\s+([A-Za-z]+\.?\s+\d{4})/i);
+    const reviewMatch  = bodyText.match(/\((\d+)\)\s*(?:offerup|offer\s*up)?\s*reviews?/i);
+    const ratingMatch  = bodyText.match(/([0-9]\.[0-9])\s*(?:out of 5|stars?|\/ ?5)/i);
+    const sellerNameEl = document.querySelector("[class*='seller'], [class*='Seller'], [data-testid*='seller']");
+    const sellerName   = sellerNameEl?.textContent?.trim().replace(/^Sold by\s*/i, "").slice(0, 60) ||
+                         (bodyText.match(/Sold by\s+([^\n]{2,50})/i) || [])[1]?.trim() || "";
+
+    const seller_trust = {
+      joined_date:  joinedMatch  ? joinedMatch[1].trim()  : null,
+      rating:       ratingMatch  ? parseFloat(ratingMatch[1]) : null,
+      rating_count: reviewMatch  ? parseInt(reviewMatch[1])   : 0,
+    };
+
     return {
       title, price, raw_price_text: priceText,
       description, condition,
       location: location_,
       image_urls: images.slice(0, 5),
       platform: PLATFORM,
+      seller_name:  sellerName,
+      seller_trust: (seller_trust.joined_date || seller_trust.rating || seller_trust.rating_count)
+                    ? seller_trust : null,
     };
   }
 
