@@ -1,28 +1,31 @@
 /**
  * craigslist.js — Deal Scout Content Script for Craigslist
- * v1.0.0
+ * v1.0.4
  *
- * INJECTED INTO: *.craigslist.org/*/d/*.html  (listing detail pages only)
+ * INJECTED INTO: *.craigslist.org  (all pages; isListingPage() filters to listings)
  * PURPOSE: Extracts listing data, scores the deal via backend API,
  *          renders a floating Deal Scout panel on the page.
- *
- * MANIFEST ENTRY NEEDED:
- *   {
- *     "matches": ["https://*.craigslist.org/*/d/*.html"],
- *     "js": ["craigslist.js"],
- *     "run_at": "document_idle"
- *   }
  */
 
 (function () {
   "use strict";
 
-  const VERSION  = "1.0.2";
+  const VERSION  = "1.0.4";
   const PANEL_ID = "deal-scout-cl-panel";
   const PLATFORM = "craigslist";
 
-  if (window.__dsCLInjected) return;
-  window.__dsCLInjected = true;
+  // Diagnostic: log at the absolute start so we can confirm the script loads.
+  // Check DevTools → Console on any CL page for "[DealScout CL] ..." messages.
+  console.log("[DealScout CL] v" + VERSION + " loaded on", location.href);
+
+  // Version-keyed guard: if the extension reloads with a new VERSION, the old
+  // guard key doesn't match and the new script runs on the existing page.
+  const _GUARD_KEY = "__dsCLInjected_" + VERSION;
+  if (window[_GUARD_KEY]) {
+    console.log("[DealScout CL] Already injected (guard), skipping");
+    return;
+  }
+  window[_GUARD_KEY] = true;
 
   // ── API Base (from chrome.storage, same as fbm.js) ─────────────────────────
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -34,53 +37,156 @@
 
   // ── Detection ──────────────────────────────────────────────────────────────
   function isListingPage() {
-    return /\.craigslist\.org(?:\/[^/]+){1,2}\/d\/[^/]+\/\d+(?:\.html)?/.test(location.href);
+    // Strategy 1 (most reliable): CL item IDs are always 10 digits.
+    // Match any 10-digit number in the URL path — works for ALL CL listing URL
+    // formats regardless of how many category segments precede the item ID.
+    const pathId = location.pathname.match(/\/\d{10}(?:\.html)?(?:\/|$)/);
+    if (pathId) {
+      console.log("[DealScout CL] isListingPage: URL match (10-digit ID)", pathId[0]);
+      return true;
+    }
+
+    // Strategy 2: broader URL pattern — 7+ digit ID (older CL IDs)
+    const pathId7 = location.pathname.match(/\/\d{7,}(?:\.html)?(?:\/|$)/);
+    if (pathId7) {
+      console.log("[DealScout CL] isListingPage: URL match (7+ digit ID)", pathId7[0]);
+      return true;
+    }
+
+    // Strategy 3: old CL DOM — #postingbody or #titletextonly
+    if (document.getElementById("postingbody") || document.getElementById("titletextonly")) {
+      console.log("[DealScout CL] isListingPage: DOM match (old CL elements)");
+      return true;
+    }
+
+    // Strategy 4: new CL DOM — look for any element with 'posting' in id/class
+    const postingEl = document.querySelector('[id*="posting"], [class*="posting"]');
+    if (postingEl) {
+      console.log("[DealScout CL] isListingPage: DOM match (new CL posting element)", postingEl.tagName, postingEl.id || postingEl.className);
+      return true;
+    }
+
+    console.log("[DealScout CL] isListingPage: NO match — not a listing page");
+    return false;
   }
 
   // ── Extraction ─────────────────────────────────────────────────────────────
   function extractListing() {
+    // ── Title ──────────────────────────────────────────────────────────────
+    // document.title on a CL listing page is always "Item Title - craigslist"
+    // This is the most robust source, guaranteed to work regardless of DOM structure.
+    // Fall back to DOM selectors for older/newer CL layouts.
+    const titleFromDocTitle = (() => {
+      const t = document.title || "";
+      // Remove trailing " - craigslist" or " | craigslist" etc.
+      return t.replace(/[\s\-–|]+craigslist.*$/i, "").replace(/\s*-\s*$/, "").trim();
+    })();
     const title =
       document.querySelector("#titletextonly")?.textContent?.trim() ||
-      document.querySelector(".postingtitletext")?.childNodes?.[0]?.textContent?.trim() ||
-      document.title.split(" - ")[0].trim();
+      (() => {
+        const el = document.querySelector(".postingtitletext, [class*='postingtitletext']");
+        if (!el) return "";
+        for (const node of el.childNodes) {
+          if (node.nodeType === 3 && node.textContent.trim()) return node.textContent.trim();
+        }
+        return el.textContent.trim();
+      })() ||
+      document.querySelector('[id*="title"], [class*="posting-title"], [class*="postingtitle"]')?.textContent?.trim() ||
+      document.querySelector("h1")?.textContent?.trim() ||
+      document.querySelector('meta[property="og:title"]')?.content?.trim() ||
+      titleFromDocTitle;
 
+    // ── Price ──────────────────────────────────────────────────────────────
+    // CL price selectors vary by layout and version. Try in decreasing specificity.
+    let priceText = "";
     const priceEl =
-      document.querySelector(".price") ||
-      document.querySelector("[class*='price']") ||
-      document.querySelector("[class*='Price']") ||
       document.querySelector("span.price") ||
       document.querySelector("h2.price") ||
+      document.querySelector(".price") ||
+      document.querySelector("[class*='price'][class*='span'], span[class*='price']") ||
+      document.querySelector('meta[property="og:price:amount"]') ||
       null;
-    let priceText = priceEl?.textContent?.trim() || "";
+
+    if (priceEl) {
+      // og:price:amount uses the 'content' attribute, others use textContent
+      priceText = (priceEl.tagName === "META"
+        ? priceEl.getAttribute("content")
+        : priceEl.textContent
+      )?.trim() || "";
+    }
+
+    // Fallback 1: scan visible text for the first $N pattern in a prominent position.
     if (!priceText) {
-      const bodyInner = document.body?.innerText || "";
-      const m = bodyInner.match(/\$\s?([0-9,]+(?:\.[0-9]{2})?)/);
+      for (const sel of ["h1, h2, h3", "span, strong, b", "[class*='price']", "body"]) {
+        for (const el of document.querySelectorAll(sel)) {
+          const m = (el.textContent || "").match(/\$\s?([0-9,]{2,}(?:\.[0-9]{2})?)\b/);
+          if (m) { priceText = "$" + m[1]; break; }
+        }
+        if (priceText) break;
+      }
+    }
+
+    // Fallback 2: raw innerText scan of the entire visible page.
+    if (!priceText && document.body) {
+      const bodyText2 = document.body.innerText || "";
+      const m = bodyText2.match(/\$\s?([0-9,]{2,}(?:\.[0-9]{2})?)\b/);
       if (m) priceText = "$" + m[1];
     }
+
+    console.log("[DealScout CL] Price found:", priceText || "(none)");
     const price = parseFloat(priceText.replace(/[^0-9.]/g, "")) || 0;
 
-    const bodyText = document.querySelector("#postingbody")?.textContent || "";
+    // ── Description ────────────────────────────────────────────────────────
+    const bodyText =
+      document.querySelector("#postingbody")?.innerText ||
+      document.querySelector("[id^='postingbody']")?.innerText ||
+      document.querySelector("section.postinginfos + section, article, [class*='posting-body']")?.innerText ||
+      "";
     const description = bodyText.slice(0, 800).trim();
 
-    const condition = detectCondition(bodyText);
+    const condition = detectCondition(description);
 
-    const mapAddress = document.querySelector(".mapaddress")?.textContent?.trim() || "";
-    const cityFromSubdomain = location.hostname.replace(".craigslist.org", "").replace(/\b\w/g, c => c.toUpperCase());
+    // ── Location ───────────────────────────────────────────────────────────
+    const mapAddress =
+      document.querySelector(".mapaddress")?.textContent?.trim() ||
+      document.querySelector("[class*='mapaddress']")?.textContent?.trim() ||
+      document.querySelector('[data-latitude]')?.nextSibling?.textContent?.trim() ||
+      "";
+    // Subdomain city — "sandiego.craigslist.org" → "Sandiego" → usable as fallback
+    const hostname = location.hostname;
+    const subdomain = hostname.replace(/\.craigslist\.org$/, "");
+    const cityFromSubdomain = (subdomain && subdomain !== "www" && subdomain !== "craigslist")
+      ? subdomain.replace(/\b\w/g, c => c.toUpperCase())
+      : "";
     const location_ = mapAddress || cityFromSubdomain;
 
+    // ── Images ─────────────────────────────────────────────────────────────
     const images = [];
-    document.querySelectorAll("#thumbs a").forEach(a => {
-      const src = (a.href || "").replace(/\/[0-9]+x[0-9]+\.jpg/, "/600x450.jpg");
-      if (src && src.includes(".jpg") && !images.includes(src)) images.push(src);
-    });
+    const _addImg = src => {
+      if (!src || images.includes(src)) return;
+      // Normalise thumbnail URLs to a large format
+      const large = src.replace(/\/[0-9]+x[0-9]+\.jpg/, "/600x450.jpg")
+                       .replace(/_\d+x\d+\.jpg/, "_600x450.jpg");
+      if (!images.includes(large)) images.push(large);
+    };
+
+    // Old CL: #thumbs anchor tags
+    document.querySelectorAll("#thumbs a").forEach(a => _addImg(a.href));
+    // Old CL: swipe gallery images
+    document.querySelectorAll(".swipe-wrap img, .slide img").forEach(img => _addImg(img.src));
+    // New CL: img tags whose src contains craigslist.org/images
     if (!images.length) {
-      document.querySelectorAll(".swipe-wrap img, .slide img").forEach(img => {
-        const src = (img.src || "").replace(/\/[0-9]+x[0-9]+\.jpg/, "/600x450.jpg");
-        if (src && !images.includes(src)) images.push(src);
+      document.querySelectorAll("img[src*='craigslist.org/images'], img[src*='images.craigslist.org']")
+        .forEach(img => _addImg(img.src));
+    }
+    // Absolute last resort: any large image on the page
+    if (!images.length) {
+      document.querySelectorAll("img").forEach(img => {
+        if ((img.naturalWidth || img.clientWidth || 0) >= 200) _addImg(img.src);
       });
     }
 
-    return {
+    const result = {
       title,
       price,
       raw_price_text: priceText,
@@ -90,6 +196,8 @@
       image_urls: images.slice(0, 5),
       platform: PLATFORM,
     };
+    console.log("[DealScout CL] extractListing():", result);
+    return result;
   }
 
   function detectCondition(text) {
@@ -149,16 +257,38 @@
     return "1000+";
   }
 
-  // ── Background Communication ───────────────────────────────────────────────
-  function sendToBackground(listing) {
-    return new Promise((resolve, reject) => {
+  // ── Direct API Call ────────────────────────────────────────────────────────
+  // Call the scoring API directly from the content script (same approach as fbm.js).
+  // This bypasses the MV3 service worker, which Chrome can terminate mid-request
+  // (30-second idle window), causing the background-routed SCORE_LISTING message
+  // to silently disappear and never resolve.
+  async function callScoringAPIDirect(listing, signal) {
+    const response = await fetch(`${API_BASE}/score`, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify(listing),
+      signal,
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || `API error ${response.status}`);
+    }
+    return response.json();
+  }
+
+  // Fetch affiliate links via background (it owns the affiliate IDs).
+  // Non-critical — panel renders without them if this fails.
+  async function fetchAffiliateLinks(title, price) {
+    return new Promise((resolve) => {
       try {
-        chrome.runtime.sendMessage({ type: "SCORE_LISTING", listing }, (response) => {
-          if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
-          if (!response || !response.success) { reject(new Error(response?.error || "No response")); return; }
-          resolve(response.result);
-        });
-      } catch (e) { reject(e); }
+        chrome.runtime.sendMessage(
+          { type: "GET_AFFILIATE_LINKS", query: title, price },
+          (r) => {
+            if (chrome.runtime.lastError || !r?.success) { resolve([]); return; }
+            resolve(r.links || []);
+          }
+        );
+      } catch (_) { resolve([]); }
     });
   }
 
@@ -439,24 +569,66 @@
 
   // ── Auto-Score ─────────────────────────────────────────────────────────────
   async function autoScore() {
-    if (!isListingPage()) return;
-    const listing = extractListing();
-    showPanel();
-    if (!listing.price) {
-      renderError("Could not detect a price on this listing. Try refreshing the page.");
+    console.log("[DealScout CL] autoScore() called");
+
+    if (!isListingPage()) {
+      console.log("[DealScout CL] autoScore: isListingPage() returned false — aborting");
       return;
     }
+
+    // Poll up to 5 seconds (25 × 200ms) for a price to appear.
+    let listing = extractListing();
+    console.log("[DealScout CL] Initial extraction:", { title: listing.title, price: listing.price, rawPrice: listing.raw_price_text });
+    let waited  = 0;
+    while (!listing.price && waited < 25) {
+      await new Promise(r => setTimeout(r, 200));
+      waited++;
+      listing = extractListing();
+    }
+    console.log("[DealScout CL] After polling (waited " + waited + "×200ms):", { title: listing.title, price: listing.price });
+
+    showPanel();
+
+    if (!listing.price) {
+      console.log("[DealScout CL] No price found after polling — rendering error panel");
+      renderError("Could not detect a price on this listing. Try refreshing or use the Score button.");
+      return;
+    }
+
     renderLoading(listing);
+
+    const abort = new AbortController();
+    window.__dsCLAbort = abort;
+
     try {
-      const result = await sendToBackground(listing);
+      console.log("[DealScout CL] Calling scoring API…");
+      const result = await callScoringAPIDirect(listing, abort.signal);
+      if (abort.signal.aborted) return;
+      console.log("[DealScout CL] API returned score:", result.score);
+
+      const afLinks = await fetchAffiliateLinks(listing.title, listing.price);
+      if (afLinks && afLinks.length) result.affiliateLinks = afLinks;
+
+      try {
+        const badgeColor = result.score >= 7 ? "#22c55e" : result.score >= 5 ? "#fbbf24" : "#ef4444";
+        chrome.runtime.sendMessage({ type: "BADGE_UPDATE", score: result.score, color: badgeColor }).catch(() => {});
+      } catch (_) {}
+
       renderScore(result);
+
     } catch (err) {
+      if (abort.signal.aborted) return;
+      console.error("[DealScout CL] Scoring error:", err);
       renderError(err.message || "Scoring failed");
+    } finally {
+      if (window.__dsCLAbort === abort) window.__dsCLAbort = null;
     }
   }
 
   // ── Global trigger (called directly by popup via executeScript) ────────────
   window.__dsScoreCL = () => {
+    console.log("[DealScout CL] Manual rescore triggered");
+    if (window.__dsCLAbort) { window.__dsCLAbort.abort(); window.__dsCLAbort = null; }
     _initiated = false;
     removePanel();
     setTimeout(autoScore, 300);
@@ -473,18 +645,21 @@
 
   // ── Init ───────────────────────────────────────────────────────────────────
   let _initiated = false;
-  function tryInit() {
+  function tryInit(reason) {
+    console.log("[DealScout CL] tryInit() called —", reason || "no reason", "| readyState:", document.readyState, "| _initiated:", _initiated);
     if (_initiated) return;
     if (!isListingPage()) return;
     _initiated = true;
-    setTimeout(autoScore, 800);
+    autoScore();
   }
 
-  tryInit();
-  if (document.readyState !== "complete") {
-    document.addEventListener("DOMContentLoaded", tryInit);
-    window.addEventListener("load", tryInit);
-  }
-  setTimeout(tryInit, 2000);
+  // CL is a traditional multi-page site. Run immediately at document_idle.
+  tryInit("document_idle");
+
+  // Belt-and-suspenders: retry at window load if page wasn't ready yet.
+  window.addEventListener("load", () => tryInit("load event"), { once: true });
+
+  // Additional 2-second backup: handles edge cases where both fire too early.
+  setTimeout(() => tryInit("2s timeout"), 2000);
 
 })();
