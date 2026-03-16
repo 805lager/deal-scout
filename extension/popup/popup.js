@@ -17,18 +17,19 @@ function detectPlatform(url) {
 }
 
 async function checkAPIHealth() {
-  const statusEl = document.getElementById("api-status");
-  const API_BASE = await getApiBase();
+  const statusEl  = document.getElementById("api-status");
+  const statusTxt = document.getElementById("status-text");
+  const API_BASE  = await getApiBase();
   try {
     const resp = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(4000) });
     if (resp.ok) {
       const data = await resp.json();
-      statusEl.className = "status-card active";
-      statusEl.innerHTML = `✅ API connected &nbsp;·&nbsp; <span style="font-size:11px">Claude: ${data.anthropic_key} &nbsp;·&nbsp; eBay: ${data.ebay_key}</span>`;
+      statusEl.className = "active";
+      statusTxt.textContent = `Connected · Claude: ${data.anthropic_key} · eBay: ${data.ebay_key}`;
     } else { throw new Error(`HTTP ${resp.status}`); }
   } catch (e) {
-    statusEl.className = "status-card error";
-    statusEl.innerHTML = `❌ API offline &nbsp;·&nbsp; <span style="font-size:11px">${e.message}</span>`;
+    statusEl.className = "error";
+    statusTxt.textContent = `API offline · ${e.message}`;
   }
 }
 
@@ -126,13 +127,18 @@ function renderDealPanel(r, panelId, apiBase) {
 
 // ── Score Current Listing button ──────────────────────────────────────────────
 document.getElementById("score-current").addEventListener("click", async () => {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  const statusEl = document.getElementById("api-status");
-  const platform = detectPlatform(tab?.url);
+  const [tab]     = await chrome.tabs.query({ active: true, currentWindow: true });
+  const statusEl  = document.getElementById("api-status");
+  const statusTxt = document.getElementById("status-text");
+  const platform  = detectPlatform(tab?.url);
+
+  const setStatus = (state, msg) => {
+    statusEl.className = state;
+    statusTxt.textContent = msg;
+  };
 
   if (!platform) {
-    statusEl.className = "status-card error";
-    statusEl.innerText = "⚠️ Navigate to a Craigslist, OfferUp, eBay, or Facebook Marketplace listing first.";
+    setStatus("error", "Navigate to a Craigslist, OfferUp, eBay, or FBM listing first.");
     return;
   }
 
@@ -145,8 +151,7 @@ document.getElementById("score-current").addEventListener("click", async () => {
   if (rescoreWorked) { window.close(); return; }
 
   // Content script not responding — run self-contained extraction + API + render
-  statusEl.className = "status-card";
-  statusEl.innerText = "⏳ Extracting listing…";
+  setStatus("", "Extracting listing…");
 
   const extractor = platform === "craigslist" ? extractCraigslist : extractOfferUp;
 
@@ -158,19 +163,16 @@ document.getElementById("score-current").addEventListener("click", async () => {
     });
     listing = extracted?.[0]?.result;
   } catch (e) {
-    statusEl.className = "status-card error";
-    statusEl.innerText = `⚠️ Could not read page: ${e.message}`;
+    setStatus("error", `Could not read page: ${e.message}`);
     return;
   }
 
   if (!listing?.price) {
-    statusEl.className = "status-card error";
-    statusEl.innerText = `⚠️ Could not find a price on this listing. Make sure you're on an individual listing page.`;
+    setStatus("error", "No price found — make sure you're on an individual listing page.");
     return;
   }
 
-  statusEl.className = "status-card";
-  statusEl.innerText = `⏳ Scoring "${listing.title?.slice(0, 40)}…"`;
+  setStatus("", `Scoring "${listing.title?.slice(0, 36)}…"`);
 
   const API_BASE = await getApiBase();
   let result;
@@ -183,8 +185,7 @@ document.getElementById("score-current").addEventListener("click", async () => {
     });
     result = await resp.json();
   } catch (e) {
-    statusEl.className = "status-card error";
-    statusEl.innerText = `⚠️ API error: ${e.message}`;
+    setStatus("error", `API error: ${e.message}`);
     return;
   }
 
@@ -197,8 +198,7 @@ document.getElementById("score-current").addEventListener("click", async () => {
       args: [result, panelId, API_BASE],
     });
   } catch (e) {
-    statusEl.className = "status-card error";
-    statusEl.innerText = `⚠️ Could not render panel: ${e.message}`;
+    setStatus("error", `Could not render panel: ${e.message}`);
     return;
   }
 
