@@ -126,12 +126,18 @@
     const price = parseFloat(priceText.replace(/[^0-9.]/g, "")) || 0;
 
     // ── Description ────────────────────────────────────────────────────────
-    const bodyText =
+    const rawBodyText =
       document.querySelector("#postingbody")?.innerText ||
       document.querySelector("[id^='postingbody']")?.innerText ||
       document.querySelector("section.postinginfos + section, article, [class*='posting-body']")?.innerText ||
       "";
-    const description = bodyText.slice(0, 800).trim();
+    // CL injects "QR Code Link to This Post" into every listing's body element.
+    // Strip it (and similar CL UI noise) so the security AI doesn't flag it as suspicious.
+    const description = rawBodyText
+      .replace(/QR\s*Code\s*Link\s*to\s*This\s*Post/gi, "")
+      .replace(/\n{3,}/g, "\n\n")
+      .slice(0, 800)
+      .trim();
 
     const condition = detectCondition(description);
 
