@@ -998,6 +998,14 @@ def _mock_ebay_response(query: str, operation: str) -> list[dict]:
     elif any(w in q for w in ["weights", "dumbbells", "barbell", "kettlebell"]):
         base = 100
     # Camping / outdoor
+    elif any(w in q for w in ["pontoon boat", "pontoon"]):
+        base = 5000
+    elif any(w in q for w in ["motorboat", "bass boat", "ski boat", "fishing boat", "jon boat"]):
+        base = 4000
+    elif any(w in q for w in ["inflatable boat", "inflatable raft", "zodiac"]):
+        base = 600
+    elif any(w in q for w in ["waverunner", "sea doo", "seadoo"]):
+        base = 5000
     elif any(w in q for w in ["kayak", "canoe", "paddleboard"]):
         base = 700
     elif any(w in q for w in ["tent", "sleeping bag", "camping gear"]):

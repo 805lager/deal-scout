@@ -751,7 +751,14 @@ CATEGORY_MAP = {
     "dirt bike":           "vehicles",
     "golf cart":           "vehicles",
     "boat":                "vehicles",
+    "pontoon":             "vehicles",
+    "motorboat":           "vehicles",
+    "bass boat":           "vehicles",
+    "ski boat":            "vehicles",
+    "inflatable boat":     "vehicles",
+    "jon boat":            "vehicles",
     "jet ski":             "vehicles",
+    "waverunner":          "vehicles",
     "snowmobile":          "vehicles",
     "side by side":        "vehicles",
     "utv":                 "vehicles",
@@ -1086,9 +1093,26 @@ def detect_category(product_info) -> str:
 
     combined = " ".join(candidates).lower()
 
-    # Exact + substring matching against CATEGORY_MAP
+    # WHY WORD-BOUNDARY (not plain substring):
+    # Naive substring matching has a class of false-positive bugs where a short
+    # keyword appears inside a longer unrelated word:
+    #   "inflatable" contains "table"  → furniture  (should be outdoor/vehicles)
+    #   "amplifier"  contains "amp"    → audio (OK here, but pattern is fragile)
+    #   "baseball"   contains "base"   → would match if "base" were a key
+    # Sorting by keyword length descending helps but doesn't fully prevent it —
+    # a 4-char key like "boat" is checked after a 5-char key like "table", so
+    # "inflatable pontoon boat" matches furniture via "table" before reaching "boat".
+    #
+    # Fix: require keyword to appear as a complete word (or phrase) using \b.
+    # Multi-word keywords like "gaming chair" also benefit — "gaming chair"
+    # won't be triggered by "bargaining chairlift". The re.escape() call ensures
+    # any special regex chars in the keyword (e.g. hyphens in "sur-ron") are
+    # treated as literals. Pattern is precompiled per-keyword in the loop;
+    # the CATEGORY_MAP is O(200) entries so the overhead is negligible.
+    import re as _re
     for keyword, cat_key in sorted(CATEGORY_MAP.items(), key=lambda x: -len(x[0])):
-        if keyword in combined:
+        pattern = r'\b' + _re.escape(keyword) + r'\b'
+        if _re.search(pattern, combined):
             return cat_key
 
     return "general"

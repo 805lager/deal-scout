@@ -111,16 +111,32 @@ SCAM_PATTERNS = [
     (r'contact\s*me\s*(directly|outside|off)',
      "Asks to contact outside the platform", "high"),
 
-    # Shipping scams on items that shouldn't ship
-    (r'\b(i\s*can\s*ship|willing\s*to\s*ship|will\s*ship|can\s*deliver)\b',
-     "Offers to ship item typically sold locally (potential shipping scam)", "high"),
+    # Shipping scams on items that shouldn't ship.
+    # WHY NOT "can deliver" alone: many FBM sellers of large items (furniture,
+    # appliances, boats) legitimately offer local delivery for a small fee.
+    # "Local delivery" or "deliver within X miles" is normal, not a red flag.
+    # We target seller-initiated shipping of high-value goods to remote buyers —
+    # that's the actual scam vector (pay first, never ships).
+    # Reduced from "high" to "medium": shipping offer alone isn't high-risk;
+    # it's only suspicious in combination with other signals.
+    (r'\b(i\s*can\s*ship|willing\s*to\s*ship|will\s*ship)\b(?!.*local)',
+     "Offers to ship (verify in-person pickup option before sending payment)", "medium"),
 
-    # Classic advance-fee / social engineering stories
-    (r'\b(moving|relocating|deployed|military|overseas|out\s*of\s*town|out\s*of\s*state)\b',
+    # Classic advance-fee / social engineering stories.
+    # WHY "moving" is intentionally excluded from this pattern:
+    # "Moving sale" is one of the most common legitimate FBM listing types —
+    # flagging every seller who mentions moving destroys scorer credibility.
+    # Scam-specific relocating language uses "relocating", "deployed", "military",
+    # "overseas", "out of country" — these are rare in legitimate listings.
+    (r'\b(relocating|deployed|military|overseas|out\s*of\s*country|out\s*of\s*state\s+(cannot|can\'t|unable))\b',
      "Uses relocation/deployment story (common scam narrative)", "medium"),
 
-    (r'\b(divorce|death|passed\s*away|deceased|estate\s*sale|inheritance)\b',
-     "Uses emotional story (death/divorce/inheritance — common scam narrative)", "medium"),
+    # Emotional/hardship stories — death and divorce are real scam signals;
+    # "estate sale" is explicitly excluded because it's a completely legitimate
+    # and common FBM listing type (selling items from a deceased relative's estate
+    # is normal and not inherently suspicious).
+    (r'\b(divorce|death|passed\s*away|deceased|inheritance)\b',
+     "Uses emotional hardship story (common scam narrative)", "medium"),
 
     (r'\b(my\s*(son|daughter|kid|child|husband|wife)\s*(left|moved|going\s*to\s*college))\b',
      "Uses family story to justify urgency (common pressure tactic)", "medium"),
@@ -258,9 +274,12 @@ def _layer1_score(flags: list) -> int:
     severity_weights = {"critical": 4, "high": 2, "medium": 1, "low": 0.5}
     deduction = sum(severity_weights.get(f["severity"], 1) for f in flags)
 
-    # Cap deduction at 9 — layer1 alone never gives a 1/10
-    # (need AI confirmation for lowest scores)
-    score = max(1, 10 - int(deduction))
+    # Layer 1 alone never gives 1/10 — AI confirmation needed for the floor.
+    # Cap at 9 deduction so minimum score is 1, but in practice the cap keeps
+    # pure regex scores at 2 minimum (gives AI room to lower further if needed).
+    # WHY 2 minimum: regex patterns can't assess intent or context — a seller
+    # mentioning "PayPal F&F" may be legitimate; only Claude can confirm scam.
+    score = max(2, 10 - int(deduction))
     return score
 
 
@@ -435,10 +454,22 @@ async def score_security(
         log.info("[Security] Skipping Layer 2 (no API client)")
 
 
-    # Merge scores: average Layer 1 and Layer 2, weighted toward AI when available
+    # Merge scores: Layer 1 anchors, AI adjusts.
+    # WHY DYNAMIC WEIGHTING by AI risk level:
+    #   When AI sees a clear scam (score 1-3), trust it heavily — regex can't
+    #   detect social engineering or subtle manipulation. Giving L1 35% weight
+    #   when AI says 2/10 but L1 is clean would produce a misleadingly safe 5/10.
+    #   When AI gives a high score (8-10), it agrees with a clean L1, so the
+    #   exact blend doesn't matter much — the result is high either way.
     ai_score = ai_result.get("score")
     if ai_score and isinstance(ai_score, (int, float)):
-        final_score = round((l1_score * 0.35) + (ai_score * 0.65))
+        if ai_score <= 3:
+            weight_ai = 0.85   # AI detects critical scam signal — trust it
+        elif ai_score <= 5:
+            weight_ai = 0.75   # AI sees notable risk — lean toward AI
+        else:
+            weight_ai = 0.65   # Normal blend
+        final_score = round((l1_score * (1 - weight_ai)) + (ai_score * weight_ai))
     else:
         final_score = l1_score
 
