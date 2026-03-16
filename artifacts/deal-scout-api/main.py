@@ -212,9 +212,10 @@ class DealScoreResponse(BaseModel):
     should_buy:        bool
     ai_confidence:     str
     model_used:        str
-    image_analyzed:    bool = False  # True when Claude Vision was used on listing photo
-    original_price:    float = 0.0  # Seller's original price if reduced (strikethrough)
-    shipping_cost:     float = 0.0  # Shipping cost extracted from listing (0 = free/pickup)
+    image_analyzed:     bool  = False  # True when Claude Vision was used on listing photo
+    affiliate_category: str   = ""    # Category Claude picked for affiliate routing (e.g. "collectibles")
+    original_price:     float = 0.0   # Seller's original price if reduced (strikethrough)
+    shipping_cost:      float = 0.0   # Shipping cost extracted from listing (0 = free/pickup)
 
     # Product intelligence
     product_info:          dict = {}   # Extracted brand/model/search_query
@@ -388,15 +389,24 @@ async def score_listing(listing: ListingRequest, request: Request):
             deal_score.should_buy = False
 
     # ── Step 4: Generate affiliate recommendations ──────────────────────────────
-    from scoring.affiliate_router import detect_category
-    # Compute category here so it can be passed to both the affiliate router
-    # and the security scorer. Override to 'vehicles' when is_vehicle=True:
-    # detect_category() text-matches product_info and returns 'general' for
-    # car listings (BMW 328i has no word 'vehicle' in its description),
-    # which then triggers the Amazon safety net. (Bug B-V4)
-    category_detected = detect_category(product_info)
+    from scoring.affiliate_router import detect_category, CATEGORY_PROGRAMS
+    # Category detection priority:
+    #   1. Claude's affiliate_category field (set by the scoring LLM — most accurate)
+    #   2. is_vehicle override (content script explicitly flagged this as a vehicle)
+    #   3. Keyword-based detect_category() (fast fallback for when Claude omits the field)
+    _valid_categories = set(CATEGORY_PROGRAMS.keys()) | {"general"}
+    claude_category   = (deal_score.affiliate_category or "").strip().lower()
+    if claude_category and claude_category in _valid_categories:
+        category_detected = claude_category
+        log.info(f"[Category] Claude → '{category_detected}'")
+    else:
+        if claude_category:
+            log.warning(f"[Category] Claude returned unknown value '{claude_category}' — falling back to keyword detection")
+        category_detected = detect_category(product_info)
+        log.info(f"[Category] Keyword → '{category_detected}'")
+
     if listing.is_vehicle and category_detected not in ("vehicles", "cars", "trucks"):
-        log.info(f"[Category] Overriding '{category_detected}' → 'vehicles' (is_vehicle=True)")
+        log.info(f"[Category] is_vehicle override: '{category_detected}' → 'vehicles'")
         category_detected = "vehicles"
 
     try:
@@ -485,8 +495,9 @@ async def score_listing(listing: ListingRequest, request: Request):
         recommended_offer = deal_score.recommended_offer,
         should_buy        = deal_score.should_buy,
         ai_confidence     = deal_score.confidence,
-        model_used        = deal_score.model_used,
-        image_analyzed    = deal_score.image_analyzed,
+        model_used         = deal_score.model_used,
+        image_analyzed     = deal_score.image_analyzed,
+        affiliate_category = deal_score.affiliate_category,
 
         # Product intelligence + affiliate
         product_info       = dc_asdict_top(product_info),
