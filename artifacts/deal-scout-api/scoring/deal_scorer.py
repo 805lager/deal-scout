@@ -87,6 +87,8 @@ class DealScore:
     model_used:         str     # Which Claude model scored this
     image_analyzed:     bool    = False  # True if Claude Vision analyzed the listing photo
     affiliate_category: str     = ""    # Claude's read on what product category this is for affiliate routing
+    negotiation_message: str    = ""    # Ready-to-send buyer message referencing price context
+    bundle_items:        list   = None  # [{item, value}] breakdown for multi-item listings
 
 
 # ── Prompt Builder ────────────────────────────────────────────────────────────
@@ -278,7 +280,9 @@ Use exactly this structure:
   "recommended_offer": <float — the price you'd recommend offering>,
   "should_buy": <true or false>,
   "confidence": "<high|medium|low>",
-  "affiliate_category": "<one of the exact strings below>"
+  "affiliate_category": "<one of the exact strings below>",
+  "negotiation_message": "<see NEGOTIATION MESSAGE instructions below>",
+  "bundle_items": [<see BUNDLE BREAKDOWN instructions below>]
 }}
 
 If red_flags or green_flags are empty, use an empty array [].
@@ -314,6 +318,29 @@ This tells our affiliate engine which stores to recommend — pick the most spec
   pet_supplies      — pet accessories, crates, leashes, toys, litter boxes
   collectibles      — trading cards (Pokemon, sports, MTG, Yu-Gi-Oh), graded cards, coins, stamps, action figures (collectible grade)
   general           — anything that doesn't clearly fit the above categories
+
+## NEGOTIATION MESSAGE
+Write a 1–2 sentence negotiation_message the buyer can copy and send to the seller.
+Rules:
+- Sound like a real person, not a bot. Casual but respectful.
+- Reference a specific dollar figure from the market data (eBay sold avg or recommended_offer).
+- Never mention "Deal Scout", AI, or apps — the buyer is sending this themselves.
+- If the deal is already excellent (score ≥ 8) or the listing asks below market, say so briefly
+  and suggest paying asking or close to it.
+- If is_vehicle=True, reference mileage context or "similar listed at $X" instead of eBay comps.
+Examples:
+  Good: "Hey, I'm interested — I've been seeing similar ones sell for around $180 on eBay. Any chance you'd take $160?"
+  Good: "Love the listing! I saw a couple others in the same condition go for about $95. Would you do $90?"
+  Bad: "According to market data analysis, the recommended offer price is $160.00."
+
+## BUNDLE BREAKDOWN
+bundle_items: If this is a multi-item bundle (is_multi_item=True in the listing), list each
+distinct item with your best estimate of its individual used market value. Use this structure:
+  [{{"item": "Dewalt 20V drill", "value": 75}}, {{"item": "circular saw", "value": 60}}]
+
+If NOT a bundle listing, return an empty array: []
+Aim for 2–8 items. Lump minor accessories (charger, case, manual) into a parent item's value
+rather than listing them separately. Values should reflect realistic used eBay sold prices.
 """
 
 
@@ -551,21 +578,34 @@ async def score_deal(
         else:
             safe_offer = float(raw_offer)
 
-        raw_aff_cat = (data.get("affiliate_category") or "").strip().lower()
+        raw_aff_cat    = (data.get("affiliate_category") or "").strip().lower()
+        raw_neg_msg    = (data.get("negotiation_message") or "").strip()
+        raw_bundle     = data.get("bundle_items")
+        # bundle_items must be a list of {item, value} dicts; coerce anything else to []
+        if isinstance(raw_bundle, list) and raw_bundle:
+            bundle_items = [
+                {"item": str(b.get("item", "")), "value": float(b.get("value", 0))}
+                for b in raw_bundle if isinstance(b, dict) and b.get("item")
+            ]
+        else:
+            bundle_items = []
+
         return DealScore(
-            score              = int(data.get("score", 5)),
-            verdict            = data.get("verdict", "No verdict"),
-            summary            = data.get("summary", ""),
-            value_assessment   = data.get("value_assessment", ""),
-            condition_notes    = data.get("condition_notes", ""),
-            red_flags          = data.get("red_flags") or [],
-            green_flags        = data.get("green_flags") or [],
-            recommended_offer  = safe_offer,
-            should_buy         = bool(data.get("should_buy", False)),
-            confidence         = data.get("confidence", "medium"),
-            model_used         = response.model,
-            image_analyzed     = image_analyzed,
-            affiliate_category = raw_aff_cat,
+            score               = int(data.get("score", 5)),
+            verdict             = data.get("verdict", "No verdict"),
+            summary             = data.get("summary", ""),
+            value_assessment    = data.get("value_assessment", ""),
+            condition_notes     = data.get("condition_notes", ""),
+            red_flags           = data.get("red_flags") or [],
+            green_flags         = data.get("green_flags") or [],
+            recommended_offer   = safe_offer,
+            should_buy          = bool(data.get("should_buy", False)),
+            confidence          = data.get("confidence", "medium"),
+            model_used          = response.model,
+            image_analyzed      = image_analyzed,
+            affiliate_category  = raw_aff_cat,
+            negotiation_message = raw_neg_msg,
+            bundle_items        = bundle_items,
         )
 
     except anthropic.AuthenticationError as e:

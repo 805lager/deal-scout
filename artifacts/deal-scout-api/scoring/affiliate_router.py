@@ -1278,10 +1278,11 @@ def get_affiliate_recommendations(
       Sidebar is 310px wide. Each card is ~70px tall.
       3 cards = reasonable without scrolling. Quality over quantity.
     """
-    category   = category_override if category_override else detect_category(product_info)
-    true_cost  = listing_price + shipping_cost
-    query      = getattr(product_info, "search_query", "") or getattr(product_info, "display_name", "") or ""
-    amazon_q   = getattr(product_info, "amazon_query", query) or query
+    category     = category_override if category_override else detect_category(product_info)
+    true_cost    = listing_price + shipping_cost
+    query        = getattr(product_info, "search_query", "") or getattr(product_info, "display_name", "") or ""
+    amazon_q     = getattr(product_info, "amazon_query", query) or query
+    display_name = getattr(product_info, "display_name", "") or ""   # human-readable name for card titles
     # Extract new retail price from market_value so _build_card can show dollar gap
     # and populate price_hint. Guarded: market_value may be None if pricing failed.
     mv_new_price = getattr(market_value, "new_price", 0.0) or 0.0
@@ -1390,6 +1391,7 @@ def get_affiliate_recommendations(
             est_revenue    = cand["est_revenue"],
             category       = category,
             new_price      = mv_new_price,
+            display_name   = display_name,
         )
         cards.append(card)
 
@@ -1406,6 +1408,7 @@ def get_affiliate_recommendations(
             est_revenue=_estimate_revenue("amazon", listing_price),
             category=category,
             new_price=mv_new_price,
+            display_name=display_name,
         ))
 
     # Vehicle safety net: always show Autotrader even in search-only mode
@@ -1419,6 +1422,7 @@ def get_affiliate_recommendations(
                 deal_score=deal_score, commission_live=bool(p.get("tag")),
                 est_revenue=_estimate_revenue("autotrader", listing_price),
                 category=category,
+                display_name=display_name,
             ))
     # Trim back to max_cards after insertions
     cards = cards[:max_cards]
@@ -1430,7 +1434,8 @@ def get_affiliate_recommendations(
 def _build_card(
     key, p, url, query, listing_price, true_cost,
     deal_score, commission_live, est_revenue, category,
-    new_price: float = 0.0,  # new retail price from market_value — enables price_hint on cards
+    new_price: float = 0.0,    # new retail price from market_value — enables price_hint on cards
+    display_name: str = "",    # Claude-extracted product name — used for specific card titles
 ) -> AffiliateCard:
     """Build the display copy for a single affiliate card."""
 
@@ -1449,19 +1454,29 @@ def _build_card(
     else:
         card_type = "new_retail"
 
-    # Title — use clean action-oriented copy, not raw search query.
-    # WHY: raw query like "boys pants bundle lot — New at Amazon" is ugly and
-    # defeats the purpose. The store badge already shows the retailer name.
-    # Clean titles drive higher CTR and look more professional.
-    display = query[:40] if query else "this item"
+    # Specific item label — use Claude-extracted display_name when available.
+    # Truncate to ~32 chars to keep titles readable; fall back to query fragment.
+    # WHY display_name over query: query is eBay-style ("Pioneer SP-BS21-LR bookshelf")
+    # while display_name is human-readable ("Pioneer SP-BS21-LR Tower Speakers").
+    _name = (display_name or "").strip()
+    if _name and len(_name) > 34:
+        # Truncate at last space before 34 chars to avoid mid-word cuts
+        _name = _name[:34].rsplit(" ", 1)[0]
+    item_label = _name or (query[:30].rsplit(" ", 1)[0] if query else "")
+
+    # Title — use item-specific copy when we have the product name, otherwise
+    # fall back to action-oriented store copy. The store badge already shows
+    # the retailer name, so leading with the ITEM name is more informative.
     if is_vehicle:
-        title = f"Find similar at {p['name']}"
+        # Vehicles: be specific about what to search for on Autotrader/eBay
+        title = f"Find a {item_label} on {p['name']}" if item_label else f"Find similar at {p['name']}"
     elif is_refurb:
-        title = f"Shop certified refurb on {p['name']}"
+        title = f"Certified refurb · {item_label}" if item_label else f"Shop certified refurb on {p['name']}"
     elif card_type == "used_comp":
-        title = f"Compare prices on eBay"
+        title = f"Used {item_label} on eBay" if item_label else "Compare prices on eBay"
     else:
-        title = f"Shop new on {p['name']}"
+        # New retail: "{item} at {store}" reads naturally and drives CTR
+        title = f"{item_label} at {p['name']}" if item_label else f"Shop new on {p['name']}"
 
     # Subtitle
     if is_vehicle:
