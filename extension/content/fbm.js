@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.26.39';
+  const VERSION  = '0.26.40';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -583,9 +583,17 @@
       const msg = err.message || 'Scoring failed';
       renderError(msg.includes('listing title') ? '⏳ Page still loading — try the Score button' : msg);
     } finally {
-      // Always release the mutex so the next navigation can start a fresh autoScore.
-      // This fires whether we returned early (guard failed) or rendered successfully.
-      window.__dealScoutRunning = false;
+      // Only release the mutex if WE still own it.
+      // Race condition fixed here: if _onFbmNav fired during our run, it already
+      // reset __dealScoutRunning = false AND a newer autoScore may have set it
+      // back to true. Blindly clearing it would evict the newer autoScore's lock,
+      // letting a THIRD concurrent run start when bg re-injects.
+      //
+      // Guard: only clear when our nonce still matches (we are the active run).
+      // If nonce changed, _onFbmNav handled cleanup — leave the mutex alone.
+      if (window.__dealScoutNonce === myNonce) {
+        window.__dealScoutRunning = false;
+      }
     }
   }
 
@@ -1553,11 +1561,15 @@
       cardEl.addEventListener('click', () => {
         try {
           chrome.runtime.sendMessage({
-            type:         'AFFILIATE_CLICK',
-            program:      progKey,
-            category:     r.category_detected || '',
-            price_bucket: priceBucket(r.price),
-            deal_score:   score,
+            type:             'AFFILIATE_CLICK',
+            program:          progKey,
+            category:         r.category_detected || '',
+            price_bucket:     priceBucket(r.price),
+            deal_score:       score,
+            position:         idx + 1,
+            card_type:        card.card_type        || '',
+            selection_reason: card.reason           || '',
+            commission_live:  !!card.commission_live,
           });
         } catch(e) {}
       });
@@ -1690,13 +1702,36 @@
         btn.style.cssText = 'display:flex;align-items:center;gap:5px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:5px 12px;cursor:pointer;font-size:14px;color:#d1d5db';
         btn.innerHTML = emoji + ' <span style="font-size:11px">' + label + '</span>';
         btn.addEventListener('click', () => {
-          fetch(API_BASE + '/thumbs', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({score_id: r.score_id, thumbs: val}),
-            signal: AbortSignal.timeout(5000),
-          }).catch(() => {});
-          thumbWrap.innerHTML = '<span style="font-size:12px;color:#6ee7b7">✓ Thanks for the feedback!</span>';
+          if (val === 1) {
+            fetch(API_BASE + '/thumbs', {
+              method: 'POST', headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({score_id: r.score_id, thumbs: 1, reason: ''}),
+              signal: AbortSignal.timeout(5000),
+            }).catch(() => {});
+            thumbWrap.innerHTML = '<span style="font-size:12px;color:#6ee7b7">✓ Thanks!</span>';
+          } else {
+            thumbWrap.innerHTML = '';
+            const reasonRow = document.createElement('div');
+            reasonRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;justify-content:center;max-width:230px';
+            [['Score too high','score_too_high'],['Score too low','score_too_low'],
+             ['Price wrong','price_wrong'],['Wrong category','wrong_category'],['Missing info','missing_info']
+            ].forEach(([lbl, key]) => {
+              const pill = document.createElement('button');
+              pill.style.cssText = 'font-size:10px;padding:3px 8px;border-radius:6px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.05);color:#d1d5db;cursor:pointer';
+              pill.textContent = lbl;
+              pill.addEventListener('click', (e) => {
+                e.stopPropagation();
+                fetch(API_BASE + '/thumbs', {
+                  method: 'POST', headers: {'Content-Type': 'application/json'},
+                  body: JSON.stringify({score_id: r.score_id, thumbs: -1, reason: key}),
+                  signal: AbortSignal.timeout(5000),
+                }).catch(() => {});
+                thumbWrap.innerHTML = '<span style="font-size:12px;color:#6ee7b7">✓ Got it, thanks!</span>';
+              });
+              reasonRow.appendChild(pill);
+            });
+            thumbWrap.appendChild(reasonRow);
+          }
         });
         return btn;
       };
@@ -1750,8 +1785,44 @@
   const _fbmOrigPush    = history.pushState.bind(history);
   const _fbmOrigReplace = history.replaceState.bind(history);
 
-  function _onFbmNav() {
-    if (isListingPage()) {
+  // Extract the numeric listing ID from a FBM marketplace URL.
+  // /marketplace/item/123456789/ → "123456789"
+  // /marketplace/san-diego/item/123456789/ → "123456789"
+  // Returns empty string for non-listing URLs.
+  function _listingIdFromUrl(href) {
+    try {
+      const full = new URL(String(href || ''), location.href).pathname;
+      const m = full.match(/\/marketplace\/(?:[^/]+\/)?item\/(\d+)/);
+      return m ? m[1] : '';
+    } catch (_) { return ''; }
+  }
+
+  function _onFbmNav(newUrl) {
+    // Resolve the destination URL before the history mutation happens.
+    // pushState/replaceState args are (state, title, url); we receive url as newUrl.
+    // popstate doesn't have a destination — treat it as a real navigation.
+    const newHref = newUrl ? (() => {
+      try { return new URL(String(newUrl), location.href).href; } catch (_) { return String(newUrl); }
+    })() : '';
+
+    // KEY FIX: FBM fires replaceState for intra-page state updates (e.g. adding
+    // chat thread IDs, updating timestamp params) WITHOUT actually navigating to a
+    // new listing. These calls have the same listing ID in the URL — or no listing
+    // ID at all. Treating them as navigation causes three bugs:
+    //   1. The in-flight scoring fetch is aborted → score never renders
+    //   2. renderNavigating() flashes "Loading next listing…" on the same item
+    //   3. The nonce increments → the readiness-poller bails out mid-wait
+    //
+    // Guard: if old and new URLs are both listing pages AND share the same numeric
+    // listing ID, skip the navigation handler entirely.
+    const oldId = _listingIdFromUrl(location.href);
+    const newId = newHref ? _listingIdFromUrl(newHref) : '';
+    if (oldId && newId && oldId === newId) {
+      console.debug('[DealScout] Ignoring intra-listing replaceState:', newHref);
+      return;
+    }
+
+    if (isListingPage() || (newHref && /\/marketplace\/(?:[^/]+\/)?item\/\d+/.test(newHref))) {
       // Abort any in-flight scoring fetch IMMEDIATELY.
       // AbortController.abort() cancels the HTTP request at the network level —
       // the fetch promise rejects with AbortError before any score data arrives.
@@ -1782,7 +1853,7 @@
         }
         return '';
       })();
-      console.debug('[DealScout] Saved prevTitle at navigation:', window.__dealScoutPrevTitle);
+      console.debug('[DealScout] Nav detected (old:', oldId, '→ new:', newId || 'unknown', ') prevTitle:', window.__dealScoutPrevTitle);
       // Clear the panel IMMEDIATELY at t=0 — don't wait 800ms for bg re-injection.
       // Without this the old listing's score (including "Better Options" cards) is
       // visible for almost a second after the user clicks to navigate.
@@ -1791,8 +1862,8 @@
     }
   }
 
-  history.pushState    = function(...a) { _onFbmNav(); _fbmOrigPush(...a);    };
-  history.replaceState = function(...a) { _onFbmNav(); _fbmOrigReplace(...a); };
-  window.addEventListener('popstate', _onFbmNav);
+  history.pushState    = function(state, title, url) { _onFbmNav(url); _fbmOrigPush(state, title, url);    };
+  history.replaceState = function(state, title, url) { _onFbmNav(url); _fbmOrigReplace(state, title, url); };
+  window.addEventListener('popstate', () => _onFbmNav(''));
 
 })();
