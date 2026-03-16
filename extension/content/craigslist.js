@@ -330,6 +330,7 @@
     renderMarketData(r, panel);
     renderBuyNewSection(r, panel);
     renderFlags(r, panel);
+    renderSecurityScore(r, panel);
     renderFooter(panel);
   }
 
@@ -545,6 +546,39 @@
       });
       section.appendChild(cardEl);
     }
+    container.appendChild(section);
+  }
+
+  function renderSecurityScore(r, container) {
+    const sec = r.security_score;
+    if (!sec) return;
+    if (sec.risk_level === "unknown" && (!sec.flags || !sec.flags.length)) return;
+
+    const riskConfig = {
+      low:      { color: "#22c55e", bg: "rgba(34,197,94,0.1)",   border: "rgba(34,197,94,0.3)",  shield: "🛡️", label: "LOW RISK" },
+      medium:   { color: "#f59e0b", bg: "rgba(245,158,11,0.1)",  border: "rgba(245,158,11,0.3)", shield: "⚠️", label: "CAUTION" },
+      high:     { color: "#f97316", bg: "rgba(249,115,22,0.12)", border: "rgba(249,115,22,0.4)", shield: "⚠️", label: "HIGH RISK" },
+      critical: { color: "#ef4444", bg: "rgba(239,68,68,0.12)",  border: "rgba(239,68,68,0.5)",  shield: "❌", label: "LIKELY SCAM" },
+    };
+    const cfg = riskConfig[sec.risk_level] || riskConfig.medium;
+
+    const section = document.createElement("div");
+    section.style.cssText = "background:" + cfg.bg + ";border:1px solid " + cfg.border + ";border-radius:10px;padding:10px 12px;margin:4px 12px 8px";
+    section.innerHTML =
+      '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">' +
+        '<span style="font-size:16px">' + cfg.shield + "</span>" +
+        '<span style="font-weight:700;font-size:13px;color:' + cfg.color + '">' + cfg.label + "</span>" +
+        '<span style="margin-left:auto;font-size:11px;color:#6b7280">Security</span>' +
+      "</div>" +
+      (sec.recommendation ? '<div style="font-size:12px;color:#d1d5db;margin-bottom:6px">' + escHtml(sec.recommendation) + "</div>" : "");
+
+    const allFlags = [...new Set([...(sec.flags || []), ...(sec.layer1_flags || [])])];
+    allFlags.slice(0, 5).forEach(flag => {
+      const f = document.createElement("div");
+      f.style.cssText = "font-size:12px;color:" + cfg.color + ";margin-bottom:2px";
+      f.textContent = "• " + flag;
+      section.appendChild(f);
+    });
     container.appendChild(section);
   }
 
