@@ -14,8 +14,13 @@
   const PANEL_ID = "deal-scout-cl-panel";
   const PLATFORM = "craigslist";
 
-  if (window.__dsCLInjected) return;
-  window.__dsCLInjected = true;
+  // Version-keyed guard: if the extension reloads with a new VERSION, the old
+  // guard key doesn't match and the new script runs on the existing page.
+  // Old guard "__dsCLInjected" (versionless) would block re-injection on every
+  // extension reload until the user hard-refreshed the CL page.
+  const _GUARD_KEY = "__dsCLInjected_" + VERSION;
+  if (window[_GUARD_KEY]) return;
+  window[_GUARD_KEY] = true;
 
   // ── API Base (from chrome.storage, same as fbm.js) ─────────────────────────
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -27,56 +32,128 @@
 
   // ── Detection ──────────────────────────────────────────────────────────────
   function isListingPage() {
-    // CL listing URLs end in a 7+ digit item ID, optionally with .html.
-    // The number of path segments before the ID varies by region/category:
-    //   sandiego.craigslist.org/ele/d/title/7123456789.html       (1 category)
-    //   sfbay.craigslist.org/lgb/ele/d/title/7123456789.html      (2 categories)
-    //   craigslist.org/d/title/7123456789.html                    (no category)
-    // Previous regex required exactly 1-2 segments before /d/ and failed on 0 or 3.
-    // New regex: craigslist.org hostname + at least /d/ somewhere + trailing numeric ID.
-    return /craigslist\.org(?:\/[^/?#]*)*\/d\/[^/?#]+\/\d{7,}(?:\.html)?(?:[?#]|$)/.test(location.href);
+    // Strategy 1: URL pattern — numeric item ID (7+ digits) anywhere in the path.
+    // Covers all known CL listing URL formats:
+    //   sandiego.craigslist.org/ele/d/title/7123456789.html         (1 category)
+    //   sfbay.craigslist.org/lgb/ele/d/title/7123456789.html        (2 categories)
+    //   craigslist.org/d/title/7123456789.html                      (no category)
+    //   www.craigslist.org/d/san-diego/electronics/7123456789.html   (new www. format)
+    // The key invariant: ALL CL item IDs are 10 digits. We just need a 10-digit
+    // number in the URL path (not query string) that looks like a posting ID.
+    const pathId = location.pathname.match(/\/(\d{10})(?:\.html)?(?:\/|$)/);
+    if (pathId) return true;
+
+    // Strategy 2: DOM fallback — #postingbody only exists on CL listing detail pages.
+    // Handles any URL format we haven't seen (future CL redesigns, redirects, etc.).
+    // This is the most reliable signal: no search page or category page has this element.
+    if (document.getElementById("postingbody")) return true;
+
+    // Strategy 3: posting title element — also unique to listing pages.
+    if (document.getElementById("titletextonly")) return true;
+
+    return false;
   }
 
   // ── Extraction ─────────────────────────────────────────────────────────────
   function extractListing() {
+    // ── Title ──────────────────────────────────────────────────────────────
+    // Try selectors from most specific (old CL) to most general (og:title/document.title).
     const title =
       document.querySelector("#titletextonly")?.textContent?.trim() ||
-      document.querySelector(".postingtitletext")?.childNodes?.[0]?.textContent?.trim() ||
+      (() => {
+        // .postingtitletext has the title as first textNode, then <small>(location)</small>
+        const el = document.querySelector(".postingtitletext, [class*='postingtitletext']");
+        if (!el) return "";
+        // First text node only — strip the (City) suffix
+        for (const node of el.childNodes) {
+          if (node.nodeType === Node.TEXT_NODE && node.textContent.trim()) return node.textContent.trim();
+        }
+        return el.textContent.trim();
+      })() ||
+      document.querySelector("h1.postingtitle, h1[class*='posting'], h1")?.textContent?.trim() ||
+      document.querySelector('meta[property="og:title"]')?.content?.trim() ||
       document.title.split(" - ")[0].trim();
 
+    // ── Price ──────────────────────────────────────────────────────────────
+    // CL price selectors vary by layout and version. Try in decreasing specificity.
+    let priceText = "";
     const priceEl =
-      document.querySelector(".price") ||
-      document.querySelector("[class*='price']") ||
-      document.querySelector("[class*='Price']") ||
       document.querySelector("span.price") ||
       document.querySelector("h2.price") ||
+      document.querySelector(".price") ||
+      document.querySelector("[class*='price'][class*='span'], span[class*='price']") ||
+      document.querySelector('meta[property="og:price:amount"]') ||
       null;
-    let priceText = priceEl?.textContent?.trim() || "";
-    if (!priceText) {
-      const bodyInner = document.body?.innerText || "";
-      const m = bodyInner.match(/\$\s?([0-9,]+(?:\.[0-9]{2})?)/);
-      if (m) priceText = "$" + m[1];
+
+    if (priceEl) {
+      // og:price:amount uses the 'content' attribute, others use textContent
+      priceText = (priceEl.tagName === "META"
+        ? priceEl.getAttribute("content")
+        : priceEl.textContent
+      )?.trim() || "";
     }
+
+    // Fallback: scan visible text for the first $N pattern in a prominent position.
+    // Look in h1–h3 and spans first (more likely to be actual price, not footer text).
+    if (!priceText) {
+      for (const sel of ["h1, h2, h3", "span, strong", "body"]) {
+        for (const el of document.querySelectorAll(sel)) {
+          const m = (el.textContent || "").match(/\$\s?([0-9,]{2,}(?:\.[0-9]{2})?)\b/);
+          if (m) { priceText = "$" + m[1]; break; }
+        }
+        if (priceText) break;
+      }
+    }
+
     const price = parseFloat(priceText.replace(/[^0-9.]/g, "")) || 0;
 
-    const bodyText = document.querySelector("#postingbody")?.textContent || "";
+    // ── Description ────────────────────────────────────────────────────────
+    const bodyText =
+      document.querySelector("#postingbody")?.innerText ||
+      document.querySelector("[id^='postingbody']")?.innerText ||
+      document.querySelector("section.postinginfos + section, article, [class*='posting-body']")?.innerText ||
+      "";
     const description = bodyText.slice(0, 800).trim();
 
-    const condition = detectCondition(bodyText);
+    const condition = detectCondition(description);
 
-    const mapAddress = document.querySelector(".mapaddress")?.textContent?.trim() || "";
-    const cityFromSubdomain = location.hostname.replace(".craigslist.org", "").replace(/\b\w/g, c => c.toUpperCase());
+    // ── Location ───────────────────────────────────────────────────────────
+    const mapAddress =
+      document.querySelector(".mapaddress")?.textContent?.trim() ||
+      document.querySelector("[class*='mapaddress']")?.textContent?.trim() ||
+      document.querySelector('[data-latitude]')?.nextSibling?.textContent?.trim() ||
+      "";
+    // Subdomain city — "sandiego.craigslist.org" → "Sandiego" → usable as fallback
+    const hostname = location.hostname;
+    const subdomain = hostname.replace(/\.craigslist\.org$/, "");
+    const cityFromSubdomain = (subdomain && subdomain !== "www" && subdomain !== "craigslist")
+      ? subdomain.replace(/\b\w/g, c => c.toUpperCase())
+      : "";
     const location_ = mapAddress || cityFromSubdomain;
 
+    // ── Images ─────────────────────────────────────────────────────────────
     const images = [];
-    document.querySelectorAll("#thumbs a").forEach(a => {
-      const src = (a.href || "").replace(/\/[0-9]+x[0-9]+\.jpg/, "/600x450.jpg");
-      if (src && src.includes(".jpg") && !images.includes(src)) images.push(src);
-    });
+    const _addImg = src => {
+      if (!src || images.includes(src)) return;
+      // Normalise thumbnail URLs to a large format
+      const large = src.replace(/\/[0-9]+x[0-9]+\.jpg/, "/600x450.jpg")
+                       .replace(/_\d+x\d+\.jpg/, "_600x450.jpg");
+      if (!images.includes(large)) images.push(large);
+    };
+
+    // Old CL: #thumbs anchor tags
+    document.querySelectorAll("#thumbs a").forEach(a => _addImg(a.href));
+    // Old CL: swipe gallery images
+    document.querySelectorAll(".swipe-wrap img, .slide img").forEach(img => _addImg(img.src));
+    // New CL: img tags whose src contains craigslist.org/images
     if (!images.length) {
-      document.querySelectorAll(".swipe-wrap img, .slide img").forEach(img => {
-        const src = (img.src || "").replace(/\/[0-9]+x[0-9]+\.jpg/, "/600x450.jpg");
-        if (src && !images.includes(src)) images.push(src);
+      document.querySelectorAll("img[src*='craigslist.org/images'], img[src*='images.craigslist.org']")
+        .forEach(img => _addImg(img.src));
+    }
+    // Absolute last resort: any large image on the page
+    if (!images.length) {
+      document.querySelectorAll("img").forEach(img => {
+        if ((img.naturalWidth || img.clientWidth || 0) >= 200) _addImg(img.src);
       });
     }
 
