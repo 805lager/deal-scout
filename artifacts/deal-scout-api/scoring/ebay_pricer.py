@@ -166,6 +166,18 @@ def build_search_query(title: str) -> str:
         "cheap", "deal", "steal", "price", "reduced", "moving", "sale",
         "used", "new", "like", "condition", "works", "working", "tested",
         "please", "offer", "asking", "willing", "posting",
+        # Condition descriptors that hurt search specificity
+        "mint", "pristine", "immaculate", "flawless", "minty", "barely",
+        "lightly", "gently", "hardly", "rarely", "barely", "never",
+        "open", "box", "sealed", "original", "authentic",
+        # Refurb / certification labels
+        "refurbished", "renewed", "certified", "reconditioned", "rebuilt",
+        # Urgency / pressure words
+        "today", "asap", "fast", "quick", "quickly", "hurry", "limited",
+        "time", "only", "left", "last", "final", "available", "gone",
+        # Filler / listing admin words
+        "local", "pickup", "delivery", "shipping", "cash", "only",
+        "contact", "message", "dm", "text", "call",
         # Bundle/lot qualifiers: confuse eBay into returning multi-item bundle
         # pricing instead of per-item pricing. "boys pants bundle lot" pulls
         # adult Wrangler lots at $148 avg instead of kids shorts at $8-12 each.
@@ -392,6 +404,34 @@ def parse_ebay_items(items: list[dict], sold: bool) -> list[PricePoint]:
         except (KeyError, IndexError, ValueError) as e:
             log.debug(f"Skipping malformed eBay item: {e}")
     return points
+
+
+def _remove_price_outliers(items: list[PricePoint]) -> list[PricePoint]:
+    """
+    Remove statistically extreme price points using median-based bounds.
+
+    WHY MEDIAN (not mean): mean is distorted by the very outliers we're removing.
+    Using median as the anchor is robust to a few wild values.
+
+    Bounds: [median × 0.25 … median × 4.0]
+    - Allows normal used-market spread (2-3× range is common for same item in
+      different conditions or ages).
+    - Removes accidental data from wrong category (a $10 cable appearing in a
+      $200 camera search, or a $5k professional unit polluting a consumer search).
+    - Requires ≥ 4 items to activate — too few items and we can't estimate the
+      median reliably, so we just return them all.
+    """
+    if len(items) < 4:
+        return items
+    prices = [p.price for p in items]
+    med = statistics.median(prices)
+    floor = med * 0.25
+    ceil  = med * 4.0
+    cleaned = [p for p in items if floor <= p.price <= ceil]
+    removed = len(items) - len(cleaned)
+    if removed:
+        log.info(f"[Outlier] Removed {removed} outlier(s) (median=${med:.0f}, bounds=${floor:.0f}–${ceil:.0f})")
+    return cleaned if cleaned else items  # never return empty list
 
 
 # ── Affiliate URL Builder ─────────────────────────────────────────────────────
@@ -689,9 +729,21 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
     )
 
     ebay_is_mock = any(item.get("_is_mock") for item in sold_raw + active_raw)
-    sold_items   = parse_ebay_items(sold_raw,   sold=True)
-    active_items = parse_ebay_items(active_raw, sold=False)
-    new_items    = parse_ebay_items(new_raw,    sold=False)
+
+    # Apply relevance filter to pricing data before calculating averages.
+    # WHY: eBay's BestMatch returns items that share keywords but are wrong
+    # products (e.g. "Ryobi battery" in "Ryobi chainsaw" results). Without
+    # filtering, those wrong prices pollute the average.
+    # Only filter live results — mock data is pre-seeded and internally consistent.
+    if not ebay_is_mock and query:
+        sold_raw_f   = _filter_by_relevance(sold_raw,   query, threshold=0.35, max_items=20)
+        active_raw_f = _filter_by_relevance(active_raw, query, threshold=0.35, max_items=20)
+    else:
+        sold_raw_f, active_raw_f = sold_raw, active_raw
+
+    sold_items   = _remove_price_outliers(parse_ebay_items(sold_raw_f,   sold=True))
+    active_items = _remove_price_outliers(parse_ebay_items(active_raw_f, sold=False))
+    new_items    = parse_ebay_items(new_raw, sold=False)  # no outlier removal — want lowest new price
 
     # ── Step 3: Build market stats from whichever source won ──────────────────
     if ai_pricing_stats:
@@ -783,14 +835,26 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
 
     # ── Suspect flag: mock data + price far outside mock range ────────────────
     # Only fires when: (a) both live sources failed, AND (b) no locked range.
+    # When the ratio is extreme (>3× or <0.3×), the mock data belongs to a
+    # completely different price tier than the listing — it will MISLEAD the
+    # scorer. Better to pass zero (no data) than wrong data.
     if data_source == "ebay_mock" and estimated_value > 0:
         ratio = listing_price / estimated_value if listing_price > 0 else 1.0
         if ratio > 3.0 or ratio < 0.3:
-            confidence = "suspect"
+            mock_est = estimated_value
+            # Zero out all price fields — scorer gets "no data" rather than wrong data
+            estimated_value = 0.0
+            sold_avg        = 0.0
+            sold_low        = 0.0
+            sold_high       = 0.0
+            active_avg      = 0.0
+            active_low      = 0.0
+            confidence      = "suspect"
             log.warning(
                 f"[Market] Suspect comps: listing=${listing_price:.0f} vs "
-                f"mock_est=${estimated_value:.0f} (ratio={ratio:.1f}x) — "
-                f"query='{query}' likely returned wrong category"
+                f"mock_est=${mock_est:.0f} (ratio={ratio:.1f}x) — "
+                f"zeroing estimate. Query='{query}' likely wrong category. "
+                f"Use /corrections to add a price override."
             )
 
     # ── Step 4: Build sidebar affiliate cards from eBay items ─────────────────
@@ -869,6 +933,60 @@ def _mock_ebay_response(query: str, operation: str) -> list[dict]:
         base = 650
     elif any(w in q for w in ["binoculars", "spotting scope", "rangefinder"]):
         base = 200
+    # Motorcycles / powersports (before generic "car/truck" catch)
+    elif any(w in q for w in ["harley", "harley-davidson", "davidson"]):
+        base = 8000
+    elif any(w in q for w in ["ducati", "bmw motorcycle", "triumph motorcycle", "kawasaki ninja", "honda cbr", "yamaha r"]):
+        base = 6000
+    elif any(w in q for w in ["motorcycle", "motorbike"]):
+        base = 4500
+    elif any(w in q for w in ["dirt bike", "enduro", "motocross", "mx bike"]):
+        base = 3500
+    elif any(w in q for w in ["atv", "quad", "four wheeler", "4 wheeler"]):
+        base = 4000
+    elif any(w in q for w in ["side by side", "utv", "rzr", "maverick x3", "can-am"]):
+        base = 10000
+    elif any(w in q for w in ["golf cart", "electric cart"]):
+        base = 4000
+    # Appliances — major and small
+    elif any(w in q for w in ["washer dryer", "washer and dryer"]):
+        base = 600
+    elif any(w in q for w in ["refrigerator", "fridge", "french door fridge"]):
+        base = 700
+    elif any(w in q for w in ["washer", "dryer", "dishwasher"]):
+        base = 350
+    elif any(w in q for w in ["range", "oven", "stove", "cooktop"]):
+        base = 500
+    elif any(w in q for w in ["air conditioner", "window unit", "portable ac", "mini split"]):
+        base = 350
+    elif any(w in q for w in ["dyson", "vacuum", "robot vacuum", "roomba"]):
+        base = 250
+    elif any(w in q for w in ["espresso", "espresso machine", "breville", "delonghi"]):
+        base = 350
+    elif any(w in q for w in ["kitchenaid", "stand mixer", "mixer"]):
+        base = 250
+    elif any(w in q for w in ["coffee maker", "keurig", "nespresso"]):
+        base = 80
+    elif any(w in q for w in ["air fryer", "instant pot", "ninja foodi"]):
+        base = 70
+    # VR / AR headsets
+    elif any(w in q for w in ["meta quest 3", "quest 3"]):
+        base = 420
+    elif any(w in q for w in ["meta quest", "oculus quest", "quest 2"]):
+        base = 220
+    elif any(w in q for w in ["psvr", "vr headset", "virtual reality"]):
+        base = 250
+    # Audio / DJ
+    elif any(w in q for w in ["turntable", "record player", "vinyl"]):
+        base = 250
+    elif any(w in q for w in ["dj controller", "dj mixer", "dj equipment", "pioneer ddj", "serato"]):
+        base = 400
+    elif any(w in q for w in ["av receiver", "home receiver", "amplifier"]):
+        base = 350
+    elif any(w in q for w in ["studio monitor", "klipsch", "bose soundbar", "sonos"]):
+        base = 300
+    elif any(w in q for w in ["subwoofer", "powered sub"]):
+        base = 250
     # Power tools
     elif any(w in q for w in ["dewalt", "milwaukee", "makita", "ryobi", "bosch"]):
         base = 200
@@ -879,6 +997,20 @@ def _mock_ebay_response(query: str, operation: str) -> list[dict]:
         base = 800
     elif any(w in q for w in ["weights", "dumbbells", "barbell", "kettlebell"]):
         base = 100
+    # Camping / outdoor
+    elif any(w in q for w in ["kayak", "canoe", "paddleboard"]):
+        base = 700
+    elif any(w in q for w in ["tent", "sleeping bag", "camping gear"]):
+        base = 100
+    # Musical instruments
+    elif any(w in q for w in ["piano", "grand piano", "upright piano"]):
+        base = 1500
+    elif any(w in q for w in ["guitar", "acoustic guitar", "electric guitar"]):
+        base = 400
+    elif any(w in q for w in ["drum kit", "drum set"]):
+        base = 500
+    elif any(w in q for w in ["violin", "viola", "cello"]):
+        base = 400
     else:
         base = 150
 
