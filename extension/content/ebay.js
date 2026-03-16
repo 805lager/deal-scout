@@ -211,6 +211,8 @@
     renderBuyNewSection(r, panel);
     renderFlags(r, panel);
     renderSecurityScore(r, panel);
+    renderBundleBreakdown(r, panel);
+    renderNegotiationMessage(r, panel);
     renderFooter(r, panel);
   }
 
@@ -430,6 +432,76 @@
       f.textContent = "• " + flag;
       section.appendChild(f);
     });
+    container.appendChild(section);
+  }
+
+  function renderNegotiationMessage(r, container) {
+    const msg = (r.negotiation_message || "").trim();
+    if (!msg) return;
+    const section = document.createElement("div");
+    section.style.cssText = "background:rgba(34,197,94,0.07);border:1px solid rgba(34,197,94,0.22);border-radius:10px;padding:10px 12px;margin:4px 12px 8px";
+    const hdr = document.createElement("div");
+    hdr.style.cssText = "font-size:11px;font-weight:700;color:#22c55e;margin-bottom:6px;letter-spacing:.04em";
+    hdr.textContent = "💬 NEGOTIATION MESSAGE";
+    const txt = document.createElement("div");
+    txt.style.cssText = "font-size:12px;color:#cbd5e1;line-height:1.55;margin-bottom:8px";
+    txt.textContent = msg;
+    const btn = document.createElement("button");
+    btn.style.cssText = "width:100%;padding:5px 0;background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.35);border-radius:7px;color:#22c55e;font-size:11px;font-weight:600;cursor:pointer;letter-spacing:.03em";
+    btn.textContent = "Copy Message";
+    btn.addEventListener("click", () => {
+      navigator.clipboard.writeText(msg).then(() => {
+        btn.textContent = "✓ Copied!";
+        setTimeout(() => { btn.textContent = "Copy Message"; }, 2000);
+      }).catch(() => {
+        btn.textContent = "Copy failed";
+        setTimeout(() => { btn.textContent = "Copy Message"; }, 2000);
+      });
+    });
+    section.appendChild(hdr);
+    section.appendChild(txt);
+    section.appendChild(btn);
+    container.appendChild(section);
+  }
+
+  function renderBundleBreakdown(r, container) {
+    const items = Array.isArray(r.bundle_items) ? r.bundle_items : [];
+    if (!items.length) return;
+    const section = document.createElement("div");
+    section.style.cssText = "background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:10px;padding:10px 12px;margin:4px 12px 8px";
+    const hdr = document.createElement("div");
+    hdr.style.cssText = "font-size:11px;font-weight:700;color:#94a3b8;margin-bottom:8px;letter-spacing:.04em";
+    hdr.textContent = "📦 BUNDLE BREAKDOWN";
+    section.appendChild(hdr);
+    let total = 0;
+    items.forEach(item => {
+      const val = parseFloat(item.value) || 0;
+      total += val;
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;justify-content:space-between;align-items:center;font-size:11px;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.04)";
+      const name = document.createElement("span");
+      name.style.color = "#cbd5e1";
+      name.textContent = item.item || "";
+      const price = document.createElement("span");
+      price.style.cssText = "color:#7c8cf8;font-weight:600;font-variant-numeric:tabular-nums;flex-shrink:0;margin-left:8px";
+      price.textContent = "$" + val.toFixed(0);
+      row.appendChild(name);
+      row.appendChild(price);
+      section.appendChild(row);
+    });
+    if (total > 0) {
+      const totalRow = document.createElement("div");
+      totalRow.style.cssText = "display:flex;justify-content:space-between;align-items:center;font-size:11px;padding:5px 0 0;margin-top:2px";
+      const tLabel = document.createElement("span");
+      tLabel.style.cssText = "color:#94a3b8;font-weight:700";
+      tLabel.textContent = "Total individual value";
+      const tPrice = document.createElement("span");
+      tPrice.style.cssText = "color:#22c55e;font-weight:700;font-variant-numeric:tabular-nums";
+      tPrice.textContent = "$" + total.toFixed(0);
+      totalRow.appendChild(tLabel);
+      totalRow.appendChild(tPrice);
+      section.appendChild(totalRow);
+    }
     container.appendChild(section);
   }
 
