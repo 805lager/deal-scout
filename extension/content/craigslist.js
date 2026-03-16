@@ -1,23 +1,16 @@
 /**
  * craigslist.js — Deal Scout Content Script for Craigslist
- * v1.0.0
+ * v1.0.3
  *
- * INJECTED INTO: *.craigslist.org/*/d/*.html  (listing detail pages only)
+ * INJECTED INTO: *.craigslist.org  (all pages; isListingPage() filters to listings)
  * PURPOSE: Extracts listing data, scores the deal via backend API,
  *          renders a floating Deal Scout panel on the page.
- *
- * MANIFEST ENTRY NEEDED:
- *   {
- *     "matches": ["https://*.craigslist.org/*/d/*.html"],
- *     "js": ["craigslist.js"],
- *     "run_at": "document_idle"
- *   }
  */
 
 (function () {
   "use strict";
 
-  const VERSION  = "1.0.2";
+  const VERSION  = "1.0.3";
   const PANEL_ID = "deal-scout-cl-panel";
   const PLATFORM = "craigslist";
 
@@ -34,7 +27,14 @@
 
   // ── Detection ──────────────────────────────────────────────────────────────
   function isListingPage() {
-    return /\.craigslist\.org(?:\/[^/]+){1,2}\/d\/[^/]+\/\d+(?:\.html)?/.test(location.href);
+    // CL listing URLs end in a 7+ digit item ID, optionally with .html.
+    // The number of path segments before the ID varies by region/category:
+    //   sandiego.craigslist.org/ele/d/title/7123456789.html       (1 category)
+    //   sfbay.craigslist.org/lgb/ele/d/title/7123456789.html      (2 categories)
+    //   craigslist.org/d/title/7123456789.html                    (no category)
+    // Previous regex required exactly 1-2 segments before /d/ and failed on 0 or 3.
+    // New regex: craigslist.org hostname + at least /d/ somewhere + trailing numeric ID.
+    return /craigslist\.org(?:\/[^/?#]*)*\/d\/[^/?#]+\/\d{7,}(?:\.html)?(?:[?#]|$)/.test(location.href);
   }
 
   // ── Extraction ─────────────────────────────────────────────────────────────
@@ -149,16 +149,38 @@
     return "1000+";
   }
 
-  // ── Background Communication ───────────────────────────────────────────────
-  function sendToBackground(listing) {
-    return new Promise((resolve, reject) => {
+  // ── Direct API Call ────────────────────────────────────────────────────────
+  // Call the scoring API directly from the content script (same approach as fbm.js).
+  // This bypasses the MV3 service worker, which Chrome can terminate mid-request
+  // (30-second idle window), causing the background-routed SCORE_LISTING message
+  // to silently disappear and never resolve.
+  async function callScoringAPIDirect(listing, signal) {
+    const response = await fetch(`${API_BASE}/score`, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify(listing),
+      signal,
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || `API error ${response.status}`);
+    }
+    return response.json();
+  }
+
+  // Fetch affiliate links via background (it owns the affiliate IDs).
+  // Non-critical — panel renders without them if this fails.
+  async function fetchAffiliateLinks(title, price) {
+    return new Promise((resolve) => {
       try {
-        chrome.runtime.sendMessage({ type: "SCORE_LISTING", listing }, (response) => {
-          if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
-          if (!response || !response.success) { reject(new Error(response?.error || "No response")); return; }
-          resolve(response.result);
-        });
-      } catch (e) { reject(e); }
+        chrome.runtime.sendMessage(
+          { type: "GET_AFFILIATE_LINKS", query: title, price },
+          (r) => {
+            if (chrome.runtime.lastError || !r?.success) { resolve([]); return; }
+            resolve(r.links || []);
+          }
+        );
+      } catch (_) { resolve([]); }
     });
   }
 
@@ -440,23 +462,60 @@
   // ── Auto-Score ─────────────────────────────────────────────────────────────
   async function autoScore() {
     if (!isListingPage()) return;
-    const listing = extractListing();
+
+    // Wait for price to appear in the DOM — CL server-renders but the price
+    // element can briefly be absent if the browser hasn't finished layout.
+    // Poll up to 5 seconds (25 × 200ms). If the title exists but price doesn't,
+    // the content is mid-render; if neither appears after 5s, give up.
+    let listing = extractListing();
+    let waited  = 0;
+    while (!listing.price && waited < 25) {
+      await new Promise(r => setTimeout(r, 200));
+      waited++;
+      listing = extractListing();
+    }
+
     showPanel();
+
     if (!listing.price) {
-      renderError("Could not detect a price on this listing. Try refreshing the page.");
+      renderError("Could not detect a price on this listing. Try refreshing or use the Score button.");
       return;
     }
+
     renderLoading(listing);
+
+    // Create an AbortController so a manual rescore can cancel an in-flight request.
+    const abort = new AbortController();
+    window.__dsCLAbort = abort;
+
     try {
-      const result = await sendToBackground(listing);
+      const result = await callScoringAPIDirect(listing, abort.signal);
+
+      if (abort.signal.aborted) return;
+
+      // Fetch affiliate links from background (it owns the affiliate IDs).
+      const afLinks = await fetchAffiliateLinks(listing.title, listing.price);
+      if (afLinks && afLinks.length) result.affiliateLinks = afLinks;
+
+      // Update the badge score.
+      try {
+        const badgeColor = result.score >= 7 ? "#22c55e" : result.score >= 5 ? "#fbbf24" : "#ef4444";
+        chrome.runtime.sendMessage({ type: "BADGE_UPDATE", score: result.score, color: badgeColor }).catch(() => {});
+      } catch (_) {}
+
       renderScore(result);
+
     } catch (err) {
+      if (abort.signal.aborted) return;
       renderError(err.message || "Scoring failed");
+    } finally {
+      if (window.__dsCLAbort === abort) window.__dsCLAbort = null;
     }
   }
 
   // ── Global trigger (called directly by popup via executeScript) ────────────
   window.__dsScoreCL = () => {
+    if (window.__dsCLAbort) { window.__dsCLAbort.abort(); window.__dsCLAbort = null; }
     _initiated = false;
     removePanel();
     setTimeout(autoScore, 300);
@@ -477,14 +536,18 @@
     if (_initiated) return;
     if (!isListingPage()) return;
     _initiated = true;
-    setTimeout(autoScore, 800);
+    autoScore();
   }
 
+  // CL is a traditional multi-page site — no SPA navigation.
+  // The script is injected fresh on every page load at document_idle,
+  // meaning the DOM is already fully parsed. Run immediately; the price
+  // polling loop inside autoScore handles any remaining render lag.
   tryInit();
+
+  // Belt-and-suspenders: if tryInit() ran too early (rare), retry once after load.
   if (document.readyState !== "complete") {
-    document.addEventListener("DOMContentLoaded", tryInit);
-    window.addEventListener("load", tryInit);
+    window.addEventListener("load", tryInit, { once: true });
   }
-  setTimeout(tryInit, 2000);
 
 })();
