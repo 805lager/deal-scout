@@ -1,6 +1,6 @@
 /**
  * craigslist.js — Deal Scout Content Script for Craigslist
- * v1.0.3
+ * v1.0.4
  *
  * INJECTED INTO: *.craigslist.org  (all pages; isListingPage() filters to listings)
  * PURPOSE: Extracts listing data, scores the deal via backend API,
@@ -10,16 +10,21 @@
 (function () {
   "use strict";
 
-  const VERSION  = "1.0.3";
+  const VERSION  = "1.0.4";
   const PANEL_ID = "deal-scout-cl-panel";
   const PLATFORM = "craigslist";
 
+  // Diagnostic: log at the absolute start so we can confirm the script loads.
+  // Check DevTools → Console on any CL page for "[DealScout CL] ..." messages.
+  console.log("[DealScout CL] v" + VERSION + " loaded on", location.href);
+
   // Version-keyed guard: if the extension reloads with a new VERSION, the old
   // guard key doesn't match and the new script runs on the existing page.
-  // Old guard "__dsCLInjected" (versionless) would block re-injection on every
-  // extension reload until the user hard-refreshed the CL page.
   const _GUARD_KEY = "__dsCLInjected_" + VERSION;
-  if (window[_GUARD_KEY]) return;
+  if (window[_GUARD_KEY]) {
+    console.log("[DealScout CL] Already injected (guard), skipping");
+    return;
+  }
   window[_GUARD_KEY] = true;
 
   // ── API Base (from chrome.storage, same as fbm.js) ─────────────────────────
@@ -32,47 +37,64 @@
 
   // ── Detection ──────────────────────────────────────────────────────────────
   function isListingPage() {
-    // Strategy 1: URL pattern — numeric item ID (7+ digits) anywhere in the path.
-    // Covers all known CL listing URL formats:
-    //   sandiego.craigslist.org/ele/d/title/7123456789.html         (1 category)
-    //   sfbay.craigslist.org/lgb/ele/d/title/7123456789.html        (2 categories)
-    //   craigslist.org/d/title/7123456789.html                      (no category)
-    //   www.craigslist.org/d/san-diego/electronics/7123456789.html   (new www. format)
-    // The key invariant: ALL CL item IDs are 10 digits. We just need a 10-digit
-    // number in the URL path (not query string) that looks like a posting ID.
-    const pathId = location.pathname.match(/\/(\d{10})(?:\.html)?(?:\/|$)/);
-    if (pathId) return true;
+    // Strategy 1 (most reliable): CL item IDs are always 10 digits.
+    // Match any 10-digit number in the URL path — works for ALL CL listing URL
+    // formats regardless of how many category segments precede the item ID.
+    const pathId = location.pathname.match(/\/\d{10}(?:\.html)?(?:\/|$)/);
+    if (pathId) {
+      console.log("[DealScout CL] isListingPage: URL match (10-digit ID)", pathId[0]);
+      return true;
+    }
 
-    // Strategy 2: DOM fallback — #postingbody only exists on CL listing detail pages.
-    // Handles any URL format we haven't seen (future CL redesigns, redirects, etc.).
-    // This is the most reliable signal: no search page or category page has this element.
-    if (document.getElementById("postingbody")) return true;
+    // Strategy 2: broader URL pattern — 7+ digit ID (older CL IDs)
+    const pathId7 = location.pathname.match(/\/\d{7,}(?:\.html)?(?:\/|$)/);
+    if (pathId7) {
+      console.log("[DealScout CL] isListingPage: URL match (7+ digit ID)", pathId7[0]);
+      return true;
+    }
 
-    // Strategy 3: posting title element — also unique to listing pages.
-    if (document.getElementById("titletextonly")) return true;
+    // Strategy 3: old CL DOM — #postingbody or #titletextonly
+    if (document.getElementById("postingbody") || document.getElementById("titletextonly")) {
+      console.log("[DealScout CL] isListingPage: DOM match (old CL elements)");
+      return true;
+    }
 
+    // Strategy 4: new CL DOM — look for any element with 'posting' in id/class
+    const postingEl = document.querySelector('[id*="posting"], [class*="posting"]');
+    if (postingEl) {
+      console.log("[DealScout CL] isListingPage: DOM match (new CL posting element)", postingEl.tagName, postingEl.id || postingEl.className);
+      return true;
+    }
+
+    console.log("[DealScout CL] isListingPage: NO match — not a listing page");
     return false;
   }
 
   // ── Extraction ─────────────────────────────────────────────────────────────
   function extractListing() {
     // ── Title ──────────────────────────────────────────────────────────────
-    // Try selectors from most specific (old CL) to most general (og:title/document.title).
+    // document.title on a CL listing page is always "Item Title - craigslist"
+    // This is the most robust source, guaranteed to work regardless of DOM structure.
+    // Fall back to DOM selectors for older/newer CL layouts.
+    const titleFromDocTitle = (() => {
+      const t = document.title || "";
+      // Remove trailing " - craigslist" or " | craigslist" etc.
+      return t.replace(/[\s\-–|]+craigslist.*$/i, "").replace(/\s*-\s*$/, "").trim();
+    })();
     const title =
       document.querySelector("#titletextonly")?.textContent?.trim() ||
       (() => {
-        // .postingtitletext has the title as first textNode, then <small>(location)</small>
         const el = document.querySelector(".postingtitletext, [class*='postingtitletext']");
         if (!el) return "";
-        // First text node only — strip the (City) suffix
         for (const node of el.childNodes) {
-          if (node.nodeType === Node.TEXT_NODE && node.textContent.trim()) return node.textContent.trim();
+          if (node.nodeType === 3 && node.textContent.trim()) return node.textContent.trim();
         }
         return el.textContent.trim();
       })() ||
-      document.querySelector("h1.postingtitle, h1[class*='posting'], h1")?.textContent?.trim() ||
+      document.querySelector('[id*="title"], [class*="posting-title"], [class*="postingtitle"]')?.textContent?.trim() ||
+      document.querySelector("h1")?.textContent?.trim() ||
       document.querySelector('meta[property="og:title"]')?.content?.trim() ||
-      document.title.split(" - ")[0].trim();
+      titleFromDocTitle;
 
     // ── Price ──────────────────────────────────────────────────────────────
     // CL price selectors vary by layout and version. Try in decreasing specificity.
@@ -93,10 +115,9 @@
       )?.trim() || "";
     }
 
-    // Fallback: scan visible text for the first $N pattern in a prominent position.
-    // Look in h1–h3 and spans first (more likely to be actual price, not footer text).
+    // Fallback 1: scan visible text for the first $N pattern in a prominent position.
     if (!priceText) {
-      for (const sel of ["h1, h2, h3", "span, strong", "body"]) {
+      for (const sel of ["h1, h2, h3", "span, strong, b", "[class*='price']", "body"]) {
         for (const el of document.querySelectorAll(sel)) {
           const m = (el.textContent || "").match(/\$\s?([0-9,]{2,}(?:\.[0-9]{2})?)\b/);
           if (m) { priceText = "$" + m[1]; break; }
@@ -105,6 +126,14 @@
       }
     }
 
+    // Fallback 2: raw innerText scan of the entire visible page.
+    if (!priceText && document.body) {
+      const bodyText2 = document.body.innerText || "";
+      const m = bodyText2.match(/\$\s?([0-9,]{2,}(?:\.[0-9]{2})?)\b/);
+      if (m) priceText = "$" + m[1];
+    }
+
+    console.log("[DealScout CL] Price found:", priceText || "(none)");
     const price = parseFloat(priceText.replace(/[^0-9.]/g, "")) || 0;
 
     // ── Description ────────────────────────────────────────────────────────
@@ -157,7 +186,7 @@
       });
     }
 
-    return {
+    const result = {
       title,
       price,
       raw_price_text: priceText,
@@ -167,6 +196,8 @@
       image_urls: images.slice(0, 5),
       platform: PLATFORM,
     };
+    console.log("[DealScout CL] extractListing():", result);
+    return result;
   }
 
   function detectCondition(text) {
@@ -538,43 +569,46 @@
 
   // ── Auto-Score ─────────────────────────────────────────────────────────────
   async function autoScore() {
-    if (!isListingPage()) return;
+    console.log("[DealScout CL] autoScore() called");
 
-    // Wait for price to appear in the DOM — CL server-renders but the price
-    // element can briefly be absent if the browser hasn't finished layout.
-    // Poll up to 5 seconds (25 × 200ms). If the title exists but price doesn't,
-    // the content is mid-render; if neither appears after 5s, give up.
+    if (!isListingPage()) {
+      console.log("[DealScout CL] autoScore: isListingPage() returned false — aborting");
+      return;
+    }
+
+    // Poll up to 5 seconds (25 × 200ms) for a price to appear.
     let listing = extractListing();
+    console.log("[DealScout CL] Initial extraction:", { title: listing.title, price: listing.price, rawPrice: listing.raw_price_text });
     let waited  = 0;
     while (!listing.price && waited < 25) {
       await new Promise(r => setTimeout(r, 200));
       waited++;
       listing = extractListing();
     }
+    console.log("[DealScout CL] After polling (waited " + waited + "×200ms):", { title: listing.title, price: listing.price });
 
     showPanel();
 
     if (!listing.price) {
+      console.log("[DealScout CL] No price found after polling — rendering error panel");
       renderError("Could not detect a price on this listing. Try refreshing or use the Score button.");
       return;
     }
 
     renderLoading(listing);
 
-    // Create an AbortController so a manual rescore can cancel an in-flight request.
     const abort = new AbortController();
     window.__dsCLAbort = abort;
 
     try {
+      console.log("[DealScout CL] Calling scoring API…");
       const result = await callScoringAPIDirect(listing, abort.signal);
-
       if (abort.signal.aborted) return;
+      console.log("[DealScout CL] API returned score:", result.score);
 
-      // Fetch affiliate links from background (it owns the affiliate IDs).
       const afLinks = await fetchAffiliateLinks(listing.title, listing.price);
       if (afLinks && afLinks.length) result.affiliateLinks = afLinks;
 
-      // Update the badge score.
       try {
         const badgeColor = result.score >= 7 ? "#22c55e" : result.score >= 5 ? "#fbbf24" : "#ef4444";
         chrome.runtime.sendMessage({ type: "BADGE_UPDATE", score: result.score, color: badgeColor }).catch(() => {});
@@ -584,6 +618,7 @@
 
     } catch (err) {
       if (abort.signal.aborted) return;
+      console.error("[DealScout CL] Scoring error:", err);
       renderError(err.message || "Scoring failed");
     } finally {
       if (window.__dsCLAbort === abort) window.__dsCLAbort = null;
@@ -592,6 +627,7 @@
 
   // ── Global trigger (called directly by popup via executeScript) ────────────
   window.__dsScoreCL = () => {
+    console.log("[DealScout CL] Manual rescore triggered");
     if (window.__dsCLAbort) { window.__dsCLAbort.abort(); window.__dsCLAbort = null; }
     _initiated = false;
     removePanel();
@@ -609,22 +645,21 @@
 
   // ── Init ───────────────────────────────────────────────────────────────────
   let _initiated = false;
-  function tryInit() {
+  function tryInit(reason) {
+    console.log("[DealScout CL] tryInit() called —", reason || "no reason", "| readyState:", document.readyState, "| _initiated:", _initiated);
     if (_initiated) return;
     if (!isListingPage()) return;
     _initiated = true;
     autoScore();
   }
 
-  // CL is a traditional multi-page site — no SPA navigation.
-  // The script is injected fresh on every page load at document_idle,
-  // meaning the DOM is already fully parsed. Run immediately; the price
-  // polling loop inside autoScore handles any remaining render lag.
-  tryInit();
+  // CL is a traditional multi-page site. Run immediately at document_idle.
+  tryInit("document_idle");
 
-  // Belt-and-suspenders: if tryInit() ran too early (rare), retry once after load.
-  if (document.readyState !== "complete") {
-    window.addEventListener("load", tryInit, { once: true });
-  }
+  // Belt-and-suspenders: retry at window load if page wasn't ready yet.
+  window.addEventListener("load", () => tryInit("load event"), { once: true });
+
+  // Additional 2-second backup: handles edge cases where both fire too early.
+  setTimeout(() => tryInit("2s timeout"), 2000);
 
 })();
