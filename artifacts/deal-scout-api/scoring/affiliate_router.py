@@ -1022,9 +1022,27 @@ def _build_amazon_link(query: str, tag: str) -> str:
     return f"https://www.amazon.com/s?k={encoded}&tag={tag}"
 
 
-def _build_ebay_link(query: str, campaign_id: str, new_only: bool = False) -> str:
+def _build_ebay_link(query: str, campaign_id: str, new_only: bool = False, all_conditions: bool = False) -> str:
+    """
+    Build an eBay affiliate search link.
+
+    new_only=True      → LH_ItemCondition=1000  (New — for price reference)
+    all_conditions=True → no condition filter    (shows Used, Very Good, Good, Acceptable)
+    default            → LH_ItemCondition=3000  (Used only — legacy behaviour)
+
+    WHY all_conditions for used_comp cards:
+      eBay condition=3000 ("Used") is just ONE of several used-condition labels.
+      Sellers who list items as "Very Good" (4000) or "Good" (5000) won't appear
+      in the results, even though those are legitimate used-price comparisons.
+      Removing the filter lets the buyer see the full used-market price range.
+    """
     encoded = urllib.parse.quote_plus(query)
-    cond = "&LH_ItemCondition=1000" if new_only else "&LH_ItemCondition=3000"
+    if new_only:
+        cond = "&LH_ItemCondition=1000"
+    elif all_conditions:
+        cond = ""   # no condition restriction — all used variants show up
+    else:
+        cond = "&LH_ItemCondition=3000"
     return (
         f"https://www.ebay.com/sch/i.html?_nkw={encoded}{cond}&_sop=15"
         f"&mkevt=1&mkcid=1&mkrid=711-53200-19255-0"
@@ -1178,6 +1196,12 @@ def get_affiliate_recommendations(
 
     log.info(f"[AffiliateRouter] Category='{category}'{' (override)' if category_override else ''} for '{query}' @ ${listing_price:.0f}")
 
+    # Programs that need model-number precision (same level as Amazon).
+    # These are electronics-catalog sites where "Pioneer SP-BS21-LR" will
+    # land on the right product page, but "bookshelf speaker" will not.
+    # We use amazon_query (brand + model) rather than search_query (eBay-style).
+    _PRECISION_PROGRAMS = {"best_buy", "newegg", "back_market"}
+
     # Get program priority list for this category
     program_keys = CATEGORY_PROGRAMS.get(category, ["amazon", "ebay"])
 
@@ -1224,20 +1248,49 @@ def get_affiliate_recommendations(
         p   = cand["program"]
         tag = cand["tag"] or ""
 
+        # ── Per-platform query routing ──────────────────────────────────────
+        # Different affiliate platforms have different catalog structures and
+        # search engines. Using the wrong query means the user lands on a page
+        # full of unrelated items — which kills clicks and trains bad patterns.
+        #
+        # Three tiers:
+        #  1. amazon_query  — brand + model number (e.g. "Sony WH-1000XM5")
+        #     Used by: Amazon, Best Buy, Newegg, Back Market
+        #     WHY: These are electronics-catalog sites. Model numbers find the
+        #          exact product page; generic terms return noisy results.
+        #
+        #  2. search_query  — eBay-optimized 3-6 word query
+        #     Used by: eBay, Wayfair, Home Depot, REI, Sweetwater, etc.
+        #     WHY: Category stores search by description, not model number.
+        #          "Pioneer bookshelf speaker pair" works on Wayfair; the full
+        #          model number doesn't exist in their furniture catalog.
+        #
+        #  3. Fallback: if either query is empty, use the other one.
+        # ────────────────────────────────────────────────────────────────────
+        if key in _PRECISION_PROGRAMS:
+            platform_q = amazon_q or query   # electronics catalog — needs model precision
+        else:
+            platform_q = query or amazon_q   # category/general sites — eBay-style query
+
         # Generate the affiliate link
         if key == "amazon":
             url = _build_amazon_link(amazon_q, tag or "dealscout03f-20")
         elif key == "ebay":
-            url = _build_ebay_link(query, tag or "5339144027", new_only=False)
+            # all_conditions=True: show Used, Very Good, Good, Acceptable listings.
+            # Filtering to only LH_ItemCondition=3000 ("Used") misses sellers who
+            # listed the same item as "Very Good" (4000) or "Good" (5000).
+            url = _build_ebay_link(query, tag or "5339144027", new_only=False, all_conditions=True)
         else:
-            url = _build_search_link(key, query, tag)
+            url = _build_search_link(key, platform_q, tag)
+
+        log.info(f"[AffiliateRouter]   {key}: query='{platform_q[:50]}' url={url[:80]}...")
 
         # Build card copy based on program type and deal context
         card = _build_card(
             key            = key,
             p              = p,
             url            = url,
-            query          = query,
+            query          = platform_q,
             listing_price  = listing_price,
             true_cost      = true_cost,
             deal_score     = deal_score,
