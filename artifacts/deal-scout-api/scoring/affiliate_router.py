@@ -803,10 +803,98 @@ CATEGORY_MAP = {
     "colorado":            "trucks",
     "ranger":              "trucks",
     "frontier":            "trucks",
-    # Auto parts
+    # ── Toy / Hobby vehicles (MUST come before the bare "car" entry) ─────────
+    # These all contain the word "car" but are NOT real vehicles.
+    # Because detect_category sorts keywords longest-first, these 10-18 char
+    # phrases are evaluated before "car" (3 chars) and short-circuit correctly.
+    "remote control car":  "toys",
+    "remote control truck":"toys",
+    "radio control car":   "toys",
+    "radio control truck": "toys",
+    "rc car":              "toys",
+    "rc truck":            "toys",
+    "rc crawler":          "toys",
+    "rc buggy":            "toys",
+    "hot wheels":          "toys",
+    "matchbox car":        "toys",
+    "diecast car":         "toys",
+    "die-cast car":        "toys",
+    "diecast truck":       "toys",
+    "diecast model":       "toys",
+    "diecast":             "toys",
+    "toy car":             "toys",
+    "toy truck":           "toys",
+    "model car":           "toys",
+    "model rocket":        "toys",
+
+    # ── Car accessories / interior (→ auto_parts, not vehicles) ──────────────
+    # Things sold FOR a car, not actual cars. Must come before bare "car" entry.
+    "car battery charger": "auto_parts",
+    "car stereo":          "auto_parts",
+    "car speaker":         "auto_parts",
+    "car subwoofer":       "auto_parts",
+    "car amplifier":       "auto_parts",
+    "car audio":           "auto_parts",
+    "car charger":         "auto_parts",
+    "car mount":           "auto_parts",
+    "car cover":           "auto_parts",
+    "car mat":             "auto_parts",
+    "car seat cover":      "auto_parts",
+    "car floor mat":       "auto_parts",
+    "floor mats":          "auto_parts",
+    "floor mat":           "auto_parts",
+    "car floor mats":      "auto_parts",
+    "windshield wipers":   "auto_parts",
+    "windshield wiper":    "auto_parts",
+    "wiper blades":        "auto_parts",
+    "wiper blade":         "auto_parts",
+    "dash cam":            "auto_parts",
+    "dashcam":             "auto_parts",
+    "jump starter":        "auto_parts",
+    "jump pack":           "auto_parts",
+    "cargo net":           "auto_parts",
+    "steering wheel":      "auto_parts",
+    "trailer hitch":       "auto_parts",
+    "tow hitch":           "auto_parts",
+    "tonneau cover":       "auto_parts",
+    "roof rack":           "auto_parts",
+    "bull bar":            "auto_parts",
+    "nerf bar":            "auto_parts",
+    "running board":       "auto_parts",
+
+    # ── Collectible cards ─────────────────────────────────────────────────────
+    # These are the most common listings misrouted to "general" with no card-
+    # specific programs shown. eBay is the dominant market for trading cards;
+    # Amazon is secondary. Both are in CATEGORY_PROGRAMS["collectibles"].
+    "magic the gathering":   "collectibles",
+    "collectible card":      "collectibles",
+    "collector card":        "collectibles",
+    "basketball card":       "collectibles",
+    "football card":         "collectibles",
+    "baseball card":         "collectibles",
+    "hockey card":           "collectibles",
+    "pokemon card":          "collectibles",
+    "pokemon cards":         "collectibles",
+    "yugioh card":           "collectibles",
+    "yu-gi-oh card":         "collectibles",
+    "sports card":           "collectibles",
+    "trading card":          "collectibles",
+    "trading cards":         "collectibles",
+    "mtg card":              "collectibles",
+    "nfl card":              "collectibles",
+    "nba card":              "collectibles",
+    "mlb card":              "collectibles",
+    "rookie card":           "collectibles",
+    "graded card":           "collectibles",
+    "psa card":              "collectibles",
+    "bgs card":              "collectibles",
+
+    # ── Auto parts (mechanical / wear items) ─────────────────────────────────
     "auto part":           "auto_parts",
     "car part":            "auto_parts",
+    "brake pads":          "auto_parts",
     "brake pad":           "auto_parts",
+    "brake rotors":        "auto_parts",
     "brake rotor":         "auto_parts",
     "oil filter":          "auto_parts",
     "air filter":          "auto_parts",
@@ -978,6 +1066,10 @@ CATEGORY_PROGRAMS = {
     "pets":                 ["chewy", "amazon", "walmart"],
     "pet_supplies":         ["chewy", "amazon", "walmart"],
     "auto_parts":           ["advance_auto", "carparts_com", "amazon", "ebay"],
+    # eBay is the #1 marketplace for trading cards and collectibles by volume;
+    # Amazon is secondary (sealed packs, sleeves, binders). No brick-and-mortar
+    # affiliate programs are relevant here.
+    "collectibles":         ["ebay", "amazon"],
 }
 
 
