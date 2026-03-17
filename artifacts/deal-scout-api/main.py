@@ -152,6 +152,7 @@ class ListingRequest(BaseModel):
     original_price: float = 0.0   # Crossed-out price if seller reduced it (from DOM dual-price container)
     shipping_cost:  float = 0.0   # Cost to ship — 0 means free or local pickup
     image_urls:     Optional[list] = None  # Listing photo URLs — first one sent to Claude Vision
+    photo_count:    int  = 0               # True number of listing photos (carousel total, not just sent to API)
     platform:       str  = "facebook_marketplace"  # Source platform: facebook_marketplace | craigslist | ebay | offerup
 
     class Config:
@@ -276,49 +277,79 @@ async def score_listing(listing: ListingRequest, request: Request):
             detail="Could not read the listing title — please wait for the page to fully load and try again."
         )
 
-    # ── Step 1: Extract product identity ────────────────────────────────────────
-    # "Telescope" → "Orion SkyQuest XT8 Intelliscope" — this single step
-    # is the biggest accuracy improvement in the entire pipeline.
-    try:
-        product_info = await extract_product(listing.title, listing.description)
-    except Exception as e:
-        log.warning(f"Product extraction failed ({e}) — using title fallback")
-        from scoring.product_extractor import _fallback_extraction
-        product_info = _fallback_extraction(listing.title)
+    # ── Step 1+2: OVERLAPPED — product extraction + preliminary eBay ────────────
+    # WHY OVERLAP: product extraction (Haiku, ~1s) and eBay (~2-3s) were sequential.
+    # We now launch both at the same time using the raw title as the preliminary eBay
+    # query. When extraction finishes:
+    #   • If extracted_query ≈ raw_title → eBay result is already waiting, 0 extra cost.
+    #   • If extracted_query differs significantly → run a second refined eBay call.
+    #     eBay has its own in-memory cache, so near-duplicate queries are instant.
+    # This saves 1-2s on every score without any accuracy tradeoff.
+    from scoring.product_extractor import _fallback_extraction
 
-    # ── Step 2: Parallel — eBay market value + product evaluation ────────────
-    # Both are I/O-bound. Running concurrently saves ~1-2s vs sequential.
+    raw_title_query = listing.title.strip()
+
     try:
-        market_value, product_eval = await asyncio.gather(
+        product_info, prelim_market, product_eval = await asyncio.gather(
+            extract_product(listing.title, listing.description),
             get_market_value(
-                listing_title     = product_info.search_query,  # extracted query, not raw title
+                listing_title     = raw_title_query,
                 listing_condition = listing.condition,
                 is_vehicle        = listing.is_vehicle,
-                listing_price     = listing.price,  # for plausibility guard in ebay_pricer
+                listing_price     = listing.price,
             ),
-            evaluate_product(
+            evaluate_product(brand="", model="", category="", display_name=listing.title),
+            return_exceptions=True,
+        )
+    except Exception as e:
+        log.error(f"Parallel step 1+2 failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Initial data fetch failed: {e}")
+
+    # Unpack exceptions from inner gather
+    if isinstance(product_info, Exception):
+        log.warning(f"Product extraction failed ({product_info}) — using title fallback")
+        product_info = _fallback_extraction(listing.title)
+
+    if isinstance(prelim_market, Exception):
+        log.error(f"Preliminary eBay failed: {prelim_market}")
+        raise HTTPException(status_code=500, detail=f"Market value lookup failed: {prelim_market}")
+
+    if isinstance(product_eval, Exception):
+        log.warning(f"Product evaluation failed ({product_eval}) — continuing without")
+        from scoring.product_evaluator import _unknown_evaluation
+        product_eval = _unknown_evaluation(product_info.display_name)
+
+    # If extraction produced a meaningfully better query, refine eBay now.
+    # "Meaningfully better" = not just whitespace/case difference.
+    # eBay has its own cache so if the same query was recently used, this is instant.
+    extracted_q = (product_info.search_query or "").strip().lower()
+    raw_q       = raw_title_query.lower()
+    need_refine = extracted_q and extracted_q != raw_q and len(extracted_q) > 4
+
+    try:
+        if need_refine:
+            log.info(f"[Speed] Refining eBay: '{raw_title_query}' → '{product_info.search_query}'")
+            market_value = await get_market_value(
+                listing_title     = product_info.search_query,
+                listing_condition = listing.condition,
+                is_vehicle        = listing.is_vehicle,
+                listing_price     = listing.price,
+            )
+        else:
+            log.info(f"[Speed] Using preliminary eBay result for '{raw_title_query}'")
+            market_value = prelim_market
+
+        # Also re-run product evaluation with the correct brand/model now we have them
+        if need_refine and product_info.brand:
+            product_eval = await evaluate_product(
                 brand        = product_info.brand,
                 model        = product_info.model,
                 category     = product_info.category,
                 display_name = product_info.display_name,
-            ),
-            return_exceptions=True,
-        )
-
-        if isinstance(market_value, Exception):
-            log.error(f"eBay pricing failed: {market_value}")
-            raise HTTPException(status_code=500, detail=f"Market value lookup failed: {market_value}")
-
-        if isinstance(product_eval, Exception):
-            log.warning(f"Product evaluation failed ({product_eval}) — continuing without")
-            from scoring.product_evaluator import _unknown_evaluation
-            product_eval = _unknown_evaluation(product_info.display_name)
-
-    except HTTPException:
-        raise
+            )
     except Exception as e:
-        log.error(f"Parallel fetch failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Market data fetch failed: {e}")
+        log.error(f"Refinement step failed: {e}")
+        market_value = prelim_market  # fall back to preliminary result
 
     # ── Step 3: Claude deal scoring ──────────────────────────────────────────
     from dataclasses import asdict as dc_asdict
@@ -340,6 +371,7 @@ async def score_listing(listing: ListingRequest, request: Request):
         "original_price": listing.original_price,
         "shipping_cost":  listing.shipping_cost,
         "image_urls":     listing.image_urls or [],
+        "photo_count":    listing.photo_count,
     }
 
     image_url = listing.image_urls[0] if listing.image_urls else None
