@@ -20,6 +20,7 @@
 // WHY ASYNC: background.js can't read chrome.storage.local synchronously.
 // Every caller that needs API_BASE must await getApiBase().
 const API_BASE_DEFAULT = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
+const DS_API_KEY = "ds_live_098caae54340d797cb216856d0cffe50";
 
 async function getApiBase() {
   try {
@@ -149,7 +150,7 @@ async function callScoringAPI(listing) {
   const API_BASE = await getApiBase();
   const response = await fetch(`${API_BASE}/score`, {
     method:  "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-DS-Key": DS_API_KEY },
     body:    JSON.stringify(listing),
   });
 
@@ -337,7 +338,7 @@ async function _flushAnalytics() {
     for (const evt of batch) {
       await fetch(`${API_BASE}/event`, {
         method:  "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-DS-Key": DS_API_KEY },
         body:    JSON.stringify(evt),
       });
     }

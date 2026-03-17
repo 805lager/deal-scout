@@ -88,8 +88,8 @@ app = FastAPI(
 # Protects Claude API credits from abuse if someone discovers the Railway URL.
 # Limits: 300 scores/hour per IP (covers active browsing sessions; blocks scrapers).
 _rate_limit_store: dict = defaultdict(list)
-RATE_LIMIT_REQUESTS = 300
-RATE_LIMIT_WINDOW   = 3600  # seconds (1 hour)
+RATE_LIMIT_REQUESTS = 200
+RATE_LIMIT_WINDOW   = 86400  # seconds (24 hours)
 
 def _check_rate_limit(client_ip: str):
     now = _time.time()
@@ -101,9 +101,22 @@ def _check_rate_limit(client_ip: str):
     if len(_rate_limit_store[client_ip]) >= RATE_LIMIT_REQUESTS:
         raise HTTPException(
             status_code=429,
-            detail=f"Rate limit: {RATE_LIMIT_REQUESTS} scores per hour. Try again later."
+            detail=f"Rate limit: {RATE_LIMIT_REQUESTS} scores per day. Try again tomorrow."
         )
     _rate_limit_store[client_ip].append(now)
+
+# ── API Key Auth ───────────────────────────────────────────────────────────────
+# Shared secret between the extension and the API.
+# Extension sends: X-DS-Key: <value>
+# If DS_API_KEY env var is not set, auth is skipped (dev mode).
+_DS_API_KEY = os.getenv("DS_API_KEY", "")
+
+def _check_api_key(request: Request):
+    if not _DS_API_KEY:
+        return  # dev mode — no key configured, skip check
+    client_key = request.headers.get("X-DS-Key", "")
+    if client_key != _DS_API_KEY:
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 # CORS — configurable via CORS_ORIGINS env var
 #
@@ -126,7 +139,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_headers=["Content-Type", "Authorization", "X-DS-Key"],
 )
 
 
@@ -263,7 +276,8 @@ async def score_listing(listing: ListingRequest, request: Request):
     Step 4: Suggestion engine — affiliate buy cards (same_cheaper / better_model / amazon)
     Step 5: Serialize and return
     """
-    # Rate limit by IP — protects Claude API credits from abuse
+    # Auth + rate limit — protects Claude API credits from abuse
+    _check_api_key(request)
     client_ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown").split(",")[0].strip()
     _check_rate_limit(client_ip)
 
@@ -873,7 +887,7 @@ class AnalyticsEvent(BaseModel):
 
 
 @app.post("/event")
-async def record_event(evt: AnalyticsEvent):
+async def record_event(evt: AnalyticsEvent, request: Request):
     """
     Receive an anonymous analytics event from the extension.
 
@@ -888,6 +902,7 @@ async def record_event(evt: AnalyticsEvent):
       Only category-level, price-bucketed, aggregated signals.
       GDPR/CCPA compliant by design — nothing to delete.
     """
+    _check_api_key(request)
     record = {
         "event":            evt.event,
         "program":          evt.program,
@@ -1135,7 +1150,7 @@ class ThumbsRequest(BaseModel):
 
 
 @app.post("/thumbs")
-async def submit_thumbs(body: ThumbsRequest):
+async def submit_thumbs(body: ThumbsRequest, request: Request):
     """
     Record a thumbs-up or thumbs-down on a scored listing.
     score_id comes from the /score response. thumbs: 1 or -1.
@@ -1143,6 +1158,7 @@ async def submit_thumbs(body: ThumbsRequest):
       score_too_high | score_too_low | price_wrong | wrong_category | missing_info
     Used to build a labeled training dataset for prompt improvement.
     """
+    _check_api_key(request)
     if body.thumbs not in (1, -1):
         raise HTTPException(status_code=400, detail="thumbs must be 1 or -1")
     _valid_reasons = {"score_too_high", "score_too_low", "price_wrong", "wrong_category", "missing_info", ""}
@@ -1179,6 +1195,7 @@ async def submit_feedback(body: FeedbackRequest, request: Request):
     Submit: bad_query="GoPro accessories" good_query="GoPro HERO 12 Black camera"
     Next GoPro listing will use the corrected query automatically.
     """
+    _check_api_key(request)
     from scoring.corrections import save_correction
     price_range = [body.correct_price_low, body.correct_price_high] if body.correct_price_low else []
     ok = save_correction(
