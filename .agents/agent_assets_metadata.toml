@@ -11,4 +11,22 @@ title = "Deal Scout Extension v0.26.39"
 id = "ra1Q26mV4zqHqV0gl4zLJ"
 uri = "file://deal-scout-extension.zip"
 type = "unspecified"
-title = "Deal Scout v0.26.42"
+title = "Deal Scout v0.26.42 — new icon included"
+
+[[outputs]]
+id = "M5C_KMkeunFfUVPHI4yh5"
+uri = "file://attached_assets/generated_images/deal_scout_icon_128.png"
+type = "image"
+title = "Extension Icon (128×128)"
+
+[[outputs]]
+id = "BwU_iuFi_wfb5ZakVSjgi"
+uri = "file://attached_assets/generated_images/deal_scout_screenshot_1.png"
+type = "image"
+title = "Store Screenshot 1 — Score popup on speaker listing"
+
+[[outputs]]
+id = "IYUCSvPErKPPo9RlUvYtf"
+uri = "file://attached_assets/generated_images/deal_scout_screenshot_2.png"
+type = "image"
+title = "Store Screenshot 2 — Guitar listing with deal breakdown"
