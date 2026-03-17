@@ -265,8 +265,32 @@
     // Joined date
     const joinedMatch = text.match(/joined\s+(?:facebook\s+)?in\s+(\w+\s+\d{4}|\d{4})/i);
 
-    // Seller rating — "4.8 (12 ratings)"
-    const ratingMatch = text.match(/([0-9]\.[0-9])\s*\((\d+)\s*ratings?\)/i);
+    // Seller rating — FBM shows these in two formats:
+    //   Format A (old): "4.8 (12 ratings)" — combined
+    //   Format B (new): seller name followed by "(34)" and "4.5" / "4.5 stars" separately
+    let rating = null, ratingCount = 0;
+
+    // Try combined format first
+    const ratingCombined = text.match(/([0-9]\.[0-9])\s*\((\d+)\s*ratings?\)/i);
+    if (ratingCombined) {
+      rating = parseFloat(ratingCombined[1]);
+      ratingCount = parseInt(ratingCombined[2]);
+    } else {
+      // Separate format: look for a decimal rating like "4.5" near stars/ratings text
+      const ratingVal = text.match(/\b([1-5]\.[0-9])\s*(?:stars?|out\s+of\s+5)?(?:\s*[\u2605\u2606])?/i);
+      if (ratingVal) rating = parseFloat(ratingVal[1]);
+
+      // Standalone review count — "(34)" or "34 ratings" or "34 reviews"
+      const countMatch = text.match(/\((\d+)\)\s*\n/) ||   // "(34)" at end of line (after name)
+                         text.match(/(\d+)\s*ratings?\b/i) ||
+                         text.match(/(\d+)\s*reviews?\b/i);
+      if (countMatch) ratingCount = parseInt(countMatch[1]);
+    }
+
+    // "Highly rated on Marketplace" — explicit FBM trust badge
+    const highlyRated = /highly\s+rated\s+on\s+marketplace/i.test(text);
+    // Treat this as a 4.5 default if we have no other rating signal
+    if (highlyRated && rating === null) rating = 4.5;
 
     // Response rate — "Responds within an hour" or "Usually responds within a day"
     const responseMatch = text.match(/(?:responds?|response)\s+(?:within\s+)?([^.\n,]{3,40})/i);
@@ -278,12 +302,13 @@
     const soldMatch = text.match(/(\d+)\s+items?\s+sold/i);
 
     return {
-      joined_date:    joinedMatch  ? joinedMatch[1]                    : null,
-      rating:         ratingMatch  ? parseFloat(ratingMatch[1])        : null,
-      rating_count:   ratingMatch  ? parseInt(ratingMatch[2])          : 0,
-      response_time:  responseMatch ? responseMatch[1].trim()          : null,
+      joined_date:      joinedMatch  ? joinedMatch[1]        : null,
+      rating:           rating,
+      rating_count:     ratingCount,
+      highly_rated:     highlyRated,
+      response_time:    responseMatch ? responseMatch[1].trim() : null,
       identity_verified: verified,
-      items_sold:     soldMatch    ? parseInt(soldMatch[1])            : 0,
+      items_sold:       soldMatch ? parseInt(soldMatch[1]) : 0,
     };
   }
 
@@ -415,6 +440,11 @@
     // Listing URL
     const listingUrl = location.href;
 
+    // True photo count — count ALL non-card listing images regardless of rendered size.
+    // We only send up to 3 to the API for Vision, but the security scorer needs the
+    // real count so it doesn't flag "only 1 photo" when a carousel has 6 images.
+    const photoCount = _allScontent.filter(img => !_isCardImage(img)).length;
+
     return {
       title,
       price,
@@ -431,6 +461,7 @@
       original_price: original,
       shipping_cost:  shippingCost,
       image_urls:     imageUrls,
+      photo_count:    photoCount,
     };
   }
 
