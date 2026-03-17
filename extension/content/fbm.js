@@ -32,6 +32,7 @@
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
+  const DS_API_KEY = "ds_live_098caae54340d797cb216856d0cffe50";
   // _GENERIC_TITLES must also be before the guard — autoScore references it and
   // autoScore is scheduled from the guard path on SPA re-injection. Any const/let
   // declared after the early return is in TDZ when autoScore runs. (See TDZ note above.)
@@ -643,7 +644,7 @@
      */
     const response = await fetch(`${API_BASE}/score`, {
       method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-DS-Key': DS_API_KEY },
       body:    JSON.stringify(listing),
       signal,                    // AbortController signal — cancels on navigation
     });
@@ -1164,7 +1165,7 @@
       saveBtn.disabled = true; saveBtn.textContent = 'Saving\u2026';
       try {
         const resp = await fetch(`${API_BASE}/feedback`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-DS-Key': DS_API_KEY },
           body: JSON.stringify({ listing_title: r.title, bad_query: r.query_used || '', good_query: query, correct_price_low: priceLow, correct_price_high: priceHigh, notes: `data_source=${r.data_source}` }),
         });
         if (resp.ok) {
@@ -1807,7 +1808,7 @@
         btn.addEventListener('click', () => {
           if (val === 1) {
             fetch(API_BASE + '/thumbs', {
-              method: 'POST', headers: {'Content-Type': 'application/json'},
+              method: 'POST', headers: {'Content-Type': 'application/json', 'X-DS-Key': DS_API_KEY},
               body: JSON.stringify({score_id: r.score_id, thumbs: 1, reason: ''}),
               signal: AbortSignal.timeout(5000),
             }).catch(() => {});
@@ -1825,7 +1826,7 @@
               pill.addEventListener('click', (e) => {
                 e.stopPropagation();
                 fetch(API_BASE + '/thumbs', {
-                  method: 'POST', headers: {'Content-Type': 'application/json'},
+                  method: 'POST', headers: {'Content-Type': 'application/json', 'X-DS-Key': DS_API_KEY},
                   body: JSON.stringify({score_id: r.score_id, thumbs: -1, reason: key}),
                   signal: AbortSignal.timeout(5000),
                 }).catch(() => {});
