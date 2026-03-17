@@ -17,7 +17,7 @@ title = "Deal Scout v0.26.42 — new icon included"
 id = "M5C_KMkeunFfUVPHI4yh5"
 uri = "file://attached_assets/generated_images/deal_scout_icon_128.png"
 type = "image"
-title = "Extension Icon (128×128)"
+title = "Icon Option 1 — Dark green glow"
 
 [[outputs]]
 id = "BwU_iuFi_wfb5ZakVSjgi"
@@ -30,3 +30,21 @@ id = "IYUCSvPErKPPo9RlUvYtf"
 uri = "file://attached_assets/generated_images/deal_scout_screenshot_2.png"
 type = "image"
 title = "Store Screenshot 2 — Guitar listing with deal breakdown"
+
+[[outputs]]
+id = "sS17r3yPaHzHuAAlBbWCZ"
+uri = "file://attached_assets/generated_images/icon_v2_colorful.png"
+type = "image"
+title = "Icon Option 2 — Colorful shield + score badge"
+
+[[outputs]]
+id = "9_vzRPQkxLELVhXQeZLR8"
+uri = "file://attached_assets/generated_images/icon_v3_price_tag.png"
+type = "image"
+title = "Icon Option 3 — Price tag + starburst"
+
+[[outputs]]
+id = "bXv38RWJcA78vFXJRDVeX"
+uri = "file://attached_assets/generated_images/icon_v4_clean.png"
+type = "image"
+title = "Icon Option 4 — Clean minimal magnifier"
