@@ -48,3 +48,33 @@ id = "bXv38RWJcA78vFXJRDVeX"
 uri = "file://attached_assets/generated_images/icon_v4_clean.png"
 type = "image"
 title = "Icon Option 4 — Clean minimal magnifier"
+
+[[outputs]]
+id = "YXAjfMc033IIBGccJgLCu"
+uri = "file://attached_assets/store_icon_128.png"
+type = "image"
+title = "Store Icon — 128×128 PNG"
+
+[[outputs]]
+id = "Jxe59jQ33PekMLYPcbhQA"
+uri = "file://attached_assets/store_screenshot_1_popup.png"
+type = "image"
+title = "Screenshot 1 — Popup (1280×800 PNG)"
+
+[[outputs]]
+id = "wzglUo_rRNISSvm1Xmkfk"
+uri = "file://attached_assets/store_screenshot_2_results.png"
+type = "image"
+title = "Screenshot 2 — Score Results Panel (1280×800 PNG)"
+
+[[outputs]]
+id = "uWP11LKtObR2FV7lJ8zw_"
+uri = "file://attached_assets/promo_small_440x280.png"
+type = "image"
+title = "Small Promo Tile — 440×280 PNG"
+
+[[outputs]]
+id = "UBec8va9JtTzbs7gYHXj0"
+uri = "file://attached_assets/promo_marquee_1400x560.png"
+type = "image"
+title = "Marquee Promo Tile — 1400×560 PNG"
