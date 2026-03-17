@@ -24,6 +24,7 @@
 
   // ── API Base (from chrome.storage, same as fbm.js) ─────────────────────────
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
+  const DS_API_KEY = "ds_live_098caae54340d797cb216856d0cffe50";
   try {
     chrome.storage.local.get("ds_api_base", (r) => {
       if (r && r.ds_api_base) API_BASE = r.ds_api_base;
@@ -259,7 +260,7 @@
   async function callScoringAPIDirect(listing, signal) {
     const response = await fetch(`${API_BASE}/score`, {
       method:  "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-DS-Key": DS_API_KEY },
       body:    JSON.stringify(listing),
       signal,
     });
@@ -678,7 +679,7 @@
         btn.addEventListener("click", () => {
           if (val === 1) {
             fetch(API_BASE + "/thumbs", {
-              method: "POST", headers: {"Content-Type": "application/json"},
+              method: "POST", headers: {"Content-Type": "application/json", "X-DS-Key": DS_API_KEY},
               body: JSON.stringify({score_id: r.score_id, thumbs: 1, reason: ""}),
               signal: AbortSignal.timeout(5000),
             }).catch(() => {});
@@ -696,7 +697,7 @@
               pill.addEventListener("click", (e) => {
                 e.stopPropagation();
                 fetch(API_BASE + "/thumbs", {
-                  method: "POST", headers: {"Content-Type": "application/json"},
+                  method: "POST", headers: {"Content-Type": "application/json", "X-DS-Key": DS_API_KEY},
                   body: JSON.stringify({score_id: r.score_id, thumbs: -1, reason: key}),
                   signal: AbortSignal.timeout(5000),
                 }).catch(() => {});
