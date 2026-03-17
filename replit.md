@@ -109,6 +109,14 @@ All four content scripts use `chrome.runtime.sendMessage({type: 'SCORE_LISTING',
 5. **Port**: `API_PORT` env var → `PORT` env var (Replit standard)
 6. **No external AI keys needed**: All AI calls go through Replit's built-in Claude proxy
 
+## Workflow Preferences
+
+- **Always push to GitHub after any code change** — do not wait to be asked.
+  - Extension changes (content scripts, background.js, manifest, zip) → push to **public** repo `805lager/deal-scout`
+  - Backend changes (main.py, scoring/*.py, requirements.txt) → push to **private** repo `805lager/deal-scout-api`
+  - When both change in the same session, push both repos in the same step.
+  - Rebuild `deal_scout_extension.zip` whenever any file under `extension/` changes, and push the new zip to the public repo.
+
 ## TypeScript API Server (pre-existing)
 
 The workspace also has a TypeScript/Express API server at `artifacts/api-server/` (separate from Deal Scout, runs on port 8080 at path `/api`). This was pre-existing and is unrelated to the Deal Scout backend.
