@@ -560,8 +560,15 @@ async def score_deal(
         try:
             data = json.loads(clean_text)
         except json.JSONDecodeError as e:
-            log.error(f"JSON parse failed: {e}\nRaw text was:\n{raw_text}")
-            return None
+            # Claude sometimes puts unescaped double quotes inside string values
+            # (e.g. the word "Unknown" in a summary). json_repair handles this.
+            try:
+                import json_repair
+                data = json_repair.loads(clean_text)
+                log.warning(f"JSON repaired after initial parse failure: {e}")
+            except Exception as e2:
+                log.error(f"JSON parse failed: {e}\nRepair also failed: {e2}\nRaw text was:\n{raw_text}")
+                return None
 
         # WHY `or 0` not default=0:
         #   data.get("recommended_offer", 0) returns None when the key EXISTS

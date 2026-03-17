@@ -353,14 +353,20 @@ async def run_layer2(
         or "unknown"
     )
 
-    raw_rating = seller_trust_dict.get("rating")
-    raw_count  = seller_trust_dict.get("rating_count", 0) or 0
+    raw_rating   = seller_trust_dict.get("rating")
+    raw_count    = seller_trust_dict.get("rating_count", 0) or 0
+    highly_rated = seller_trust_dict.get("highly_rated", False)
     if raw_rating:
-        seller_rating = f"{raw_rating:.1f}/5 ({raw_count} ratings)"
+        suffix = " · Highly rated on Marketplace" if highly_rated else ""
+        seller_rating = f"{float(raw_rating):.1f}/5 ({raw_count} reviews){suffix}"
+    elif highly_rated:
+        seller_rating = f"Highly rated on Marketplace ({raw_count} reviews)" if raw_count else "Highly rated on Marketplace"
     else:
         seller_rating = "unknown"
 
-    photo_count = len(getattr(listing, "image_urls", None) or [])
+    # Use photo_count from listing if the extension sent it (accurate carousel total).
+    # Fall back to len(image_urls) for older payloads that don't include it.
+    photo_count = (getattr(listing, "photo_count", 0) or 0) or len(getattr(listing, "image_urls", None) or [])
     photo_str   = f"{photo_count} photo(s)" if photo_count else "none"
 
     # Use effective_title if passed, fall back to raw listing title
