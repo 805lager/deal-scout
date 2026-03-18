@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.3';
+  const VERSION  = '0.28.4';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -584,28 +584,48 @@
 
     // SPA-navigation body-render gap:
     // FBM React updates the h1 immediately on navigation, but the listing body
-    // (price, description, seller section) finishes rendering 200–900ms later.
-    // Every DOM-based freshness signal we tried (title in body, price fingerprint,
-    // prev-title-gone) failed because FBM's internal render order is unpredictable.
+    // (price, description, seller section) finishes rendering 200–2000ms later
+    // depending on content size and network speed.
     //
-    // Simple, guaranteed fix: for SPA navigations (prevTitle is set = we just left
-    // another listing), enforce a hard minimum wait of SPA_MIN_ATTEMPTS×200ms after
-    // the h1 has updated. This gives React time to flush the full body render.
-    // Hard page loads (prevTitle unset) have no added delay.
+    // Two-signal approach:
+    //   A. Listing ID in meta tags — FBM updates og:url / canonical link to point
+    //      to the new listing's URL as part of the same render cycle that updates
+    //      the body content. If the meta already reflects the new listing ID, the
+    //      body is ready and we can score immediately.
+    //   B. 2400ms hard minimum fallback — if FBM doesn't update meta tags during
+    //      SPA navigation (or updates them before the body), we still wait long
+    //      enough for any reasonable render to complete.
     //
-    // The wait only starts counting AFTER titleIsStale clears (h1 updated), so the
-    // minimum applies to body render time, not total time since navigation.
+    // The wait only counts AFTER titleIsStale clears (h1 updated).
     const isSpaNav = typeof prevTitle === 'string' && prevTitle !== '';
-    const SPA_MIN_ATTEMPTS = 6; // 1200ms — covers FBM render on any connection
+    const SPA_MIN_ATTEMPTS = 12; // 2400ms hard floor for SPA renders
+    let metaReady = true;
+    if (isSpaNav) {
+      const listingId = location.pathname.match(/\/item\/(\d+)/)?.[1] || '';
+      if (listingId) {
+        const ogUrl   = document.querySelector('meta[property="og:url"]')?.content   || '';
+        const canon   = document.querySelector('link[rel="canonical"]')?.href         || '';
+        // meta is ready if EITHER tag references the current listing ID
+        metaReady = ogUrl.includes(listingId) || canon.includes(listingId);
+      }
+    }
     const notReady = titleIsStale || !hasContent ||
-                     (isSpaNav && attempt < SPA_MIN_ATTEMPTS);
+                     (isSpaNav && attempt < SPA_MIN_ATTEMPTS && !metaReady);
 
     if (notReady && attempt < 20) {
+      if (attempt % 5 === 0) {
+        console.debug('[DealScout] Waiting for page render', {
+          attempt, titleIsStale, hasContent, isSpaNav, metaReady,
+          minReached: attempt >= SPA_MIN_ATTEMPTS,
+        });
+      }
       await new Promise(r => setTimeout(r, 200));
       // Bail if the user navigated away — both URL and nonce must still match.
       if (location.href !== snapUrl || window.__dealScoutNonce !== myNonce) return;
       return autoScore(attempt + 1);
     }
+    console.debug('[DealScout] Page ready at attempt', attempt,
+      isSpaNav ? `(SPA, metaReady=${metaReady})` : '(hard load)');
 
     // Clear the SPA sentinel
     window.__dealScoutPrevTitle = undefined;
