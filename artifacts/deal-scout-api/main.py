@@ -801,10 +801,13 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
             extracted["platform"]    = raw.platform
             extracted.setdefault("photo_count", len(raw.image_urls or []))
 
-            title = extracted.get("title", "").strip()
-            price = float(extracted.get("price", 0) or 0)
+            title     = extracted.get("title", "").strip()
+            price_raw = extracted.get("price")          # None means truly unknown
+            price     = float(price_raw if price_raw is not None else 0)
 
-            if not title or not price:
+            # price_raw is None only when Claude found no price at all.
+            # price_raw == 0 means the item is FREE — that is valid, not an error.
+            if not title or price_raw is None:
                 yield _sse({"type": "error",
                             "message": "Could not read listing — page may still be loading"})
                 return

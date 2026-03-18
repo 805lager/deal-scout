@@ -62,7 +62,7 @@ Raw page text (may contain navigation menus and sidebar noise — focus on the l
 Extract the listing fields below. Respond ONLY with valid JSON — no markdown fences, no commentary.
 {{
   "title": "exact product name/model as listed, max 120 chars",
-  "price": 0.0,
+  "price": null,
   "description": "seller's own description text only, max 600 chars, exclude navigation/UI/unrelated text",
   "condition": "New|Like New|Good|Fair|Used|Unknown",
   "location": "city, state or region if visible on page",
@@ -78,7 +78,8 @@ Extract the listing fields below. Respond ONLY with valid JSON — no markdown f
 }}
 
 Rules:
-- price: number only in US dollars (e.g. 145.0). Use 0.0 if free, "make offer", or not found.
+- price: number only in US dollars (e.g. 145.0). Use 0.0 if the item is FREE or "make offer".
+  Use null ONLY if there is absolutely no price information anywhere on the page.
   Handles formats: "$145", "$145 · In stock", "$145$200" (dual-price — use the lower).
 - photo_count: look for "1/5", "3/8", "3 photos", "5 pictures" etc. 0 if unclear.
 - is_vehicle: true only for cars, trucks, motorcycles, boats, RVs, ATVs, trailers.
