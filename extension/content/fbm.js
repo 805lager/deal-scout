@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.27.1';
+  const VERSION  = '0.27.2';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -2007,29 +2007,35 @@
     } catch (_) { return ''; }
   }
 
-  function _onFbmNav(newUrl) {
+  // isPopstate=true means the user pressed Back/Forward — always a real navigation.
+  // pushState/replaceState pass isPopstate=false (default).
+  function _onFbmNav(newUrl, isPopstate = false) {
     // Resolve the destination URL before the history mutation happens.
-    // pushState/replaceState args are (state, title, url); we receive url as newUrl.
-    // popstate doesn't have a destination — treat it as a real navigation.
     const newHref = newUrl ? (() => {
       try { return new URL(String(newUrl), location.href).href; } catch (_) { return String(newUrl); }
     })() : '';
 
-    // KEY FIX: FBM fires replaceState for intra-page state updates (e.g. adding
-    // chat thread IDs, updating timestamp params) WITHOUT actually navigating to a
-    // new listing. These calls have the same listing ID in the URL — or no listing
-    // ID at all. Treating them as navigation causes three bugs:
-    //   1. The in-flight scoring fetch is aborted → score never renders
+    // KEY FIX: FBM fires replaceState constantly for intra-page state updates
+    // (analytics pings, chat thread IDs, scroll-position tokens, etc.) — often
+    // with NO URL argument at all (replaceState(state, title) with no 3rd param).
+    // Those produce newHref="" → newId="" which used to slip past the old guard
+    // (which required BOTH IDs to be non-empty), causing three bugs every time:
+    //   1. In-flight scoring fetch aborted → score never renders
     //   2. renderNavigating() flashes "Loading next listing…" on the same item
-    //   3. The nonce increments → the readiness-poller bails out mid-wait
+    //   3. Nonce increments → readiness-poller bails mid-wait
     //
-    // Guard: if old and new URLs are both listing pages AND share the same numeric
-    // listing ID, skip the navigation handler entirely.
+    // New rule: for pushState/replaceState (not popstate), only treat as a REAL
+    // navigation if the destination URL contains a DIFFERENT listing ID.
+    // Anything else — same ID, no ID, or unresolvable URL — is noise: skip it.
     const oldId = _listingIdFromUrl(location.href);
     const newId = newHref ? _listingIdFromUrl(newHref) : '';
-    if (oldId && newId && oldId === newId) {
-      console.debug('[DealScout] Ignoring intra-listing replaceState:', newHref);
-      return;
+
+    if (!isPopstate) {
+      // Not a popstate → only proceed if going to a clearly different listing.
+      if (!newId || newId === oldId) {
+        console.debug('[DealScout] Ignoring intra-page state update:', newHref || '(no url)');
+        return;
+      }
     }
 
     if (isListingPage() || (newHref && /\/marketplace\/(?:[^/]+\/)?item\/\d+/.test(newHref))) {
@@ -2072,8 +2078,8 @@
     }
   }
 
-  history.pushState    = function(state, title, url) { _onFbmNav(url); _fbmOrigPush(state, title, url);    };
-  history.replaceState = function(state, title, url) { _onFbmNav(url); _fbmOrigReplace(state, title, url); };
-  window.addEventListener('popstate', () => _onFbmNav(''));
+  history.pushState    = function(state, title, url) { _onFbmNav(url, false); _fbmOrigPush(state, title, url);    };
+  history.replaceState = function(state, title, url) { _onFbmNav(url, false); _fbmOrigReplace(state, title, url); };
+  window.addEventListener('popstate', () => _onFbmNav('', true));
 
 })();
