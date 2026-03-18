@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.0';
+  const VERSION  = '0.28.1';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -579,24 +579,22 @@
                          (currentTitle === prevTitle || _GENERIC_TITLES.has(currentTitle.toLowerCase()) || currentTitle === '');
 
     // Body-content freshness check:
-    // FBM React updates the h1 title BEFORE re-rendering the listing body.
-    // Because h1 sits INSIDE [role="main"], checking for the new title in mainText
-    // always passes immediately (h1 update suffices) — the rest of the body can
-    // still show the previous listing's price/description/seller details.
+    // FBM React updates the h1 FIRST, then re-renders the listing body (price,
+    // description, seller) 200–800ms later. Title-based checks fail because the
+    // h1 lives inside [role="main"] — the instant h1 updates, any "title in body"
+    // or "title gone from body" check resolves, even though the body is stale.
     //
-    // More reliable signal: verify the PREVIOUS listing's title is no longer
-    // visible in the main content area. In the transition state, [role="main"]
-    // contains the old h1 + old body; once React finishes re-rendering, the old
-    // title disappears from the body. We wait until it's gone.
+    // Fix: at navigation time (_onFbmNav) we fingerprint the PRICE from the old
+    // listing's body (price is in an h2/heading, NOT the h1, so it updates in the
+    // second render wave). Here we wait until that price string disappears from
+    // [role="main"], confirming the body has re-rendered with the new listing.
     const mainEl = document.querySelector('[role="main"]') || document.querySelector('main') || document.body;
     const mainText = mainEl.innerText || '';
     const hasContent = mainText.length > 100;
-    // prevContentGone: old listing's title no longer appears anywhere in the body.
-    // First 25 chars is enough to be unique without over-matching.
-    const prevTitleSnippet = (prevTitle || '').slice(0, 25).trim().toLowerCase();
-    const prevContentGone = !prevTitleSnippet || !mainText.toLowerCase().includes(prevTitleSnippet);
+    const prevBodySnippet = window.__dealScoutPrevBodySnippet || '';
+    const prevBodyGone = !prevBodySnippet || !mainText.toLowerCase().includes(prevBodySnippet);
 
-    const notReady = titleIsStale || !hasContent || !prevContentGone;
+    const notReady = titleIsStale || !hasContent || !prevBodyGone;
 
     if (notReady && attempt < 20) {
       await new Promise(r => setTimeout(r, 200));
@@ -605,8 +603,9 @@
       return autoScore(attempt + 1);
     }
 
-    // Clear the SPA sentinel
+    // Clear the SPA sentinels
     window.__dealScoutPrevTitle = undefined;
+    window.__dealScoutPrevBodySnippet = undefined;
 
     // Gather raw data for server-side extraction
     const rawData = extractRaw();
@@ -2111,6 +2110,23 @@
           if (t && !_GENERIC_TITLES.has(t.toLowerCase())) return t;
         }
         return '';
+      })();
+
+      // Save a fingerprint of the listing BODY content (price/description area,
+      // NOT the h1). The h1 updates first during SPA nav — body content lags 200–800ms.
+      // We use this fingerprint in autoScore to wait for the OLD body to be gone.
+      // Strategy: grab the first price-like string found in [role="main"] headings.
+      // Price is listing-specific and NOT in the h1, making it ideal as a marker.
+      window.__dealScoutPrevBodySnippet = (() => {
+        const mainEl = document.querySelector('[role="main"]') || document.body;
+        // FBM renders the price in an h2 or heading-role element near the top
+        for (const el of mainEl.querySelectorAll('h2, [role="heading"]')) {
+          const t = el.textContent.trim();
+          if (/^\$[\d,]+/.test(t)) return t.slice(0, 15).toLowerCase();
+        }
+        // Fallback: first price pattern in the raw innerText
+        const m = (mainEl.innerText || '').match(/\$[\d,]+/);
+        return m ? m[0].toLowerCase() : '';
       })();
       console.debug('[DealScout] Nav detected (old:', oldId, '→ new:', newId || 'unknown', ') prevTitle:', window.__dealScoutPrevTitle);
       // Clear the panel IMMEDIATELY at t=0 — don't wait 800ms for bg re-injection.
