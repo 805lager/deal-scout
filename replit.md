@@ -73,12 +73,18 @@ Get your free eBay key at: https://developer.ebay.com/my/keys
 
 ## Running Locally
 
-The workflow `Deal Scout API` runs:
-```
-cd artifacts/deal-scout-api && uvicorn main:app --host 0.0.0.0 --port 8000
-```
+**Both workflows must be running for the extension to work:**
 
-API available at `http://localhost:8000` within Replit.
+1. `Deal Scout API` — Python FastAPI on port 8000
+   ```
+   cd artifacts/deal-scout-api && uvicorn main:app --host 0.0.0.0 --port 8000
+   ```
+2. `artifacts/api-server: API Server` — TypeScript/Express proxy on port 8080
+   ```
+   pnpm --filter @workspace/api-server run dev
+   ```
+
+The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the prefix) via `http-proxy-middleware` in `artifacts/api-server/src/app.ts`. The extension's external URL routes through the api-server, not directly to the Python app. **If the api-server is stopped, the extension gets 502 errors.**
 
 ## Extension Content Scripts
 
