@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.5';
+  const VERSION  = '0.28.6';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -610,14 +610,24 @@
 
       const bodyChanged    = !prevSnippet || bodySnippet !== prevSnippet;
       const bodyStable     = bodySnippet !== '' && bodySnippet === lastSnapshot;
-      const hasPriceInText = /\$\s*\d/.test(mainText);
+      // FBM shows "FREE" (not "$0") for free listings — match both forms.
+      const hasPriceInText = /(\$\s*\d|\bfree\b)/i.test(mainText);
+
+      // Image fingerprint: wait for the first main listing image to differ from
+      // the one we had at nav time. If the old listing had no image, skip check.
+      // Only enforce for the first 15 attempts (~3s) so it can't spin forever.
+      const prevImgSrc  = window.__dealScoutPrevImgSrc || '';
+      const curImg      = mainEl.querySelector('img[src*="scontent"]');
+      const curImgSrc   = curImg ? curImg.src.split('?')[0] : '';
+      const imgChanged  = !prevImgSrc || attempt >= 15 || curImgSrc !== prevImgSrc;
 
       notReady = titleIsStale || !hasContent ||
-                 !bodyChanged || !bodyStable || !hasPriceInText;
+                 !bodyChanged || !bodyStable || !hasPriceInText || !imgChanged;
 
       if (attempt % 5 === 0 || (notReady && attempt > 0 && attempt % 2 === 0)) {
         console.debug('[DealScout] Readiness check', {
-          attempt, titleIsStale, hasContent, bodyChanged, bodyStable, hasPriceInText,
+          attempt, titleIsStale, hasContent, bodyChanged, bodyStable,
+          hasPriceInText, imgChanged,
         });
       }
     } else {
@@ -638,6 +648,7 @@
     window.__dealScoutPrevTitle = undefined;
     window.__dealScoutPrevBodySnippet = undefined;
     window.__dealScoutLastBodySnapshot = undefined;
+    window.__dealScoutPrevImgSrc = undefined;
 
     // Gather raw data for server-side extraction
     const rawData = extractRaw();
@@ -2182,13 +2193,17 @@
         return '';
       })();
 
-      // Save a body fingerprint of the CURRENT listing's content at t=0.
-      // FBM keeps old body text rendered while the new listing loads — sometimes
-      // for 1–3+ seconds. We wait until this fingerprint is GONE (body has
-      // changed to new content) AND stable (not mid-render) before extracting.
+      // Save a body fingerprint AND first-image fingerprint of the CURRENT listing
+      // at t=0. FBM keeps old content rendered while the new listing loads —
+      // sometimes for 1–3+ seconds. We wait until BOTH have changed AND the body
+      // has stabilised before extracting.
       const _mainNow = document.querySelector('[role="main"]') || document.body;
       window.__dealScoutPrevBodySnippet = (_mainNow.innerText || '').slice(50, 500);
       window.__dealScoutLastBodySnapshot = '';
+      // Image fingerprint — first scontent img inside [role="main"], stripped of
+      // query params (CDN tokens change per-request; the path is stable per image).
+      const _prevImg = _mainNow.querySelector('img[src*="scontent"]');
+      window.__dealScoutPrevImgSrc = _prevImg ? _prevImg.src.split('?')[0] : '';
 
       console.debug('[DealScout] Nav detected (old:', oldId, '→ new:', newId || 'unknown', ') prevTitle:', window.__dealScoutPrevTitle);
       // Clear the panel IMMEDIATELY at t=0 — don't wait 800ms for bg re-injection.
