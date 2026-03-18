@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.27.0';
+  const VERSION  = '0.27.1';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -71,6 +71,11 @@
     // of this file). Don't overwrite it here — by now the DOM may already show
     // the new listing, which would make prevTitle useless.
     if (isListingPage()) {
+      // Always reset the mutex here — a prior scoring run may still hold it
+      // (e.g. extension reload while a score was in-flight). Without this the
+      // new autoScore(0) sees __dealScoutRunning=true and silently returns,
+      // leaving the panel stuck at "Loading next listing…" forever.
+      window.__dealScoutRunning = false;
       renderNavigating();
       clearTimeout(window.__dealScoutRescanTimer);
       window.__dealScoutRescanTimer = setTimeout(autoScore, 100);
@@ -546,16 +551,17 @@
     const snapUrl = location.href;
     const myNonce = window.__dealScoutNonce;
 
-    // ── Simplified readiness check ─────────────────────────────────────────────
-    // Since Claude now extracts price/description from raw page text server-side,
-    // we only need to wait for:
-    //   A. Title is loaded and not stale from the previous listing (SPA nav guard)
-    //   B. Page has enough text content to extract from (>300 chars)
-    //   C. At least one listing image is available (DOM-based, needed for scoring)
+    // ── Readiness check ───────────────────────────────────────────────────────
+    // Claude handles all extraction server-side, so we only need two signals:
+    //   A. Title is not stale from the previous listing (SPA nav guard) —
+    //      without this we'd score the OLD listing's content on the new URL.
+    //   B. Page has enough text to send (>100 chars).
     //
-    // No longer waiting for price DOM element — eliminates the $145·In stock freeze
-    // and the mutex-leak bug on zero-price early exit.
+    // No image/price/description waiting — that added up to 9 s of delays and
+    // was the source of the "Loading next listing…" stuck state (nonce could
+    // change mid-wait, orphaning the run). Max wait is now 4 s (20 × 200 ms).
 
+    const prevTitle = window.__dealScoutPrevTitle;
     const currentTitle = (() => {
       for (const el of document.querySelectorAll('h1[dir="auto"]')) {
         const t = el.textContent.trim();
@@ -563,54 +569,21 @@
       }
       return '';
     })();
-    const prevTitle = window.__dealScoutPrevTitle;
 
-    // Condition A: title still shows old listing (SPA nav, DOM not yet swapped)
-    const titleIsStale = typeof prevTitle === 'string' &&
-                         (currentTitle === prevTitle || _GENERIC_TITLES.has(currentTitle.toLowerCase()));
+    // Stale = title still matches the listing we just LEFT (SPA, DOM not swapped yet)
+    const titleIsStale = typeof prevTitle === 'string' && prevTitle !== '' &&
+                         (currentTitle === prevTitle || _GENERIC_TITLES.has(currentTitle.toLowerCase()) || currentTitle === '');
 
-    // Condition B: title not loaded yet
-    const titleMissing = !currentTitle || _GENERIC_TITLES.has(currentTitle.toLowerCase());
+    const hasContent = (document.body.innerText || '').length > 100;
 
-    // Condition C: page content not yet loaded (brief check to avoid empty body)
-    const hasContent = (document.body.innerText || '').length > 300;
+    const notReady = titleIsStale || !hasContent;
 
-    // Condition D: main product image not yet rendered at full size.
-    // clientWidth is 0 until the image element is laid out by the browser.
-    // Also checks absolute page position — listing photos are always in the top
-    // 900px of the page; sidebar/recommendation images are further down and must
-    // not be counted as "ready" (they would pass the size check but are the wrong
-    // item).
-    const _scontentNow = Array.from(document.querySelectorAll('img[src*="scontent"]'));
-    const _isCardEl = img =>
-      !!img.closest('a[href*="/marketplace/item/"]') ||
-      !!img.closest('div[data-testid="marketplace-search-item"]') ||
-      !!img.closest('[role="listitem"] a') ||
-      !!img.closest('aside') ||
-      !!img.closest('[data-testid*="sponsored"]') ||
-      !!img.closest('[aria-label*="Sponsored"]');
-    const hasMainImage = _scontentNow.some(img => {
-      if (_isCardEl(img)) return false;
-      const w = img.clientWidth || img.offsetWidth || 0;
-      if (w < 200) return false;
-      const absTop = img.getBoundingClientRect().top + window.scrollY;
-      return absTop < 900;                        // must be in top of page
-    });
-    const imageMissing = !hasMainImage && attempt < 12;
-
-    // No longer checking priceMissing or descMissing — Claude extracts those server-side.
-    const notReady = titleIsStale || (titleMissing && !titleIsStale) || (!hasContent && attempt < 8) || imageMissing;
-
-    if (notReady && attempt < 30) {
-      await new Promise(r => setTimeout(r, 300));
+    if (notReady && attempt < 20) {
+      await new Promise(r => setTimeout(r, 200));
       // Bail if the user navigated away — both URL and nonce must still match.
       if (location.href !== snapUrl || window.__dealScoutNonce !== myNonce) return;
       return autoScore(attempt + 1);
     }
-
-    // Extra tick for React reconciliation (title/price can briefly diverge)
-    await new Promise(r => setTimeout(r, 300));
-    if (location.href !== snapUrl || window.__dealScoutNonce !== myNonce) return;
 
     // Clear the SPA sentinel
     window.__dealScoutPrevTitle = undefined;
