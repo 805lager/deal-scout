@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.4';
+  const VERSION  = '0.28.5';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -557,13 +557,12 @@
 
     // ── Readiness check ───────────────────────────────────────────────────────
     // Claude handles all extraction server-side, so we only need two signals:
-    //   A. Title is not stale from the previous listing (SPA nav guard) —
-    //      without this we'd score the OLD listing's content on the new URL.
+    //   A. Title is not stale from the previous listing (SPA nav guard).
     //   B. Page has enough text to send (>100 chars).
+    //   C. For SPA navs: body content has changed from the saved fingerprint,
+    //      settled (stable across two polls), and shows a price. See below.
     //
-    // No image/price/description waiting — that added up to 9 s of delays and
-    // was the source of the "Loading next listing…" stuck state (nonce could
-    // change mid-wait, orphaning the run). Max wait is now 4 s (20 × 200 ms).
+    // Max wait: 20 × 200 ms = 4 s.
 
     const prevTitle = window.__dealScoutPrevTitle;
     const currentTitle = (() => {
@@ -583,53 +582,62 @@
     const hasContent = mainText.length > 100;
 
     // SPA-navigation body-render gap:
-    // FBM React updates the h1 immediately on navigation, but the listing body
-    // (price, description, seller section) finishes rendering 200–2000ms later
-    // depending on content size and network speed.
+    // FBM keeps the OLD listing's body content rendered (description, price, seller)
+    // while fetching the new listing — sometimes for 1–3+ seconds. Time-based waits
+    // (1.2 s, 2.4 s) are unreliable because render time varies by listing and network.
     //
-    // Two-signal approach:
-    //   A. Listing ID in meta tags — FBM updates og:url / canonical link to point
-    //      to the new listing's URL as part of the same render cycle that updates
-    //      the body content. If the meta already reflects the new listing ID, the
-    //      body is ready and we can score immediately.
-    //   B. 2400ms hard minimum fallback — if FBM doesn't update meta tags during
-    //      SPA navigation (or updates them before the body), we still wait long
-    //      enough for any reasonable render to complete.
+    // Content-fingerprint approach (only for SPA navs):
+    //   1. bodyChanged — At navigation time (_onFbmNav) we saved a 450-char snippet
+    //      of [role="main"].innerText. We wait until the current body text is
+    //      DIFFERENT from that snapshot — meaning FBM has replaced the old content.
+    //   2. bodyStable  — We then wait for the body to be IDENTICAL across two
+    //      consecutive 200ms polls. This ensures React has finished its render
+    //      cycle and we're not mid-update.
+    //   3. hasPriceInText — The new listing's price ($N) must be visible. Skeleton
+    //      loading states don't show a price, so this guards against scoring before
+    //      actual content renders.
     //
-    // The wait only counts AFTER titleIsStale clears (h1 updated).
+    // Combined: bodyChanged + bodyStable + hasPriceInText = body has settled on
+    // NEW listing content, ready to extract. Max wait: 20 × 200ms = 4s.
     const isSpaNav = typeof prevTitle === 'string' && prevTitle !== '';
-    const SPA_MIN_ATTEMPTS = 12; // 2400ms hard floor for SPA renders
-    let metaReady = true;
-    if (isSpaNav) {
-      const listingId = location.pathname.match(/\/item\/(\d+)/)?.[1] || '';
-      if (listingId) {
-        const ogUrl   = document.querySelector('meta[property="og:url"]')?.content   || '';
-        const canon   = document.querySelector('link[rel="canonical"]')?.href         || '';
-        // meta is ready if EITHER tag references the current listing ID
-        metaReady = ogUrl.includes(listingId) || canon.includes(listingId);
-      }
-    }
-    const notReady = titleIsStale || !hasContent ||
-                     (isSpaNav && attempt < SPA_MIN_ATTEMPTS && !metaReady);
+    let notReady;
 
-    if (notReady && attempt < 20) {
-      if (attempt % 5 === 0) {
-        console.debug('[DealScout] Waiting for page render', {
-          attempt, titleIsStale, hasContent, isSpaNav, metaReady,
-          minReached: attempt >= SPA_MIN_ATTEMPTS,
+    if (isSpaNav) {
+      const prevSnippet    = window.__dealScoutPrevBodySnippet || '';
+      const bodySnippet    = mainText.slice(50, 500);
+      const lastSnapshot   = window.__dealScoutLastBodySnapshot || '';
+      window.__dealScoutLastBodySnapshot = bodySnippet;
+
+      const bodyChanged    = !prevSnippet || bodySnippet !== prevSnippet;
+      const bodyStable     = bodySnippet !== '' && bodySnippet === lastSnapshot;
+      const hasPriceInText = /\$\s*\d/.test(mainText);
+
+      notReady = titleIsStale || !hasContent ||
+                 !bodyChanged || !bodyStable || !hasPriceInText;
+
+      if (attempt % 5 === 0 || (notReady && attempt > 0 && attempt % 2 === 0)) {
+        console.debug('[DealScout] Readiness check', {
+          attempt, titleIsStale, hasContent, bodyChanged, bodyStable, hasPriceInText,
         });
       }
+    } else {
+      // Hard page load — title and content checks are enough.
+      notReady = !currentTitle || !hasContent;
+    }
+
+    if (notReady && attempt < 20) {
       await new Promise(r => setTimeout(r, 200));
       // Bail if the user navigated away — both URL and nonce must still match.
       if (location.href !== snapUrl || window.__dealScoutNonce !== myNonce) return;
       return autoScore(attempt + 1);
     }
     console.debug('[DealScout] Page ready at attempt', attempt,
-      isSpaNav ? `(SPA, metaReady=${metaReady})` : '(hard load)');
+      isSpaNav ? '(SPA nav)' : '(hard load)');
 
-    // Clear the SPA sentinel
+    // Clear the SPA sentinels
     window.__dealScoutPrevTitle = undefined;
     window.__dealScoutPrevBodySnippet = undefined;
+    window.__dealScoutLastBodySnapshot = undefined;
 
     // Gather raw data for server-side extraction
     const rawData = extractRaw();
@@ -2173,6 +2181,14 @@
         }
         return '';
       })();
+
+      // Save a body fingerprint of the CURRENT listing's content at t=0.
+      // FBM keeps old body text rendered while the new listing loads — sometimes
+      // for 1–3+ seconds. We wait until this fingerprint is GONE (body has
+      // changed to new content) AND stable (not mid-render) before extracting.
+      const _mainNow = document.querySelector('[role="main"]') || document.body;
+      window.__dealScoutPrevBodySnippet = (_mainNow.innerText || '').slice(50, 500);
+      window.__dealScoutLastBodySnapshot = '';
 
       console.debug('[DealScout] Nav detected (old:', oldId, '→ new:', newId || 'unknown', ') prevTitle:', window.__dealScoutPrevTitle);
       // Clear the panel IMMEDIATELY at t=0 — don't wait 800ms for bg re-injection.
