@@ -242,38 +242,59 @@ function setBadge(tabId, text, color) {
  * Per-tab map so navigating two tabs concurrently doesn't cross-cancel.
  */
 const spaDebounceTimers = new Map();
+// Track the listing ID we last injected for per tab.
+// FBM fires onHistoryStateUpdated constantly (analytics, chat thread IDs,
+// scroll tokens) even while the user stays on the same listing. Without this
+// guard, we'd re-inject fbm.js every 800ms mid-score — calling renderNavigating()
+// and resetting the panel to "Loading next listing…" indefinitely.
+const spaLastListingId = new Map();
+
+function _bgListingId(href) {
+  const m = String(href || '').match(/\/marketplace\/(?:[^/]+\/)?item\/(\d+)/);
+  return m ? m[1] : '';
+}
 
 chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
   if (!details.url.includes("facebook.com/marketplace")) return;
   if (details.frameId !== 0) return;
 
-  // Re-inject on ALL FBM pages during SPA navigation.
-  // WHY: Manifest content_scripts only fire on hard page loads.
-  // FBM is a React SPA — every internal navigation (listing → search,
-  // category → listing, etc.) is a pushState, not a reload.
-  // Without this, search overlay badges never appear after SPA nav.
-  // The content script's __dealScoutInjected guard + isListingPage() logic
-  // handles the correct behaviour once injected.
+  const newId  = _bgListingId(details.url);
+  const lastId = spaLastListingId.get(details.tabId) || '';
 
-  // Cancel any pending inject for this tab and restart the timer
-  if (spaDebounceTimers.has(details.tabId)) {
-    clearTimeout(spaDebounceTimers.get(details.tabId));
-  }
+  // KEY FIX: skip re-injection if we're still on the same listing.
+  // FBM fires many replaceState/pushState calls for internal state while the
+  // user stays on one listing — these must NOT restart the debounce timer and
+  // trigger another fbm.js injection while a scoring run is in progress.
+  if (newId && newId === lastId) return;
 
-  const timer = setTimeout(() => {
+  // Cancel any pending inject for this tab and restart the timer.
+  clearTimeout(spaDebounceTimers.get(details.tabId));
+
+  spaDebounceTimers.set(details.tabId, setTimeout(() => {
     spaDebounceTimers.delete(details.tabId);
+    // Record what listing (or page type) we injected for so future state
+    // updates on the same listing don't trigger another injection.
+    spaLastListingId.set(details.tabId, newId);
     chrome.scripting.executeScript({
       target: { tabId: details.tabId },
       files:  ["content/fbm.js"],
     }).catch(err => {
       console.debug("[DealScout] Re-inject skipped:", err.message);
     });
-  }, 800); // 800ms — long enough for FBM's burst of pushStates to finish
-
-  spaDebounceTimers.set(details.tabId, timer);
+  }, 800)); // 800ms — long enough for FBM's initial burst of pushStates to settle
 }, {
   url: [{ hostContains: "facebook.com" }],
 });
+
+// Clear the cached listing ID on full page navigations so the first
+// onHistoryStateUpdated after a hard reload always triggers injection.
+chrome.webNavigation.onCommitted.addListener((details) => {
+  if (details.frameId !== 0) return;
+  if (details.transitionType === "reload" || details.transitionType === "typed" ||
+      details.transitionType === "link") {
+    spaLastListingId.delete(details.tabId);
+  }
+}, { url: [{ hostContains: "facebook.com" }] });
 
 
 // ── Installation Handler ──────────────────────────────────────────────────────
