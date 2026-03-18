@@ -403,22 +403,36 @@
     const _isCardImage = img =>
       !!img.closest('a[href*="/marketplace/item/"]') ||
       !!img.closest('div[data-testid="marketplace-search-item"]') ||
-      !!img.closest('[role="listitem"] a');
+      !!img.closest('[role="listitem"] a') ||
+      !!img.closest('aside') ||
+      !!img.closest('[data-testid*="sponsored"]') ||
+      !!img.closest('[aria-label*="Sponsored"]');
 
-    const _pickImages = minW => _allScontent
+    // Position-based filter: the listing's main photo carousel is always rendered
+    // in the top portion of the page. "Similar items", "Recently viewed", and
+    // sponsored recommendation carousels appear well below the fold.
+    // Using absolute page position (getBoundingClientRect().top + scrollY)
+    // means this is scroll-invariant — it measures from the document top, not the
+    // viewport top. 900px is well above where similar-item grids appear (~1000px+)
+    // while reliably capturing the main photo gallery.
+    const _absTop = img => img.getBoundingClientRect().top + window.scrollY;
+
+    const _pickImages = (minW, maxTop = 900) => _allScontent
       .filter(img => {
-        if (_isCardImage(img)) return false;      // not from a sidebar card
+        if (_isCardImage(img)) return false;
         const w = img.clientWidth || img.offsetWidth || 0;
-        return w >= minW;                          // large enough to be main photo
+        if (w < minW) return false;
+        return _absTop(img) < maxTop;             // must be in top of page
       })
       .map(img => img.src)
       .filter(src => src && src.length > 10)
       .slice(0, 3);
 
     const imageUrls =
-      _pickImages(200).length  ? _pickImages(200)  :  // strict: product photos only
-      _pickImages(100).length  ? _pickImages(100)  :  // relaxed: includes some thumbs
-      _allScontent.map(i => i.src).filter(s => s).slice(0, 3);  // last resort: any CDN img
+      _pickImages(200).length       ? _pickImages(200)       :  // strict: large + top of page
+      _pickImages(100).length       ? _pickImages(100)       :  // relaxed width, still top
+      _pickImages(100, 1800).length ? _pickImages(100, 1800) :  // wider position window
+      _allScontent.map(i => i.src).filter(s => s).slice(0, 3);  // last resort
 
     // Vehicle detection — strong signals only to avoid false positives on electronics/audio/etc.
     // "miles", "transmission", "cylinders" are excluded — too common in non-vehicle contexts.
@@ -537,20 +551,24 @@
 
     // Condition E: main product image not yet rendered at full size.
     // clientWidth is 0 until the image element is laid out by the browser.
-    // If we score before that happens the strict size filter finds nothing and
-    // the last-resort fallback grabs any scontent image in the DOM — which can
-    // be a sidebar card from the previous listing (the "bleed" bug).
-    // Block for up to 12 attempts (~3.6 s); after that proceed without a photo
-    // rather than risk sending the wrong image.
+    // Also checks absolute page position — listing photos are always in the top
+    // 900px of the page; sidebar/recommendation images are further down and must
+    // not be counted as "ready" (they would pass the size check but are the wrong
+    // item).
     const _scontentNow = Array.from(document.querySelectorAll('img[src*="scontent"]'));
     const _isCardEl = img =>
       !!img.closest('a[href*="/marketplace/item/"]') ||
       !!img.closest('div[data-testid="marketplace-search-item"]') ||
-      !!img.closest('[role="listitem"] a');
+      !!img.closest('[role="listitem"] a') ||
+      !!img.closest('aside') ||
+      !!img.closest('[data-testid*="sponsored"]') ||
+      !!img.closest('[aria-label*="Sponsored"]');
     const hasMainImage = _scontentNow.some(img => {
       if (_isCardEl(img)) return false;
       const w = img.clientWidth || img.offsetWidth || 0;
-      return w >= 200;
+      if (w < 200) return false;
+      const absTop = img.getBoundingClientRect().top + window.scrollY;
+      return absTop < 900;                        // must be in top of page
     });
     const imageMissing = !hasMainImage && attempt < 12;
 
