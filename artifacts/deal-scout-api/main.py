@@ -77,6 +77,34 @@ log = logging.getLogger(__name__)
 API_PORT = int(os.getenv("PORT", os.getenv("API_PORT", "8000")))
 UI_PORT  = int(os.getenv("UI_PORT",  "3000"))
 
+# ── In-memory score cache ─────────────────────────────────────────────────────
+# Keyed by (title.lower(), price). TTL = 20 min.
+# Avoids re-running the full AI pipeline when a user revisits the same listing
+# or clicks back/forward during a browsing session.
+_score_cache: dict = {}
+_SCORE_CACHE_TTL = 1200  # 20 minutes
+
+def _cache_key(title: str, price: float) -> str:
+    import hashlib
+    raw = f"{title.strip().lower()}|{price:.2f}"
+    return hashlib.md5(raw.encode()).hexdigest()
+
+def _cache_get(key: str):
+    entry = _score_cache.get(key)
+    if not entry:
+        return None
+    if _time.time() - entry["ts"] > _SCORE_CACHE_TTL:
+        del _score_cache[key]
+        return None
+    return entry["payload"]
+
+def _cache_set(key: str, payload: dict):
+    # Evict oldest entries if cache grows too large
+    if len(_score_cache) > 500:
+        oldest = min(_score_cache, key=lambda k: _score_cache[k]["ts"])
+        del _score_cache[oldest]
+    _score_cache[key] = {"ts": _time.time(), "payload": payload}
+
 app = FastAPI(
     title="Personal Shopping Bot API",
     description="AI-powered deal scoring for second-hand marketplace listings",
@@ -283,6 +311,13 @@ async def score_listing(listing: ListingRequest, request: Request):
 
     log.info(f"Scoring request: '{listing.title}' @ ${listing.price}")
 
+    # ── Cache check ────────────────────────────────────────────────────────────
+    _ck = _cache_key(listing.title, listing.price)
+    _cached = _cache_get(_ck)
+    if _cached:
+        log.info(f"[Cache] HIT for '{listing.title}' @ ${listing.price} — returning cached score")
+        return _cached
+
     # Guard: reject obviously bad titles that indicate a broken extraction
     _generic_titles = {"marketplace", "facebook marketplace", "facebook", "craigslist", "offerup", ""}
     if (listing.title or "").strip().lower() in _generic_titles:
@@ -338,7 +373,12 @@ async def score_listing(listing: ListingRequest, request: Request):
     # eBay has its own cache so if the same query was recently used, this is instant.
     extracted_q = (product_info.search_query or "").strip().lower()
     raw_q       = raw_title_query.lower()
-    need_refine = extracted_q and extracted_q != raw_q and len(extracted_q) > 4
+    # Skip refinement if eBay is rate-limited — a refined query returns the same
+    # mock data, so the extra round-trip wastes 1-2s with zero accuracy gain.
+    _ebay_mocked = getattr(prelim_market, "data_source", "") == "ebay_mock"
+    need_refine = extracted_q and extracted_q != raw_q and len(extracted_q) > 4 and not _ebay_mocked
+    if _ebay_mocked and extracted_q != raw_q:
+        log.info(f"[Speed] Skipping eBay refinement — circuit open, mock data unchanged")
 
     try:
         if need_refine:
@@ -390,6 +430,32 @@ async def score_listing(listing: ListingRequest, request: Request):
 
     image_url = listing.image_urls[0] if listing.image_urls else None
 
+    # ── Step 3 + 4b: Deal scoring AND security scoring run concurrently ─────────
+    # WHY: security scoring is an independent Haiku call (~2s) that only needs
+    # the listing + market_value — it doesn't depend on the deal score.
+    # Launching it as a task at the same time as score_deal() (which includes
+    # Claude vision at ~8-10s) means it finishes while vision is still running,
+    # cutting ~2s from the total wall-clock time.
+    # We use keyword-based category for security (fast, available now).
+    # The final category from Claude may differ slightly but security accuracy
+    # is not meaningfully affected by general vs specific category.
+    from scoring.affiliate_router import detect_category, CATEGORY_PROGRAMS
+    _prelim_category = detect_category(product_info)
+    if listing.is_vehicle:
+        _prelim_category = "vehicles"
+
+    _security_task = asyncio.create_task(
+        asyncio.wait_for(
+            score_security(
+                listing          = listing,
+                category         = _prelim_category,
+                market_value     = market_value,
+                normalized_title = product_info.display_name,
+            ),
+            timeout=10.0,
+        )
+    )
+
     try:
         deal_score = await score_deal(
             listing_dict,
@@ -398,14 +464,17 @@ async def score_listing(listing: ListingRequest, request: Request):
             product_evaluation = product_eval,
         )
     except RuntimeError as e:
+        _security_task.cancel()
         real_error = str(e)
         log.error(f"Scoring failed: {real_error}")
         raise HTTPException(status_code=500, detail=real_error)
     except Exception as e:
+        _security_task.cancel()
         log.error(f"Unexpected scoring exception: {type(e).__name__}: {e}")
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
     if not deal_score:
+        _security_task.cancel()
         raise HTTPException(status_code=500, detail="Scorer returned no result — check API terminal")
 
     log.info(f"Score: {deal_score.score}/10 — {deal_score.verdict}")
@@ -437,7 +506,6 @@ async def score_listing(listing: ListingRequest, request: Request):
             deal_score.should_buy = False
 
     # ── Step 4: Generate affiliate recommendations ──────────────────────────────
-    from scoring.affiliate_router import detect_category, CATEGORY_PROGRAMS
     # Category detection priority:
     #   1. Claude's affiliate_category field (set by the scoring LLM — most accurate)
     #   2. is_vehicle override (content script explicitly flagged this as a vehicle)
@@ -450,7 +518,7 @@ async def score_listing(listing: ListingRequest, request: Request):
     else:
         if claude_category:
             log.warning(f"[Category] Claude returned unknown value '{claude_category}' — falling back to keyword detection")
-        category_detected = detect_category(product_info)
+        category_detected = _prelim_category
         log.info(f"[Category] Keyword → '{category_detected}'")
 
     if listing.is_vehicle and category_detected not in ("vehicles", "cars", "trucks"):
@@ -481,24 +549,14 @@ async def score_listing(listing: ListingRequest, request: Request):
         data_source   = market_value.data_source,  # suppress for mock data
     )
 
-    # ── Step 4b: Security / scam scoring (runs concurrently with affiliate routing) ──
-    # WHY CONCURRENT: security scoring is a separate Haiku call (~1s).
-    # Running it after deal scoring (not before) means it never delays the score.
-    # Both affiliate routing and security scoring are post-score steps.
+    # ── Step 4b: Await security task (was started concurrently with score_deal) ──
+    # By the time we get here, score_deal() took ~8-10s, so security (~2s) is
+    # almost certainly already done — this await is effectively instant.
     try:
-        security = await asyncio.wait_for(
-            score_security(
-                listing          = listing,
-                category         = category_detected,
-                market_value     = market_value,
-                normalized_title = product_info.display_name,  # corrected name from product_extractor
-            ),
-            timeout=10.0,
-        )
+        security = await _security_task
     except Exception as e:
         import traceback
-        err_detail = traceback.format_exc()
-        log.warning(f"Security scoring failed: {err_detail}")
+        log.warning(f"Security scoring failed: {traceback.format_exc()}")
         from scoring.security_scorer import SecurityScore as _SS
         security = _SS(score=5, risk_level="unknown", flags=[], recommendation="unable to assess")
 
@@ -669,6 +727,9 @@ async def score_listing(listing: ListingRequest, request: Request):
             )
     except Exception:
         pass  # Validator must never block or crash the response
+
+    # ── Cache the result for 20 min ──────────────────────────────────────────
+    _cache_set(_ck, response)
 
     return response
 
