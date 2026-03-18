@@ -169,21 +169,39 @@
       }
     }
 
-    // Strategy 1: aria-label exact match
+    // Strategy 1: aria-label match (exact, then "· In stock" shop-listing variant)
     // FBM stamps the listing price as aria-label="$150" on the h2/span near the title.
+    // FBM shop/"In stock" listings use aria-label="$145 · In stock" instead.
     // Similar-listing cards also have aria-label prices — skip those.
     if (!price) {
       const ariaEls = document.querySelectorAll('[aria-label]');
       for (const el of ariaEls) {
         if (_inSidebarCard(el)) continue;
         const label = el.getAttribute('aria-label') || '';
-        const m = label.match(/^\$([0-9,]+(?:\.[0-9]{2})?)$/);
+        // Exact match OR "· In stock" / "· Available" shop listing suffix
+        const m = label.match(/^\$([0-9,]+(?:\.[0-9]{2})?)(?:\s*[·•]\s*(?:In\s+stock|Available|In Stock))?$/i);
         if (m) {
           const val = parseFloat(m[1].replace(/,/g, ''));
           if (val >= 2) {
             price = val;
             break;
           }
+        }
+      }
+    }
+
+    // Strategy 1b: text content with "· In stock" suffix (shop listings where
+    // aria-label isn't set but the price + availability appear as combined text).
+    // Scans h1/h2/span/div for patterns like "$145 · In stock".
+    if (!price) {
+      const shopEls = document.querySelectorAll('h1, h2, h3, span, div[role="heading"]');
+      for (const el of shopEls) {
+        if (_inSidebarCard(el)) continue;
+        const text = (el.textContent || '').trim();
+        const m = text.match(/^\$([0-9,]+(?:\.[0-9]{2})?)\s*[·•·]\s*(?:In\s+stock|Available)/i);
+        if (m) {
+          const val = parseFloat(m[1].replace(/,/g, ''));
+          if (val >= 2) { price = val; break; }
         }
       }
     }
@@ -621,8 +639,12 @@
 
     const listing = extractListing();
     if (!listing.price) {
-      // Price genuinely absent (free items, "make offer" listings) — show error
+      // Price genuinely absent (free items, "make offer" listings, or shop
+      // listings with an unsupported format). Release the mutex so subsequent
+      // listings are not permanently blocked — WITHOUT this release,
+      // window.__dealScoutRunning stays true forever and the extension freezes.
       console.debug('[DealScout] No price after full wait — skipping');
+      if (window.__dealScoutNonce === myNonce) window.__dealScoutRunning = false;
       return;
     }
 
