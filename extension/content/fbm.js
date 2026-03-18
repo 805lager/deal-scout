@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.27.3';
+  const VERSION  = '0.27.4';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -71,11 +71,14 @@
     // of this file). Don't overwrite it here — by now the DOM may already show
     // the new listing, which would make prevTitle useless.
     if (isListingPage()) {
-      // Always reset the mutex here — a prior scoring run may still hold it
-      // (e.g. extension reload while a score was in-flight). Without this the
-      // new autoScore(0) sees __dealScoutRunning=true and silently returns,
-      // leaving the panel stuck at "Loading next listing…" forever.
-      window.__dealScoutRunning = false;
+      if (window.__dealScoutRunning) {
+        // A scoring run is already in progress (for the CURRENT listing).
+        // Don't interrupt it — it will complete and show the score.
+        // _onFbmNav() clears this flag on real listing-to-listing navigation,
+        // so a stale "true" here means we're still on the same listing.
+        return;
+      }
+      // No scoring running — safe to show the navigating state and restart.
       renderNavigating();
       clearTimeout(window.__dealScoutRescanTimer);
       window.__dealScoutRescanTimer = setTimeout(autoScore, 100);
