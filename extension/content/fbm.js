@@ -535,7 +535,26 @@
                 || document.querySelector('div[dir="auto"][style*="white-space"]');
     const descMissing = !descEl && attempt < 15;
 
-    const notReady = titleIsStale || (titleMissing && !titleIsStale) || priceMissing || descMissing;
+    // Condition E: main product image not yet rendered at full size.
+    // clientWidth is 0 until the image element is laid out by the browser.
+    // If we score before that happens the strict size filter finds nothing and
+    // the last-resort fallback grabs any scontent image in the DOM — which can
+    // be a sidebar card from the previous listing (the "bleed" bug).
+    // Block for up to 12 attempts (~3.6 s); after that proceed without a photo
+    // rather than risk sending the wrong image.
+    const _scontentNow = Array.from(document.querySelectorAll('img[src*="scontent"]'));
+    const _isCardEl = img =>
+      !!img.closest('a[href*="/marketplace/item/"]') ||
+      !!img.closest('div[data-testid="marketplace-search-item"]') ||
+      !!img.closest('[role="listitem"] a');
+    const hasMainImage = _scontentNow.some(img => {
+      if (_isCardEl(img)) return false;
+      const w = img.clientWidth || img.offsetWidth || 0;
+      return w >= 200;
+    });
+    const imageMissing = !hasMainImage && attempt < 12;
+
+    const notReady = titleIsStale || (titleMissing && !titleIsStale) || priceMissing || descMissing || imageMissing;
 
     if (notReady && attempt < 30) {
       await new Promise(r => setTimeout(r, 300));
