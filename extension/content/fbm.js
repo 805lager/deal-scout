@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.27.6';
+  const VERSION  = '0.27.7';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -640,8 +640,32 @@
   //      images from unrelated listings — this logic must run client-side.
 
   function extractRaw() {
-    // Images: still DOM-based (position-filtered, sidebar-excluded)
-    const imageUrls = _pickImages();
+    // Images: DOM-based, position-filtered, sidebar-excluded.
+    // Self-contained so it works independently of extractListing() locals.
+    const _raw_all = Array.from(document.querySelectorAll('img[src*="scontent"]'));
+    const _raw_absTop = img => img.getBoundingClientRect().top + window.scrollY;
+    const _raw_isCard = img =>
+      !!img.closest('a[href*="/marketplace/item/"]') ||
+      !!img.closest('div[data-testid="marketplace-search-item"]') ||
+      !!img.closest('[role="listitem"] a') ||
+      !!img.closest('aside') ||
+      !!img.closest('[data-testid*="sponsored"]') ||
+      !!img.closest('[aria-label*="Sponsored"]');
+    const _raw_pick = (minW, maxTop = 900) => _raw_all
+      .filter(img => {
+        if (_raw_isCard(img)) return false;
+        const w = img.clientWidth || img.offsetWidth || 0;
+        if (minW && w < minW) return false;
+        return _raw_absTop(img) < maxTop;
+      })
+      .map(img => img.src)
+      .filter(src => src && src.length > 10)
+      .slice(0, 3);
+    const imageUrls =
+      _raw_pick(200).length       ? _raw_pick(200)       :
+      _raw_pick(100).length       ? _raw_pick(100)       :
+      _raw_pick(100, 1800).length ? _raw_pick(100, 1800) :
+      _raw_all.map(i => i.src).filter(s => s).slice(0, 3);
 
     // Raw text: prefer [role="main"] over full body — excludes left nav with
     // "Notifications" / "Inbox" that pollute the text sent to Claude.
