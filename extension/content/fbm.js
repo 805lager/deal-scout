@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.2';
+  const VERSION  = '0.28.3';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -629,6 +629,33 @@
     } catch (err) {
       if (abort.signal.aborted) return;
       if (window.__dealScoutNonce !== myNonce || location.href !== snapUrl) return;
+      // "Page still loading" error from server: page content wasn't ready when we
+      // extracted. Wait 2s, re-extract with a fresh DOM snapshot, and retry once.
+      if (err.retryable && !rawData._retried) {
+        setTimeout(async () => {
+          if (window.__dealScoutNonce !== myNonce || location.href !== snapUrl) return;
+          const freshData = { ...extractRaw(), _retried: true };
+          if (!freshData.raw_text || freshData.raw_text.length < 100) {
+            renderError('Could not read listing — please refresh the page');
+            if (window.__dealScoutNonce === myNonce) window.__dealScoutRunning = false;
+            return;
+          }
+          const abort2 = new AbortController();
+          window.__dealScoutAbort = abort2;
+          try {
+            await callStreamingAPI(freshData, abort2, myNonce, snapUrl);
+          } catch (err2) {
+            if (!abort2.signal.aborted &&
+                window.__dealScoutNonce === myNonce &&
+                location.href === snapUrl) {
+              renderError(err2.message || 'Scoring failed');
+            }
+          } finally {
+            if (window.__dealScoutNonce === myNonce) window.__dealScoutRunning = false;
+          }
+        }, 2000);
+        return; // finally block below releases mutex; retry re-acquires it
+      }
       renderError(err.message || 'Scoring failed');
     } finally {
       // Only release the mutex if WE still own it.
@@ -803,10 +830,21 @@
               .catch(() => {});
 
           } else if (evt.type === 'error') {
+            // "Page not ready" is retryable — throw so autoScore can re-extract
+            // and retry rather than immediately showing an error to the user.
+            if (evt.message && evt.message.includes('page may still be loading')) {
+              const e = new Error(evt.message);
+              e.retryable = true;
+              throw e;
+            }
             renderError(evt.message || 'Scoring failed');
           }
 
-        } catch (_parseErr) { /* malformed SSE line — skip */ }
+        } catch (_parseErr) {
+          // Let retryable errors (e.g. "page may still be loading") bubble up to autoScore.
+          // Swallow all other parse errors (malformed SSE lines).
+          if (_parseErr && _parseErr.retryable) throw _parseErr;
+        }
       }
     }
   }
