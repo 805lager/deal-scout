@@ -327,6 +327,13 @@ Check specifically for:
 7. Pressure tactics and urgency language
 8. Condition contradictions (claims "like new" but describes damage)
 
+Photo count guidance (only flag when genuinely suspicious, not just "many"):
+- Vehicles/RVs/boats: 20-50 photos is normal and desirable — do NOT flag
+- Furniture, appliances, large items: 10-20 photos is normal — do NOT flag
+- Small items (tools, clothing, accessories, electronics <$200): flag only if >25 photos AND description is vague
+- ANY category: flag if photo count is 0 (no photos is a red flag for high-value items)
+- Never use photo count as a standalone flag — only combine it with other concerns
+
 Keep flags concise (under 12 words each). Return 0-5 flags total."""
 
 
