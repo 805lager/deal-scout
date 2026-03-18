@@ -261,7 +261,47 @@
   // ── Seller Trust Extraction ───────────────────────────────────────────────────
 
   function extractSellerTrust() {
-    const text = document.body.innerText || '';
+    // Scope extraction to the seller information section of the page only.
+    //
+    // WHY: using document.body.innerText sweeps up the full page — sponsored
+    // listings, sidebar recommendation cards, and nearby seller cards all
+    // contribute text that causes false rating matches (e.g. a sidebar card
+    // with "1.1 (46 ratings)" bleeds into an unrelated listing's score).
+    //
+    // Strategy 1: find the "Seller information" heading, walk up to its section.
+    // Strategy 2: find the element containing "Joined Facebook in" and use its
+    //   closest modest ancestor (~6 levels) as the scoped container.
+    // Fallback: full body text, same as before (older page structures).
+
+    let sellerEl = null;
+
+    // Strategy 1 — heading search
+    for (const el of document.querySelectorAll('span, h2, h3, div[role]')) {
+      if (/^seller\s+information$/i.test((el.textContent || '').trim())) {
+        sellerEl = el.closest('section') ||
+                   el.parentElement?.parentElement?.parentElement ||
+                   el.parentElement;
+        break;
+      }
+    }
+
+    // Strategy 2 — "Joined Facebook in" anchor
+    if (!sellerEl) {
+      for (const el of document.querySelectorAll('span, div')) {
+        if (/joined\s+(?:facebook\s+)?in\s+\d{4}/i.test(el.textContent || '')) {
+          // Walk up ~6 levels to get a bounded section, but stop before body
+          let ancestor = el;
+          for (let i = 0; i < 6; i++) {
+            if (!ancestor.parentElement || ancestor.parentElement === document.body) break;
+            ancestor = ancestor.parentElement;
+          }
+          sellerEl = ancestor;
+          break;
+        }
+      }
+    }
+
+    const text = sellerEl ? (sellerEl.innerText || '') : (document.body.innerText || '');
 
     // Joined date
     const joinedMatch = text.match(/joined\s+(?:facebook\s+)?in\s+(\w+\s+\d{4}|\d{4})/i);
@@ -277,12 +317,15 @@
       rating = parseFloat(ratingCombined[1]);
       ratingCount = parseInt(ratingCombined[2]);
     } else {
-      // Separate format: look for a decimal rating like "4.5" near stars/ratings text
-      const ratingVal = text.match(/\b([1-5]\.[0-9])\s*(?:stars?|out\s+of\s+5)?(?:\s*[\u2605\u2606])?/i);
+      // Separate format: look for a decimal rating near an explicit stars/ratings label only.
+      // Require the word "stars" or "ratings" to be adjacent — this prevents the regex
+      // from matching decimals in prices ("$1.99"), model numbers ("11in"), or
+      // nearby sponsored listing data.
+      const ratingVal = text.match(/\b([1-5]\.[0-9])\s*(?:stars?|ratings?|out\s+of\s+5)[\u2605\u2606]*/i);
       if (ratingVal) rating = parseFloat(ratingVal[1]);
 
       // Standalone review count — "(34)" or "34 ratings" or "34 reviews"
-      const countMatch = text.match(/\((\d+)\)\s*\n/) ||   // "(34)" at end of line (after name)
+      const countMatch = text.match(/\((\d+)\)\s*\n/) ||
                          text.match(/(\d+)\s*ratings?\b/i) ||
                          text.match(/(\d+)\s*reviews?\b/i);
       if (countMatch) ratingCount = parseInt(countMatch[1]);
