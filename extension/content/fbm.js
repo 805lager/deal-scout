@@ -263,45 +263,27 @@
   function extractSellerTrust() {
     // Scope extraction to the seller information section of the page only.
     //
-    // WHY: using document.body.innerText sweeps up the full page — sponsored
-    // listings, sidebar recommendation cards, and nearby seller cards all
-    // contribute text that causes false rating matches (e.g. a sidebar card
-    // with "1.1 (46 ratings)" bleeds into an unrelated listing's score).
+    // WHY: using the full document.body.innerText sweeps up the entire page —
+    // sponsored sidebar cards and recommendation carousels contribute stale
+    // ratings from other listings (e.g. a sidebar card with "1.1 (46 ratings)"
+    // bleeds into the next listing's seller score).
     //
-    // Strategy 1: find the "Seller information" heading, walk up to its section.
-    // Strategy 2: find the element containing "Joined Facebook in" and use its
-    //   closest modest ancestor (~6 levels) as the scoped container.
-    // Fallback: full body text, same as before (older page structures).
+    // Approach: text-slice strategy — get the full body text once (O(1)),
+    // locate the "Joined Facebook in" anchor (always near the seller's rating),
+    // then extract a ±400 char window around it. This is both fast (no DOM
+    // traversal) and precise (ratings from other listings are >400 chars away).
 
-    let sellerEl = null;
+    const bodyText = document.body.innerText || '';
 
-    // Strategy 1 — heading search
-    for (const el of document.querySelectorAll('span, h2, h3, div[role]')) {
-      if (/^seller\s+information$/i.test((el.textContent || '').trim())) {
-        sellerEl = el.closest('section') ||
-                   el.parentElement?.parentElement?.parentElement ||
-                   el.parentElement;
-        break;
-      }
-    }
+    // Find where the seller's joined-date appears in the page text
+    const joinedIdx = bodyText.search(/joined\s+(?:facebook\s+)?in\s+\d{4}/i);
 
-    // Strategy 2 — "Joined Facebook in" anchor
-    if (!sellerEl) {
-      for (const el of document.querySelectorAll('span, div')) {
-        if (/joined\s+(?:facebook\s+)?in\s+\d{4}/i.test(el.textContent || '')) {
-          // Walk up ~6 levels to get a bounded section, but stop before body
-          let ancestor = el;
-          for (let i = 0; i < 6; i++) {
-            if (!ancestor.parentElement || ancestor.parentElement === document.body) break;
-            ancestor = ancestor.parentElement;
-          }
-          sellerEl = ancestor;
-          break;
-        }
-      }
-    }
-
-    const text = sellerEl ? (sellerEl.innerText || '') : (document.body.innerText || '');
+    // Extract a window: 400 chars before the joined date (seller name + rating
+    // appear just above it) and 200 chars after (response time, badges).
+    // Fallback to the first 1500 chars if joined date not found yet.
+    const text = joinedIdx >= 0
+      ? bodyText.slice(Math.max(0, joinedIdx - 400), joinedIdx + 200)
+      : bodyText.slice(0, 1500);
 
     // Joined date
     const joinedMatch = text.match(/joined\s+(?:facebook\s+)?in\s+(\w+\s+\d{4}|\d{4})/i);
