@@ -20,7 +20,7 @@
 (function () {
   "use strict";
 
-  const VERSION  = '0.26.39';
+  const VERSION  = '0.27.0';
   const PANEL_ID = "deal-scout-ou-panel";
   const PLATFORM = "offerup";
 
@@ -184,17 +184,100 @@
     return "1000+";
   }
 
-  // ── Background Communication ───────────────────────────────────────────────
-  function sendToBackground(listing) {
-    return new Promise((resolve, reject) => {
-      try {
-        chrome.runtime.sendMessage({ type: "SCORE_LISTING", listing }, (response) => {
-          if (chrome.runtime.lastError) { reject(new Error(chrome.runtime.lastError.message)); return; }
-          if (!response || !response.success) { reject(new Error(response?.error || "No response")); return; }
-          resolve(response.result);
-        });
-      } catch (e) { reject(e); }
-    });
+  // ── Raw Data Extraction ──────────────────────────────────────────────────────
+
+  function extractRaw() {
+    // OfferUp images: the main product photo(s) in the listing view
+    const imageUrls = Array.from(
+      document.querySelectorAll("[class*='ListingPhoto'] img, [class*='listing-photo'] img, [class*='photoWrapper'] img, [class*='carousel'] img")
+    )
+      .map(img => img.src || img.getAttribute("data-src"))
+      .filter(s => s && s.startsWith("http"))
+      .slice(0, 5);
+
+    // OfferUp is a React SPA — prefer the main content area
+    const mainEl = document.querySelector("main, [role='main'], [class*='listing']")
+                || document.body;
+    const rawText = (mainEl.innerText || "").slice(0, 4000);
+
+    return {
+      raw_text:    rawText,
+      image_urls:  imageUrls,
+      platform:    PLATFORM,
+      listing_url: location.href,
+    };
+  }
+
+  // ── Streaming API Client ─────────────────────────────────────────────────────
+
+  async function callStreamingAPI(rawData, snapUrl) {
+    const abort = new AbortController();
+    window.__dsOUAbort = abort;
+
+    showPanel();
+    renderLoading({});
+
+    try {
+      const response = await fetch(`${API_BASE}/score/stream`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json", "X-DS-Key": DS_API_KEY },
+        body:    JSON.stringify(rawData),
+        signal:  abort.signal,
+      });
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.detail || `API error ${response.status}`);
+      }
+
+      const reader  = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (abort.signal.aborted || location.href !== snapUrl) { reader.cancel(); return; }
+
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() || "";
+
+        for (const part of parts) {
+          const line = part.trim();
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const evt = JSON.parse(line.slice(6));
+            if (evt.type === "progress") {
+              renderProgress(evt.label);
+            } else if (evt.type === "extracted") {
+              renderLoading(evt.data);
+            } else if (evt.type === "score") {
+              if (location.href !== snapUrl) return;
+              const result = evt.data;
+              try {
+                const afLinks = await new Promise((res) => {
+                  chrome.runtime.sendMessage(
+                    { type: "GET_AFFILIATE_LINKS", query: result.title, price: result.price },
+                    (r) => res((r?.success && r.links) ? r.links : [])
+                  );
+                });
+                if (afLinks.length) result.affiliateLinks = afLinks;
+              } catch (_) {}
+              renderScore(result);
+              chrome.runtime.sendMessage({ type: "BADGE_UPDATE", score: result.score }).catch(() => {});
+            } else if (evt.type === "error") {
+              renderError(evt.message || "Scoring failed");
+            }
+          } catch (_) {}
+        }
+      }
+    } catch (err) {
+      if (abort.signal.aborted || location.href !== snapUrl) return;
+      renderError(err.message || "Scoring failed");
+    } finally {
+      if (window.__dsOUAbort === abort) window.__dsOUAbort = null;
+    }
   }
 
   // ── Rendering ──────────────────────────────────────────────────────────────
@@ -236,11 +319,19 @@
     panel.appendChild(bar);
     const body = document.createElement("div");
     body.style.cssText = "padding:14px 12px";
-    body.innerHTML = '<div style="font-size:12px;color:#9ca3af;margin-bottom:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
-      escHtml(listing?.title || "Loading…") + "</div>" +
-      '<div style="text-align:center;padding:20px;color:#6b7280">' +
+
+    let headerHtml = "";
+    if (listing && listing.title) {
+      headerHtml += '<div style="font-weight:600;color:#e0e0e0;font-size:13px;margin-bottom:4px;line-height:1.35">' + escHtml(listing.title) + "</div>";
+      if (listing.price) {
+        headerHtml += '<div style="color:#7c8cf8;font-size:18px;font-weight:700;margin-bottom:10px">$' + Number(listing.price).toLocaleString() + "</div>";
+      }
+    }
+
+    body.innerHTML = headerHtml +
+      '<div style="text-align:center;padding:16px 0;color:#6b7280">' +
       '<div style="font-size:24px;animation:ds-spin 1s linear infinite;display:inline-block">⟳</div>' +
-      '<div style="font-size:12px;margin-top:8px">Analyzing deal…</div>' +
+      '<div id="ds-progress-label" style="font-size:12px;margin-top:8px">Analyzing deal…</div>' +
       '<div style="font-size:11px;margin-top:4px;color:#4b5563">eBay comps · AI scoring · Price check</div></div>';
     panel.appendChild(body);
     if (!document.getElementById("ds-spin-style")) {
@@ -248,6 +339,11 @@
       s.textContent = "@keyframes ds-spin{to{transform:rotate(360deg)}}";
       document.head.appendChild(s);
     }
+  }
+
+  function renderProgress(label) {
+    const el = document.getElementById("ds-progress-label");
+    if (el) el.textContent = label;
   }
 
   function renderError(msg) {
@@ -623,41 +719,38 @@
 
   async function autoScore() {
     if (_scored) return;
-    const listing = extractListing();
-    if (!listing.price || !listing.title) return;
     _scored = true;
     if (_observer) { _observer.disconnect(); _observer = null; }
     const snapUrl = location.href;
-    showPanel();
-    renderLoading(listing);
-    try {
-      const result = await sendToBackground(listing);
-      // Guard: don't render stale score if user navigated during the API call
-      if (location.href !== snapUrl) return;
-      renderScore(result);
-    } catch (err) {
-      if (location.href !== snapUrl) return;
-      renderError(err.message || "Scoring failed");
+
+    const rawData = extractRaw();
+    if (!rawData.raw_text || rawData.raw_text.length < 100) {
+      console.debug("[DealScout/OfferUp] No page content — skipping");
+      _scored = false;
+      return;
     }
+
+    await callStreamingAPI(rawData, snapUrl);
   }
 
   function waitForContent() {
-    // OfferUp React app — wait for the price AND a NEW title to appear.
+    // OfferUp React SPA — wait for a NEW title to appear (different from the old listing).
     // window.__dsOUPrevTitle holds the old listing's title (set in onUrlChange).
-    // We poll until the h1 differs from that value so we never score stale data.
+    // No longer waiting for price — Claude extracts it server-side.
     const prevTitle = window.__dsOUPrevTitle; // undefined on fresh page load
     let attempts = 0;
     const check = () => {
       attempts++;
-      const listing = extractListing();
-      const titleChanged = typeof prevTitle !== 'string' || listing.title !== prevTitle;
-      if (listing.price && listing.title && titleChanged) {
-        window.__dsOUPrevTitle = undefined; // clear sentinel
+      const currentTitle = document.querySelector("h1")?.textContent?.trim() || "";
+      const titleChanged  = typeof prevTitle !== "string" || (currentTitle && currentTitle !== prevTitle);
+      const hasContent    = (document.body.innerText || "").length > 300;
+      if (currentTitle && titleChanged && hasContent) {
+        window.__dsOUPrevTitle = undefined;
         autoScore();
         return;
       }
       if (attempts < 30) setTimeout(check, 400);
-      else autoScore(); // fallback: try after 12s even if conditions not met
+      else autoScore(); // fallback after 12s
     };
     check();
   }

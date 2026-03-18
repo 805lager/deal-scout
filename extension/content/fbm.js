@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.26.40';
+  const VERSION  = '0.27.0';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -543,29 +543,19 @@
       window.__dealScoutRunning = true;
     }
 
-    const snapUrl  = location.href;
-    // Capture the nonce at the very start. If _onFbmNav fires at any point
-    // before we render, the window nonce will have incremented and we bail out.
-    const myNonce  = window.__dealScoutNonce;
+    const snapUrl = location.href;
+    const myNonce = window.__dealScoutNonce;
 
-    // ── Unified readiness check ────────────────────────────────────────────────
-    // FBM React hydration loads content in stages:
-    //   t+0ms   — URL changes (pushState)
-    //   t+300ms — h1[dir="auto"] appears with listing title
-    //   t+600ms — price component mounts and renders
-    //   t+900ms — description, seller info, images finish
+    // ── Simplified readiness check ─────────────────────────────────────────────
+    // Since Claude now extracts price/description from raw page text server-side,
+    // we only need to wait for:
+    //   A. Title is loaded and not stale from the previous listing (SPA nav guard)
+    //   B. Page has enough text content to extract from (>300 chars)
+    //   C. At least one listing image is available (DOM-based, needed for scoring)
     //
-    // Previous approach: wait for title then call extractListing() immediately.
-    // BUG: price isn't loaded yet → listing.price = 0 → silent return → no score.
-    //
-    // Fix: check BOTH title and price on every poll tick. Only proceed when both
-    // are present. Also handles SPA stale-DOM: prevTitle guards against scoring
-    // the old listing's content on the new listing's URL.
-    //
-    // Max 30 attempts × 300ms = 9 seconds, then score whatever is available.
+    // No longer waiting for price DOM element — eliminates the $145·In stock freeze
+    // and the mutex-leak bug on zero-price early exit.
 
-    // Iterate ALL h1[dir="auto"] elements and pick the first non-nav term.
-    // querySelector grabs the first match which on FBM is often "Notifications" or "Inbox".
     const currentTitle = (() => {
       for (const el of document.querySelectorAll('h1[dir="auto"]')) {
         const t = el.textContent.trim();
@@ -573,30 +563,19 @@
       }
       return '';
     })();
-    const prevTitle    = window.__dealScoutPrevTitle; // set by pushState intercept at t=0
-    const { price }    = findPrices();
+    const prevTitle = window.__dealScoutPrevTitle;
 
-    // Condition A: title is still the OLD listing's title (SPA nav, DOM not yet swapped)
+    // Condition A: title still shows old listing (SPA nav, DOM not yet swapped)
     const titleIsStale = typeof prevTitle === 'string' &&
                          (currentTitle === prevTitle || _GENERIC_TITLES.has(currentTitle.toLowerCase()));
 
-    // Condition B: title not loaded yet (hard page load, React still hydrating)
+    // Condition B: title not loaded yet
     const titleMissing = !currentTitle || _GENERIC_TITLES.has(currentTitle.toLowerCase());
 
-    // Condition C: price not loaded yet (mounts after title — most common silent-fail cause)
-    const priceMissing = !price;
+    // Condition C: page content not yet loaded (brief check to avoid empty body)
+    const hasContent = (document.body.innerText || '').length > 300;
 
-    // Condition D: description element not yet mounted (loads after price).
-    // Only block for the first 15 attempts (~4.5s). After that, proceed with
-    // empty description rather than waiting forever. Never fall back to
-    // body.innerText — FBM's nav always contains "Notifications" / "Inbox"
-    // which Claude flags as suspicious and contaminates the score verdict.
-    const descEl = document.querySelector('[data-testid="marketplace-pdp-description"]')
-                || document.querySelector('[class*="xz9dl007"]')  // FBM internal class
-                || document.querySelector('div[dir="auto"][style*="white-space"]');
-    const descMissing = !descEl && attempt < 15;
-
-    // Condition E: main product image not yet rendered at full size.
+    // Condition D: main product image not yet rendered at full size.
     // clientWidth is 0 until the image element is laid out by the browser.
     // Also checks absolute page position — listing photos are always in the top
     // 900px of the page; sidebar/recommendation images are further down and must
@@ -619,7 +598,8 @@
     });
     const imageMissing = !hasMainImage && attempt < 12;
 
-    const notReady = titleIsStale || (titleMissing && !titleIsStale) || priceMissing || descMissing || imageMissing;
+    // No longer checking priceMissing or descMissing — Claude extracts those server-side.
+    const notReady = titleIsStale || (titleMissing && !titleIsStale) || (!hasContent && attempt < 8) || imageMissing;
 
     if (notReady && attempt < 30) {
       await new Promise(r => setTimeout(r, 300));
@@ -628,113 +608,97 @@
       return autoScore(attempt + 1);
     }
 
-    // DOM is settled. Wait one extra tick to let React finish any in-flight
-    // reconciliation — prevents scoring listing A's price under listing B's title
-    // during the brief window when React has swapped the title but not the price.
+    // Extra tick for React reconciliation (title/price can briefly diverge)
     await new Promise(r => setTimeout(r, 300));
     if (location.href !== snapUrl || window.__dealScoutNonce !== myNonce) return;
 
-    // Clear the SPA sentinel and extract
+    // Clear the SPA sentinel
     window.__dealScoutPrevTitle = undefined;
 
-    const listing = extractListing();
-    if (!listing.price) {
-      // Price genuinely absent (free items, "make offer" listings, or shop
-      // listings with an unsupported format). Release the mutex so subsequent
-      // listings are not permanently blocked — WITHOUT this release,
-      // window.__dealScoutRunning stays true forever and the extension freezes.
-      console.debug('[DealScout] No price after full wait — skipping');
+    // Gather raw data for server-side extraction
+    const rawData = extractRaw();
+
+    if (!rawData.raw_text || rawData.raw_text.length < 100) {
+      console.debug('[DealScout] Insufficient page content — skipping');
       if (window.__dealScoutNonce === myNonce) window.__dealScoutRunning = false;
       return;
     }
 
-    showPanel();
-    renderLoading(listing);
-
-    // Create an AbortController for this specific scoring run.
-    // _onFbmNav calls abort() the moment the user clicks a new listing,
-    // cancelling the in-flight HTTP request before it can return a result.
-    // This is the most reliable bleed prevention — a cancelled fetch literally
-    // cannot resolve, regardless of URL or nonce state.
+    // AbortController: _onFbmNav calls abort() on navigation, cancelling the
+    // in-flight stream immediately — the most reliable bleed prevention.
     const abort = new AbortController();
     window.__dealScoutAbort = abort;
 
     try {
-      const result = await callScoringAPI(listing, abort.signal);
-
-      // Guard 1: AbortController — cancelled at network level means user navigated.
-      if (abort.signal.aborted) return;
-      // Guard 2: Nonce — user navigated after fetch started.
-      if (window.__dealScoutNonce !== myNonce) return;
-      // Guard 3: URL — exact URL must still match.
-      if (location.href !== snapUrl) return;
-
-      // Guard 4 — Final data validation: re-read the current DOM title and
-      // confirm it shares meaningful words with the listing we just scored.
-      // This is the last-resort check for any edge case where the DOM swapped
-      // items during the API call but all three guards above somehow passed.
-      const domTitleNow = (() => {
-        for (const el of document.querySelectorAll('h1[dir="auto"]')) {
-          const t = el.textContent.trim();
-          if (t && !_GENERIC_TITLES.has(t.toLowerCase())) return t;
-        }
-        return '';
-      })();
-      if (domTitleNow && listing.title) {
-        const words = s => s.toLowerCase().replace(/[^a-z0-9\s]/g,'').split(/\s+/).filter(w => w.length > 2);
-        const scoredWords = new Set(words(listing.title));
-        const domWords    = words(domTitleNow);
-        const overlap     = domWords.filter(w => scoredWords.has(w)).length;
-        if (overlap === 0) {
-          console.debug('[DealScout] Title mismatch — discarding stale score:', listing.title, '→', domTitleNow);
-          return;
-        }
-      }
-
-      renderScore(result);
-
-      // Badge update is fire-and-forget — does not block rendering.
-      chrome.runtime.sendMessage({ type: 'BADGE_UPDATE', score: result.score })
-        .catch(() => {});
-
+      await callStreamingAPI(rawData, abort, myNonce, snapUrl);
     } catch (err) {
-      if (abort.signal.aborted) return; // normal abort — user navigated away
+      if (abort.signal.aborted) return;
       if (window.__dealScoutNonce !== myNonce || location.href !== snapUrl) return;
-      const msg = err.message || 'Scoring failed';
-      renderError(msg.includes('listing title') ? '⏳ Page still loading — try the Score button' : msg);
+      renderError(err.message || 'Scoring failed');
     } finally {
       // Only release the mutex if WE still own it.
-      // Race condition fixed here: if _onFbmNav fired during our run, it already
-      // reset __dealScoutRunning = false AND a newer autoScore may have set it
-      // back to true. Blindly clearing it would evict the newer autoScore's lock,
-      // letting a THIRD concurrent run start when bg re-injects.
-      //
-      // Guard: only clear when our nonce still matches (we are the active run).
-      // If nonce changed, _onFbmNav handled cleanup — leave the mutex alone.
+      // If _onFbmNav fired during our run, it already reset __dealScoutRunning = false
+      // and a newer autoScore may have set it back to true — don't evict that lock.
       if (window.__dealScoutNonce === myNonce) {
         window.__dealScoutRunning = false;
       }
     }
   }
 
-  // ── Direct Scoring API Call ───────────────────────────────────────────────────
+  // ── Raw Data Extraction ───────────────────────────────────────────────────────
+  // Replaces the old extractListing(). Gathers raw page text + DOM image URLs.
+  // Claude Haiku on the server extracts all structured fields from the text,
+  // eliminating all the fragile DOM selectors that break on FBM updates.
+  //
+  // Images are still DOM-extracted because:
+  //   1. Claude can't see images — it only reads URLs from text, which FBM
+  //      doesn't embed in page text.
+  //   2. The position filter (_absTop < 900) is critical to exclude sidebar
+  //      images from unrelated listings — this logic must run client-side.
 
-  async function callScoringAPI(listing, signal) {
-    /**
-     * WHY DIRECT FETCH INSTEAD OF BACKGROUND MESSAGE:
-     * chrome.runtime.sendMessage has no built-in cancellation. Even with URL/nonce
-     * guards, the background's fetch() can return after the user navigates and the
-     * sendResponse callback fires — the content script receives the result and our
-     * guards fire, but there's a narrow race where they can miss.
-     *
-     * A direct fetch with AbortController is cancelled at the network level the
-     * instant _onFbmNav fires. No race. No stale result can ever arrive.
-     */
-    const response = await fetch(`${API_BASE}/score`, {
+  function extractRaw() {
+    // Images: still DOM-based (position-filtered, sidebar-excluded)
+    const imageUrls = _pickImages();
+
+    // Raw text: prefer [role="main"] over full body — excludes left nav with
+    // "Notifications" / "Inbox" that pollute the text sent to Claude.
+    const mainEl = document.querySelector('[role="main"]')
+                || document.querySelector('main')
+                || document.body;
+    const rawText = (mainEl.innerText || '').slice(0, 4000);
+
+    return {
+      raw_text:    rawText,
+      image_urls:  imageUrls,
+      platform:    'facebook_marketplace',
+      listing_url: location.href,
+    };
+  }
+
+  // ── Streaming API Client ─────────────────────────────────────────────────────
+  // Replaces the old callScoringAPI(). Calls /score/stream and reads SSE events.
+  //
+  // SSE event types from the server:
+  //   extracted — Claude extracted listing fields (t≈1s); panel shows title+price
+  //   progress  — pipeline step label; updates spinner text
+  //   score     — full DealScoreResponse; final render
+  //   error     — something went wrong; shows error state
+  //
+  // WHY SSE INSTEAD OF POLLED FETCH:
+  //   SSE is a single long-lived HTTP connection. The browser keeps reading chunks
+  //   as they arrive — no polling, no WebSocket upgrade, no CORS complexity.
+  //   AbortController cancels the stream at the network layer on navigation.
+
+  async function callStreamingAPI(rawData, abort, myNonce, snapUrl) {
+    // Show panel immediately with initial spinner (no title yet)
+    showPanel();
+    renderLoading({});
+
+    const response = await fetch(`${API_BASE}/score/stream`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json', 'X-DS-Key': DS_API_KEY },
-      body:    JSON.stringify(listing),
-      signal,                    // AbortController signal — cancels on navigation
+      body:    JSON.stringify(rawData),
+      signal:  abort.signal,
     });
 
     if (!response.ok) {
@@ -742,23 +706,90 @@
       throw new Error(err.detail || `API error ${response.status}`);
     }
 
-    const result = await response.json();
+    const reader  = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let extractedTitle = null;
 
-    // Fetch affiliate links from background (it owns the affiliate IDs).
-    // This is a fast synchronous build — not a network call — so no signal needed.
-    try {
-      const afResp = await new Promise((resolve, reject) => {
-        chrome.runtime.sendMessage(
-          { type: 'GET_AFFILIATE_LINKS', query: listing.title, price: listing.price },
-          (r) => chrome.runtime.lastError
-            ? reject(new Error(chrome.runtime.lastError.message))
-            : resolve(r)
-        );
-      });
-      if (afResp?.success) result.affiliateLinks = afResp.links;
-    } catch (_) { /* non-critical — panel renders without affiliate cards */ }
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-    return result;
+      // Navigation guards — abort the stream if user moved away
+      if (abort.signal.aborted) { reader.cancel(); return; }
+      if (window.__dealScoutNonce !== myNonce || location.href !== snapUrl) {
+        reader.cancel();
+        return;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      // SSE events are separated by double newlines
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop() || ''; // last part may be an incomplete chunk
+
+      for (const part of parts) {
+        const line = part.trim();
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const evt = JSON.parse(line.slice(6));
+
+          if (evt.type === 'progress') {
+            renderProgress(evt.label);
+
+          } else if (evt.type === 'extracted') {
+            // Title+price appear immediately (~1s into the score)
+            extractedTitle = evt.data.title;
+            renderLoading(evt.data);
+
+          } else if (evt.type === 'score') {
+            // Guard: title mismatch — same as the old Guard 4 in callScoringAPI.
+            // Catches the edge case where the DOM swapped listings while streaming.
+            if (extractedTitle) {
+              const _words = s =>
+                s.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(w => w.length > 2);
+              const scoredSet = new Set(_words(extractedTitle));
+              const domTitleNow = (() => {
+                for (const el of document.querySelectorAll('h1[dir="auto"]')) {
+                  const t = el.textContent.trim();
+                  if (t && !_GENERIC_TITLES.has(t.toLowerCase())) return t;
+                }
+                return '';
+              })();
+              if (domTitleNow && scoredSet.size > 0) {
+                const overlap = _words(domTitleNow).filter(w => scoredSet.has(w)).length;
+                if (overlap === 0) {
+                  console.debug('[DealScout] Title mismatch — discarding stale score:',
+                    extractedTitle, '→', domTitleNow);
+                  return;
+                }
+              }
+            }
+
+            const result = evt.data;
+            // Affiliate links (fire-and-forget background message — non-critical)
+            try {
+              const afResp = await new Promise((res, rej) => {
+                chrome.runtime.sendMessage(
+                  { type: 'GET_AFFILIATE_LINKS', query: result.title, price: result.price },
+                  r => chrome.runtime.lastError
+                    ? rej(new Error(chrome.runtime.lastError.message))
+                    : res(r)
+                );
+              });
+              if (afResp?.success) result.affiliateLinks = afResp.links;
+            } catch (_) { /* non-critical */ }
+
+            renderScore(result);
+            chrome.runtime.sendMessage({ type: 'BADGE_UPDATE', score: result.score })
+              .catch(() => {});
+
+          } else if (evt.type === 'error') {
+            renderError(evt.message || 'Scoring failed');
+          }
+
+        } catch (_parseErr) { /* malformed SSE line — skip */ }
+      }
+    }
   }
 
   // ── Background Communication ──────────────────────────────────────────────────
@@ -901,17 +932,24 @@
 
     if (listing && listing.title) {
       const titleEl = document.createElement('div');
-      titleEl.style.cssText = 'font-size:12px;color:#9ca3af;margin-bottom:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+      titleEl.style.cssText = 'font-weight:600;color:#e0e0e0;font-size:13px;margin-bottom:4px;line-height:1.35';
       titleEl.textContent = listing.title;
       lBody.appendChild(titleEl);
+
+      if (listing.price) {
+        const priceEl = document.createElement('div');
+        priceEl.style.cssText = 'color:#7c8cf8;font-size:18px;font-weight:700;margin-bottom:10px';
+        priceEl.textContent = '$' + Number(listing.price).toLocaleString();
+        lBody.appendChild(priceEl);
+      }
     }
 
     const spinner = document.createElement('div');
-    spinner.style.cssText = 'text-align:center;padding:20px;color:#6b7280';
+    spinner.style.cssText = 'text-align:center;padding:16px 0;color:#6b7280';
     spinner.innerHTML = `
       <div style="font-size:24px;margin-bottom:8px;animation:ds-spin 1s linear infinite;display:inline-block">&#x27F3;</div>
-      <div style="font-size:12px">Analyzing deal&hellip;</div>
-      <div style="font-size:11px;margin-top:4px;color:#4b5563">eBay comps &middot; AI scoring &middot; Reddit sentiment</div>
+      <div id="ds-progress-label" style="font-size:12px">Analyzing deal&hellip;</div>
+      <div style="font-size:11px;margin-top:4px;color:#4b5563">eBay comps &middot; AI scoring &middot; market data</div>
     `;
     lBody.appendChild(spinner);
 
@@ -922,6 +960,13 @@
       style.textContent = '@keyframes ds-spin{to{transform:rotate(360deg)}}';
       document.head.appendChild(style);
     }
+  }
+
+  // Updates the spinner label while title/price are already visible.
+  // Called when the API sends progress events mid-pipeline.
+  function renderProgress(label) {
+    const el = document.getElementById('ds-progress-label');
+    if (el) el.textContent = label;
   }
 
   // ── Error State ───────────────────────────────────────────────────────────────

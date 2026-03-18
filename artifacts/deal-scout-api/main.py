@@ -32,6 +32,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from typing import Optional
@@ -209,6 +210,18 @@ class ListingRequest(BaseModel):
                 "listing_url": "https://www.facebook.com/marketplace/item/123"
             }
         }
+
+
+class RawListingRequest(BaseModel):
+    """
+    What the streaming /score/stream endpoint receives.
+    The extension sends raw page text + DOM-extracted image URLs.
+    Claude Haiku extracts all structured fields server-side.
+    """
+    raw_text:    str        # Truncated page text (max 4000 chars, client-side trimmed)
+    image_urls:  list = []  # DOM-extracted image URLs (position-filtered, max 5)
+    platform:    str = "facebook_marketplace"
+    listing_url: str = ""
 
 
 class DealScoreResponse(BaseModel):
@@ -732,6 +745,422 @@ async def score_listing(listing: ListingRequest, request: Request):
     _cache_set(_ck, response)
 
     return response
+
+
+# ── Streaming Endpoint ────────────────────────────────────────────────────────
+# POST /score/stream — receives raw page text + DOM image URLs, runs the full
+# pipeline, and streams SSE events back to the extension.
+#
+# SSE event types:
+#   extracted  — Claude Haiku extracted structured listing data (t ≈ 1s)
+#                Extension shows the panel with title/price immediately.
+#   progress   — Pipeline step label (e.g. "Checking eBay market prices…")
+#   score      — Complete DealScoreResponse dict (t ≈ 10–12s)
+#   error      — Something went wrong; extension shows error state.
+#
+# WHY STREAMING:
+#   The existing /score endpoint returns after 10-12 seconds with the full result.
+#   Users see a spinner for 10 seconds with no feedback.
+#   With streaming, the panel appears at t≈1s showing the listing title/price
+#   and a progress label, then the full score arrives at t≈10-12s.
+#   This makes the extension feel dramatically faster without changing back-end speed.
+
+@app.post("/score/stream")
+async def score_listing_stream(raw: RawListingRequest, request: Request):
+    """
+    Streaming deal-score endpoint using Server-Sent Events.
+    Extension sends raw page text; Claude extracts fields then runs the full pipeline.
+    """
+    _check_api_key(request)
+    client_ip = request.headers.get(
+        "x-forwarded-for", request.client.host if request.client else "unknown"
+    ).split(",")[0].strip()
+    _check_rate_limit(client_ip)
+
+    from scoring.listing_extractor import extract_listing_from_text
+    from scoring.product_extractor import _fallback_extraction
+    from scoring.affiliate_router import detect_category, CATEGORY_PROGRAMS
+    from dataclasses import asdict as _dc_asdict
+
+    def _sse(obj: dict) -> str:
+        return f"data: {_json.dumps(obj)}\n\n"
+
+    async def event_stream():
+        try:
+            # ── Step 1: Claude Haiku extracts structured listing data ─────────
+            extracted = await extract_listing_from_text(
+                raw_text=raw.raw_text,
+                platform=raw.platform,
+                url=raw.listing_url,
+            )
+
+            # Merge DOM image_urls (position-filtered by the content script — better
+            # than any URL Claude could infer from text).
+            extracted["image_urls"] = raw.image_urls or []
+            extracted["listing_url"] = raw.listing_url
+            extracted["platform"]    = raw.platform
+            extracted.setdefault("photo_count", len(raw.image_urls or []))
+
+            title = extracted.get("title", "").strip()
+            price = float(extracted.get("price", 0) or 0)
+
+            if not title or not price:
+                yield _sse({"type": "error",
+                            "message": "Could not read listing — page may still be loading"})
+                return
+
+            # Build seller_trust from extracted seller fields
+            seller_trust = None
+            if extracted.get("seller_joined") or extracted.get("seller_rating"):
+                seller_trust = {
+                    "joined_date":  extracted.get("seller_joined"),
+                    "rating":       extracted.get("seller_rating"),
+                    "rating_count": extracted.get("seller_rating_count", 0) or 0,
+                }
+
+            # Send extracted data immediately — panel shows title/price now
+            yield _sse({"type": "extracted", "data": extracted})
+
+            # ── Cache check ──────────────────────────────────────────────────
+            _ck = _cache_key(title, price)
+            _cached = _cache_get(_ck)
+            if _cached:
+                log.info(f"[Stream Cache] HIT for '{title}'")
+                yield _sse({"type": "score", "data": _cached})
+                return
+
+            # Guard: reject generic titles
+            _generic = {"marketplace", "facebook marketplace", "facebook",
+                        "craigslist", "offerup", "ebay", ""}
+            if title.lower() in _generic:
+                yield _sse({"type": "error",
+                            "message": "Could not read the listing title — wait for the page to fully load"})
+                return
+
+            # Build ListingRequest from extracted data
+            listing = ListingRequest(
+                title          = title,
+                price          = price,
+                raw_price_text = f"${price:.0f}",
+                description    = extracted.get("description", ""),
+                location       = extracted.get("location", ""),
+                condition      = extracted.get("condition", "Unknown"),
+                seller_name    = extracted.get("seller_name", ""),
+                listing_url    = raw.listing_url,
+                is_multi_item  = bool(extracted.get("is_multi_item", False)),
+                is_vehicle     = bool(extracted.get("is_vehicle", False)),
+                vehicle_details = None,
+                seller_trust   = seller_trust,
+                original_price = float(extracted.get("original_price", 0) or 0),
+                shipping_cost  = float(extracted.get("shipping_cost", 0) or 0),
+                image_urls     = raw.image_urls or [],
+                photo_count    = int(extracted.get("photo_count", 0) or len(raw.image_urls or [])),
+                platform       = raw.platform,
+            )
+
+            log.info(f"[Stream] Scoring '{listing.title}' @ ${listing.price}")
+
+            # ── Step 2: Product extraction + eBay + product eval (concurrent) ─
+            yield _sse({"type": "progress", "label": "Checking eBay market prices…"})
+
+            raw_title_query = listing.title.strip()
+            product_info, prelim_market, product_eval = await asyncio.gather(
+                extract_product(listing.title, listing.description),
+                get_market_value(
+                    listing_title     = raw_title_query,
+                    listing_condition = listing.condition,
+                    is_vehicle        = listing.is_vehicle,
+                    listing_price     = listing.price,
+                ),
+                evaluate_product(brand="", model="", category="", display_name=listing.title),
+                return_exceptions=True,
+            )
+
+            if isinstance(product_info, Exception):
+                log.warning(f"[Stream] Product extraction failed ({product_info})")
+                product_info = _fallback_extraction(listing.title)
+
+            if isinstance(prelim_market, Exception):
+                yield _sse({"type": "error",
+                            "message": f"Market value lookup failed: {prelim_market}"})
+                return
+
+            if isinstance(product_eval, Exception):
+                from scoring.product_evaluator import _unknown_evaluation
+                product_eval = _unknown_evaluation(product_info.display_name)
+
+            # eBay refinement
+            extracted_q  = (product_info.search_query or "").strip().lower()
+            raw_q        = raw_title_query.lower()
+            _ebay_mocked = getattr(prelim_market, "data_source", "") == "ebay_mock"
+            need_refine  = extracted_q and extracted_q != raw_q and len(extracted_q) > 4 and not _ebay_mocked
+
+            try:
+                if need_refine:
+                    market_value = await get_market_value(
+                        listing_title     = product_info.search_query,
+                        listing_condition = listing.condition,
+                        is_vehicle        = listing.is_vehicle,
+                        listing_price     = listing.price,
+                    )
+                    if product_info.brand:
+                        product_eval = await evaluate_product(
+                            brand        = product_info.brand,
+                            model        = product_info.model,
+                            category     = product_info.category,
+                            display_name = product_info.display_name,
+                        )
+                else:
+                    market_value = prelim_market
+            except Exception as _ref_err:
+                log.warning(f"[Stream] eBay refinement failed: {_ref_err}")
+                market_value = prelim_market
+
+            # ── Step 3: Deal scoring + security (concurrent) ─────────────────
+            yield _sse({"type": "progress", "label": "AI deal analysis in progress…"})
+
+            market_value_dict = _dc_asdict(market_value)
+            listing_dict = {
+                "title":          listing.title,
+                "price":          listing.price,
+                "raw_price_text": listing.raw_price_text or f"${listing.price:.0f}",
+                "description":    listing.description,
+                "location":       listing.location,
+                "condition":      listing.condition,
+                "seller_name":    listing.seller_name,
+                "listing_url":    listing.listing_url,
+                "is_multi_item":  listing.is_multi_item,
+                "is_vehicle":     listing.is_vehicle,
+                "vehicle_details": listing.vehicle_details or {},
+                "seller_trust":   listing.seller_trust,
+                "original_price": listing.original_price,
+                "shipping_cost":  listing.shipping_cost,
+                "image_urls":     listing.image_urls or [],
+                "photo_count":    listing.photo_count,
+            }
+            image_url = listing.image_urls[0] if listing.image_urls else None
+
+            _prelim_category = detect_category(product_info)
+            if listing.is_vehicle:
+                _prelim_category = "vehicles"
+
+            _security_task = asyncio.create_task(
+                asyncio.wait_for(
+                    score_security(
+                        listing          = listing,
+                        category         = _prelim_category,
+                        market_value     = market_value,
+                        normalized_title = product_info.display_name,
+                    ),
+                    timeout=10.0,
+                )
+            )
+
+            try:
+                deal_score = await score_deal(
+                    listing_dict, market_value_dict,
+                    image_url          = image_url,
+                    product_evaluation = product_eval,
+                )
+            except Exception as _score_err:
+                _security_task.cancel()
+                yield _sse({"type": "error", "message": str(_score_err)})
+                return
+
+            if not deal_score:
+                _security_task.cancel()
+                yield _sse({"type": "error", "message": "Scorer returned no result"})
+                return
+
+            log.info(f"[Stream] Score: {deal_score.score}/10 — {deal_score.verdict}")
+
+            # Score cap
+            _np = market_value.new_price
+            _lp = listing.price
+            if _np > 0 and market_value.data_source not in ("ebay_mock",):
+                _ratio = _lp / _np
+                if _ratio >= 1.0 and deal_score.score > 4:
+                    deal_score.score     = min(deal_score.score, 4)
+                    deal_score.should_buy = False
+                elif _ratio >= 0.85 and deal_score.score > 5:
+                    deal_score.score     = min(deal_score.score, 5)
+                    deal_score.should_buy = False
+
+            # ── Step 4: Affiliate + security ──────────────────────────────────
+            _valid_cats      = set(CATEGORY_PROGRAMS.keys()) | {"general"}
+            claude_cat       = (deal_score.affiliate_category or "").strip().lower()
+            category_detected = claude_cat if (claude_cat and claude_cat in _valid_cats) else _prelim_category
+            if listing.is_vehicle and category_detected not in ("vehicles", "cars", "trucks"):
+                category_detected = "vehicles"
+
+            try:
+                affiliate_cards = get_affiliate_recommendations(
+                    product_info      = product_info,
+                    listing_price     = listing.price,
+                    shipping_cost     = listing.shipping_cost,
+                    deal_score        = deal_score,
+                    market_value      = market_value,
+                    max_cards         = 3,
+                    category_override = category_detected,
+                )
+            except Exception:
+                affiliate_cards = []
+
+            buy_new, buy_new_msg = should_trigger_buy_new(
+                listing_price = listing.price + listing.shipping_cost,
+                new_price     = market_value.new_price,
+                is_vehicle    = listing.is_vehicle,
+                data_source   = market_value.data_source,
+            )
+
+            try:
+                security = await _security_task
+            except Exception:
+                from scoring.security_scorer import SecurityScore as _SS
+                security = _SS(score=5, risk_level="unknown", flags=[], recommendation="unable to assess")
+
+            # ── Step 5: Serialize ─────────────────────────────────────────────
+            sold_items_sample   = [_dc_asdict(i) for i in (market_value.sold_items_sample   or [])]
+            active_items_sample = [_dc_asdict(i) for i in (market_value.active_items_sample or [])]
+            affiliate_dicts     = [_dc_asdict(c) for c in affiliate_cards]
+
+            response = DealScoreResponse(
+                title             = listing.title,
+                price             = listing.price,
+                location          = listing.location,
+                condition         = listing.condition,
+                original_price    = listing.original_price,
+                shipping_cost     = listing.shipping_cost,
+                estimated_value   = market_value.estimated_value,
+                sold_avg          = market_value.sold_avg,
+                sold_count        = market_value.sold_count,
+                sold_low          = market_value.sold_low,
+                sold_high         = market_value.sold_high,
+                active_avg        = market_value.active_avg,
+                active_low        = market_value.active_low,
+                new_price         = market_value.new_price,
+                market_confidence = market_value.confidence,
+                data_source       = market_value.data_source,
+                query_used        = market_value.query_used,
+                sold_items_sample   = sold_items_sample,
+                active_items_sample = active_items_sample,
+                score               = deal_score.score,
+                verdict             = deal_score.verdict,
+                summary             = deal_score.summary,
+                value_assessment    = deal_score.value_assessment,
+                condition_notes     = deal_score.condition_notes,
+                red_flags           = deal_score.red_flags,
+                green_flags         = deal_score.green_flags,
+                recommended_offer   = deal_score.recommended_offer,
+                should_buy          = deal_score.should_buy,
+                ai_confidence       = deal_score.confidence,
+                model_used          = deal_score.model_used,
+                image_analyzed      = deal_score.image_analyzed,
+                affiliate_category  = deal_score.affiliate_category,
+                negotiation_message = deal_score.negotiation_message,
+                bundle_items        = deal_score.bundle_items or [],
+                product_info        = dc_asdict_top(product_info),
+                product_evaluation  = dc_asdict_top(product_eval),
+                affiliate_cards     = affiliate_dicts,
+                buy_new_trigger     = buy_new,
+                buy_new_message     = buy_new_msg,
+                category_detected   = category_detected,
+                security_score      = dc_asdict_top(security),
+                ai_item_id          = market_value.ai_item_id,
+                ai_notes            = market_value.ai_notes,
+                craigslist_asking_avg   = market_value.craigslist_avg,
+                craigslist_asking_low   = market_value.craigslist_low,
+                craigslist_asking_high  = market_value.craigslist_high,
+                craigslist_count        = market_value.craigslist_count,
+            )
+
+            # DB save (non-fatal)
+            score_id = 0
+            try:
+                from scoring.data_pipeline import _get_pool
+                pool = await _get_pool()
+                if pool:
+                    _ebay_comps = {
+                        "sold": sold_items_sample, "active": active_items_sample,
+                        "query": market_value.query_used, "data_source": market_value.data_source,
+                    }
+                    _affil_impr = [
+                        {"position": idx+1, "program_key": c.get("program_key",""),
+                         "card_type": c.get("card_type",""), "selection_reason": c.get("reason",""),
+                         "commission_live": c.get("commission_live", False),
+                         "estimated_revenue": c.get("estimated_revenue", 0.0),
+                         "price_hint": c.get("price_hint","")}
+                        for idx, c in enumerate(affiliate_dicts)
+                    ]
+                    row = await pool.fetchrow(
+                        """INSERT INTO deal_scores
+                           (platform, listing_url, listing_json, score_json, score,
+                            ebay_comps_json, affiliate_impressions_json)
+                           VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6::jsonb, $7::jsonb)
+                           RETURNING id""",
+                        listing.platform or "unknown",
+                        listing.listing_url or "",
+                        _json.dumps(listing.model_dump()),
+                        _json.dumps(response.model_dump()),
+                        deal_score.score,
+                        _json.dumps(_ebay_comps),
+                        _json.dumps(_affil_impr),
+                    )
+                    if row:
+                        score_id = row["id"]
+                        response = response.model_copy(update={"score_id": score_id})
+            except Exception as _db_err:
+                log.warning(f"[Stream] deal_scores save failed (non-fatal): {_db_err}")
+
+            response_dict = response.model_dump()
+            _cache_set(_ck, response_dict)
+
+            # ── Send the final score ──────────────────────────────────────────
+            yield _sse({"type": "score", "data": response_dict})
+
+            # Background analytics (fire and forget)
+            try:
+                from scoring.data_pipeline import record_signal
+                _loc_parts = [p.strip() for p in (listing.location or "").split(",")]
+                _city      = _loc_parts[0] if _loc_parts else ""
+                _state     = _loc_parts[1][:2].upper() if len(_loc_parts) > 1 else ""
+                _gap_pct   = 0.0
+                if market_value.sold_avg and market_value.sold_avg > 0:
+                    _gap_pct = round(
+                        (listing.price - market_value.sold_avg) / market_value.sold_avg * 100, 1
+                    )
+                asyncio.create_task(record_signal(
+                    category           = category_detected or "",
+                    item_label         = (market_value.ai_item_id or listing.title or "")[:120],
+                    condition          = listing.condition or "",
+                    city               = _city,
+                    state_code         = _state,
+                    asking_price       = listing.price,
+                    ebay_sold_avg      = market_value.sold_avg,
+                    ebay_active_avg    = market_value.active_avg,
+                    new_price          = market_value.new_price,
+                    cl_asking_avg      = market_value.craigslist_avg,
+                    price_gap_pct      = _gap_pct,
+                    deal_score         = deal_score.score,
+                    buy_new_trigger    = bool(buy_new),
+                    affiliate_programs = ",".join(c.get("program_key","") for c in affiliate_dicts),
+                    platform           = listing.platform or "facebook_marketplace",
+                ))
+            except Exception:
+                pass
+
+        except Exception as _outer_err:
+            log.error(f"[Stream] Unhandled error: {_outer_err}")
+            yield _sse({"type": "error", "message": str(_outer_err)})
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control":    "no-cache",
+            "X-Accel-Buffering": "no",   # disables Nginx buffering
+        },
+    )
 
 
 async def _validate_query_background(

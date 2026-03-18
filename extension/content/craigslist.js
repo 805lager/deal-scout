@@ -10,7 +10,7 @@
 (function () {
   "use strict";
 
-  const VERSION  = "1.0.4";
+  const VERSION  = "0.27.0";
   const PANEL_ID = "deal-scout-cl-panel";
   const PLATFORM = "craigslist";
 
@@ -252,39 +252,89 @@
     return "1000+";
   }
 
-  // ── Direct API Call ────────────────────────────────────────────────────────
-  // Call the scoring API directly from the content script (same approach as fbm.js).
-  // This bypasses the MV3 service worker, which Chrome can terminate mid-request
-  // (30-second idle window), causing the background-routed SCORE_LISTING message
-  // to silently disappear and never resolve.
-  async function callScoringAPIDirect(listing, signal) {
-    const response = await fetch(`${API_BASE}/score`, {
+  // ── Raw Data Extraction ──────────────────────────────────────────────────────
+  // Sends raw page text to Claude Haiku server-side for structured extraction.
+  // Images still need DOM extraction (CL embeds full-size images as <img> tags).
+
+  function extractRaw() {
+    // CL images: direct <img> tags in the swipe gallery
+    const imageUrls = Array.from(
+      document.querySelectorAll("#imageswap img, .swipe img, [class*='slide'] img, [class*='photo'] img")
+    )
+      .map(img => img.src)
+      .filter(s => s && s.startsWith("http") && !s.includes("icons"))
+      .slice(0, 5);
+
+    // CL posts are single-page — body.innerText is clean enough
+    const rawText = (document.body.innerText || "").slice(0, 4000);
+
+    return {
+      raw_text:    rawText,
+      image_urls:  imageUrls,
+      platform:    PLATFORM,
+      listing_url: location.href,
+    };
+  }
+
+  // ── Streaming API Client ─────────────────────────────────────────────────────
+
+  async function callStreamingAPI(rawData, abort) {
+    showPanel();
+    renderLoading({});
+
+    const response = await fetch(`${API_BASE}/score/stream`, {
       method:  "POST",
       headers: { "Content-Type": "application/json", "X-DS-Key": DS_API_KEY },
-      body:    JSON.stringify(listing),
-      signal,
+      body:    JSON.stringify(rawData),
+      signal:  abort.signal,
     });
+
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
       throw new Error(err.detail || `API error ${response.status}`);
     }
-    return response.json();
-  }
 
-  // Fetch affiliate links via background (it owns the affiliate IDs).
-  // Non-critical — panel renders without them if this fails.
-  async function fetchAffiliateLinks(title, price) {
-    return new Promise((resolve) => {
-      try {
-        chrome.runtime.sendMessage(
-          { type: "GET_AFFILIATE_LINKS", query: title, price },
-          (r) => {
-            if (chrome.runtime.lastError || !r?.success) { resolve([]); return; }
-            resolve(r.links || []);
+    const reader  = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (abort.signal.aborted) { reader.cancel(); return; }
+
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop() || "";
+
+      for (const part of parts) {
+        const line = part.trim();
+        if (!line.startsWith("data: ")) continue;
+        try {
+          const evt = JSON.parse(line.slice(6));
+          if (evt.type === "progress") {
+            renderProgress(evt.label);
+          } else if (evt.type === "extracted") {
+            renderLoading(evt.data);
+          } else if (evt.type === "score") {
+            const result = evt.data;
+            try {
+              const afLinks = await new Promise((res) => {
+                chrome.runtime.sendMessage(
+                  { type: "GET_AFFILIATE_LINKS", query: result.title, price: result.price },
+                  (r) => res((r?.success && r.links) ? r.links : [])
+                );
+              });
+              if (afLinks.length) result.affiliateLinks = afLinks;
+            } catch (_) {}
+            renderScore(result);
+            chrome.runtime.sendMessage({ type: "BADGE_UPDATE", score: result.score }).catch(() => {});
+          } else if (evt.type === "error") {
+            renderError(evt.message || "Scoring failed");
           }
-        );
-      } catch (_) { resolve([]); }
-    });
+        } catch (_) {}
+      }
+    }
   }
 
   // ── Rendering ──────────────────────────────────────────────────────────────
@@ -303,11 +353,19 @@
     panel.appendChild(bar);
     const body = document.createElement("div");
     body.style.cssText = "padding:14px 12px";
-    body.innerHTML = '<div style="font-size:12px;color:#9ca3af;margin-bottom:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
-      escHtml(listing?.title || "") + "</div>" +
-      '<div style="text-align:center;padding:20px;color:#6b7280">' +
+
+    let headerHtml = "";
+    if (listing && listing.title) {
+      headerHtml += '<div style="font-weight:600;color:#e0e0e0;font-size:13px;margin-bottom:4px;line-height:1.35">' + escHtml(listing.title) + "</div>";
+      if (listing.price) {
+        headerHtml += '<div style="color:#7c8cf8;font-size:18px;font-weight:700;margin-bottom:10px">$' + Number(listing.price).toLocaleString() + "</div>";
+      }
+    }
+
+    body.innerHTML = headerHtml +
+      '<div style="text-align:center;padding:16px 0;color:#6b7280">' +
       '<div style="font-size:24px;animation:ds-spin 1s linear infinite;display:inline-block">⟳</div>' +
-      '<div style="font-size:12px;margin-top:8px">Analyzing deal…</div>' +
+      '<div id="ds-progress-label" style="font-size:12px;margin-top:8px">Analyzing deal…</div>' +
       '<div style="font-size:11px;margin-top:4px;color:#4b5563">eBay comps · AI scoring · Craigslist avg</div></div>';
     panel.appendChild(body);
     if (!document.getElementById("ds-spin-style")) {
@@ -316,6 +374,11 @@
       s.textContent = "@keyframes ds-spin{to{transform:rotate(360deg)}}";
       document.head.appendChild(s);
     }
+  }
+
+  function renderProgress(label) {
+    const el = document.getElementById("ds-progress-label");
+    if (el) el.textContent = label;
   }
 
   function renderError(msg) {
@@ -727,43 +790,29 @@
   async function autoScore() {
     if (!isListingPage()) return;
 
-    // Poll up to 5 seconds (25 × 200ms) for a price to appear.
-    let listing = extractListing();
-    let waited  = 0;
-    while (!listing.price && waited < 25) {
+    // CL is a traditional multi-page site — content is loaded at page ready.
+    // Brief poll for page text (max 2s) in case the browser is still parsing.
+    let waited = 0;
+    while ((document.body.innerText || "").length < 200 && waited < 10) {
       await new Promise(r => setTimeout(r, 200));
       waited++;
-      listing = extractListing();
     }
 
-    showPanel();
-
-    if (!listing.price) {
-      renderError("Could not detect a price on this listing. Try refreshing or use the Score button.");
+    const rawData = extractRaw();
+    if (!rawData.raw_text || rawData.raw_text.length < 100) {
+      showPanel();
+      renderError("Could not read this listing — try refreshing.");
       return;
     }
-
-    renderLoading(listing);
 
     const abort = new AbortController();
     window.__dsCLAbort = abort;
 
     try {
-      const result = await callScoringAPIDirect(listing, abort.signal);
-      if (abort.signal.aborted) return;
-
-      const afLinks = await fetchAffiliateLinks(listing.title, listing.price);
-      if (afLinks && afLinks.length) result.affiliateLinks = afLinks;
-
-      try {
-        const badgeColor = result.score >= 7 ? "#22c55e" : result.score >= 5 ? "#fbbf24" : "#ef4444";
-        chrome.runtime.sendMessage({ type: "BADGE_UPDATE", score: result.score, color: badgeColor }).catch(() => {});
-      } catch (_) {}
-
-      renderScore(result);
-
+      await callStreamingAPI(rawData, abort);
     } catch (err) {
       if (abort.signal.aborted) return;
+      showPanel();
       renderError(err.message || "Scoring failed");
     } finally {
       if (window.__dsCLAbort === abort) window.__dsCLAbort = null;
