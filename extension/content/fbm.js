@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.27.9';
+  const VERSION  = '0.28.0';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -578,19 +578,25 @@
     const titleIsStale = typeof prevTitle === 'string' && prevTitle !== '' &&
                          (currentTitle === prevTitle || _GENERIC_TITLES.has(currentTitle.toLowerCase()) || currentTitle === '');
 
-    // Body-content freshness check: FBM React updates the h1 title BEFORE
-    // re-rendering the main content area. So the h1 may already say "Oldsmobile"
-    // while [role="main"].innerText still contains the previous listing's text.
-    // Without this check, extractRaw() would send stale content → wrong item scored.
-    // We verify the title snippet appears somewhere in the main content area;
-    // if not, the body hasn't caught up yet and we wait another cycle.
+    // Body-content freshness check:
+    // FBM React updates the h1 title BEFORE re-rendering the listing body.
+    // Because h1 sits INSIDE [role="main"], checking for the new title in mainText
+    // always passes immediately (h1 update suffices) — the rest of the body can
+    // still show the previous listing's price/description/seller details.
+    //
+    // More reliable signal: verify the PREVIOUS listing's title is no longer
+    // visible in the main content area. In the transition state, [role="main"]
+    // contains the old h1 + old body; once React finishes re-rendering, the old
+    // title disappears from the body. We wait until it's gone.
     const mainEl = document.querySelector('[role="main"]') || document.querySelector('main') || document.body;
     const mainText = mainEl.innerText || '';
     const hasContent = mainText.length > 100;
-    const titleSnippet = currentTitle.slice(0, 20).trim().toLowerCase();
-    const bodyReflectsTitle = !titleSnippet || mainText.toLowerCase().includes(titleSnippet);
+    // prevContentGone: old listing's title no longer appears anywhere in the body.
+    // First 25 chars is enough to be unique without over-matching.
+    const prevTitleSnippet = (prevTitle || '').slice(0, 25).trim().toLowerCase();
+    const prevContentGone = !prevTitleSnippet || !mainText.toLowerCase().includes(prevTitleSnippet);
 
-    const notReady = titleIsStale || !hasContent || !bodyReflectsTitle;
+    const notReady = titleIsStale || !hasContent || !prevContentGone;
 
     if (notReady && attempt < 20) {
       await new Promise(r => setTimeout(r, 200));
