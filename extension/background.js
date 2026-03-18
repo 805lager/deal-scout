@@ -286,14 +286,25 @@ chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
   url: [{ hostContains: "facebook.com" }],
 });
 
-// Clear the cached listing ID on full page navigations so the first
-// onHistoryStateUpdated after a hard reload always triggers injection.
+// On a full page navigation (hard load/reload), the manifest content_scripts
+// already inject fbm.js automatically — no need for executeScript.
+// Pre-populate spaLastListingId with the listing ID so that subsequent
+// onHistoryStateUpdated events for the SAME listing (FBM fires many while
+// the page settles) don't restart the debounce timer and re-inject mid-score.
 chrome.webNavigation.onCommitted.addListener((details) => {
   if (details.frameId !== 0) return;
-  if (details.transitionType === "reload" || details.transitionType === "typed" ||
-      details.transitionType === "link") {
+  const newId = _bgListingId(details.url);
+  if (newId) {
+    // Already on a listing page — mark it as "injected" so state updates
+    // for this listing don't trigger a redundant executeScript injection.
+    spaLastListingId.set(details.tabId, newId);
+  } else {
+    // Not a listing page — clear so the next listing navigation injects fresh.
     spaLastListingId.delete(details.tabId);
   }
+  // Also cancel any pending debounce for this tab on a full navigation.
+  clearTimeout(spaDebounceTimers.get(details.tabId));
+  spaDebounceTimers.delete(details.tabId);
 }, { url: [{ hostContains: "facebook.com" }] });
 
 
