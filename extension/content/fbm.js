@@ -455,10 +455,14 @@
     // Listing URL
     const listingUrl = location.href;
 
-    // True photo count — count ALL non-card listing images regardless of rendered size.
-    // We only send up to 3 to the API for Vision, but the security scorer needs the
-    // real count so it doesn't flag "only 1 photo" when a carousel has 6 images.
-    const photoCount = _allScontent.filter(img => !_isCardImage(img)).length;
+    // True photo count — count only images in the top portion of the page.
+    // The listing carousel is always in the top ~900px; sidebar/recommendation
+    // images further down the page must not inflate this count.
+    // We only send up to 3 URLs to the API for Vision, but the security scorer
+    // needs the real carousel count so it can reason about photo quantity correctly.
+    const photoCount = _allScontent.filter(img =>
+      !_isCardImage(img) && _absTop(img) < 900
+    ).length || imageUrls.length;
 
     return {
       title,
