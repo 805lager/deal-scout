@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.27.7';
+  const VERSION  = '0.27.8';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -62,13 +62,10 @@
   // (_onFbmNav) resets this flag so the next autoScore for the new listing can run.
   if (window.__dealScoutRunning === undefined) window.__dealScoutRunning = false;
 
-  console.warn('[DealScout v'+VERSION+'] script start — injected:', window.__dealScoutInjected, 'running:', window.__dealScoutRunning, 'url:', location.href);
-
   // ── Guard: prevent double-injection on SPA navigation ───────────────────────
   // background.js re-injects fbm.js on every pushState. Without this guard,
   // multiple instances would race and create duplicate sidebars.
   if (window.__dealScoutInjected) {
-    console.warn('[DealScout] re-injection guard hit — isListingPage:', isListingPage());
     // Already running — re-injection from background.js on SPA navigation.
     // prevTitle was already saved by the pushState intercept at t=0 (see bottom
     // of this file). Don't overwrite it here — by now the DOM may already show
@@ -542,17 +539,16 @@
   // ── Auto-score ─────────────────────────────────────────────────────────────────
 
   async function autoScore(attempt = 0) {
-    if (!isListingPage()) { console.warn('[DealScout] autoScore — not a listing page, skip'); return; }
+    if (!isListingPage()) return;
 
     // Mutex: if another autoScore is already running (from a concurrent pushState
     // re-injection), skip this one entirely. _onFbmNav resets this flag on every
     // navigation so the next listing always gets a fresh run.
     if (attempt === 0) {
       if (window.__dealScoutRunning) {
-        console.warn('[DealScout] autoScore skipped — mutex locked (already running)');
+        console.debug('[DealScout] autoScore skipped — already running');
         return;
       }
-      console.warn('[DealScout] autoScore attempt=0 START, nonce:', window.__dealScoutNonce);
       window.__dealScoutRunning = true;
     }
 
@@ -585,7 +581,6 @@
     const hasContent = (document.body.innerText || '').length > 100;
 
     const notReady = titleIsStale || !hasContent;
-    if (attempt === 0 || attempt % 5 === 0) console.warn('[DealScout] readiness attempt', attempt, '— prevTitle:', prevTitle, 'currentTitle:', currentTitle, 'titleIsStale:', titleIsStale, 'hasContent:', hasContent);
 
     if (notReady && attempt < 20) {
       await new Promise(r => setTimeout(r, 200));
@@ -601,7 +596,7 @@
     const rawData = extractRaw();
 
     if (!rawData.raw_text || rawData.raw_text.length < 100) {
-      console.warn('[DealScout] Insufficient page content (', rawData.raw_text?.length, 'chars) — skipping');
+      console.debug('[DealScout] Insufficient page content — skipping');
       if (window.__dealScoutNonce === myNonce) window.__dealScoutRunning = false;
       return;
     }
@@ -610,8 +605,6 @@
     // in-flight stream immediately — the most reliable bleed prevention.
     const abort = new AbortController();
     window.__dealScoutAbort = abort;
-
-    console.warn('[DealScout] calling API — raw_text len:', rawData.raw_text.length, 'url:', snapUrl);
     try {
       await callStreamingAPI(rawData, abort, myNonce, snapUrl);
     } catch (err) {
