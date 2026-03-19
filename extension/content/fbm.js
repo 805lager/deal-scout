@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.22';
+  const VERSION  = '0.28.23';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -667,46 +667,15 @@
     // didn't match). Claude extracts from raw text — no structured title required.
     // This matches v0.28.16 behaviour where hard loads always attempted extraction.
 
-    // ── Phase 2: new title confirmed — wait until old listing content leaves DOM ──
-    // WHY previous approaches failed:
-    //   • Flat wait: too short when FBM is slow (user's machine / network).
-    //   • MutationObserver: FBM finishes mutations before Phase 2 even starts.
-    //   • prevBodySnip / _textAfterH1: the pivot h1 changes when Phase 1 fires;
-    //     FBM's loading-skeleton replaces the old body text instantly (appears to
-    //     the comparator as "body has changed") even before real content loads.
-    //
-    // CORRECT SIGNAL: the old listing's prevTitle keywords in mainEl.innerText.
-    //   • Captured as local var `prevTitle` — doesn't depend on any h1 pivot.
-    //   • After Phase 1 the old h1 is gone but the OLD BODY TEXT (price,
-    //     description, seller info) still contains prevTitle terms.
-    //   • Once FBM fully replaces the body those terms vanish → safe to extract.
-    //   • Polls every 200ms, hard cap 20 × 200ms = 4s, then 400ms settle.
+    // ── Phase 2: flat settle wait (SPA nav only) ─────────────────────────────────
+    // After the new listing's h1 is confirmed (Phase 1), FBM still needs time to
+    // replace the body content (price, description, seller info) under it.
+    // A flat 2 s wait is simple and covers all real-world FBM load scenarios.
+    // DOM-polling approaches (v0.28.19–0.28.22) all failed due to subtle FBM DOM
+    // structure ambiguities we can't reliably observe — flat wait wins.
     if (isSpaNav) {
-      const _pw = (prevTitle || '').toLowerCase().split(/\s+/).filter(w => w.length > 3).slice(0, 3);
-      if (_pw.length >= 2) {
-        console.debug('[DealScout] Phase 2 — watching for old body text to clear; keywords:', _pw);
-        let _cleared = false;
-        for (let i = 0; i < 20; i++) {                        // 20 × 200ms = 4s max
-          await new Promise(r => setTimeout(r, 200));
-          if (location.href !== snapUrl || window.__dealScoutNonce !== myNonce) return;
-          const _bodyNow = _textAfterH1(mainEl, currentTitle).toLowerCase();
-          if (!_pw.every(w => _bodyNow.includes(w))) {
-            console.debug('[DealScout] Old body cleared after', (i + 1) * 200, 'ms — settling');
-            _cleared = true;
-            break;
-          }
-        }
-        if (!_cleared) {
-          console.debug('[DealScout] Phase 2 timeout (4s) — proceeding anyway');
-        }
-      } else {
-        // prevTitle too short for keyword matching — flat 1.5s fallback
-        console.debug('[DealScout] Phase 2 — short/empty prevTitle, flat 1.5s settle');
-        await new Promise(r => setTimeout(r, 1500));
-        if (location.href !== snapUrl || window.__dealScoutNonce !== myNonce) return;
-      }
-      // Final settle — let any trailing React updates complete
-      await new Promise(r => setTimeout(r, 400));
+      console.debug('[DealScout] Phase 2 — flat 2s settle for SPA nav');
+      await new Promise(r => setTimeout(r, 2000));
       if (location.href !== snapUrl || window.__dealScoutNonce !== myNonce) return;
     }
 
@@ -714,13 +683,33 @@
       isSpaNav ? '(SPA nav)' : '(hard load)');
 
     // Capture prevTitle into a local var BEFORE clearing the sentinel so we can
-    // pass it to callStreamingAPI for the prev-title discard check.
+    // use it for the bleed guard below and pass it to callStreamingAPI.
     const capturedPrevTitle = prevTitle || '';
-    // Clear SPA sentinel — only prevTitle is needed now (body/img fingerprints removed).
+    // Clear SPA sentinel so the next navigation starts fresh.
     window.__dealScoutPrevTitle = undefined;
 
     // Gather raw data for server-side extraction
-    const rawData = extractRaw();
+    let rawData = extractRaw();
+
+    // ── Post-extraction bleed guard ────────────────────────────────────────────
+    // Even after the flat wait, very slow devices / network conditions can leave
+    // old listing content in the DOM.  Verify the extracted text doesn't still
+    // look like the previous listing.  If it does, wait 1.5 s and re-extract
+    // (up to 3 retries = 4.5 s extra at most).
+    if (isSpaNav && capturedPrevTitle && rawData.raw_text) {
+      const _pWords = capturedPrevTitle.toLowerCase()
+        .split(/\s+/).filter(w => w.length > 3).slice(0, 4);
+      for (let _r = 0; _r < 3; _r++) {
+        if (_pWords.length < 2) break;
+        const _rLow = rawData.raw_text.toLowerCase().slice(0, 1500);
+        // "Still old" = first two prevTitle keywords both present in extracted text
+        if (!_pWords.slice(0, 2).every(w => _rLow.includes(w))) break;
+        console.debug('[DealScout] Bleed guard: old content detected — re-extracting in 1.5s (retry', _r + 1, ')');
+        await new Promise(r => setTimeout(r, 1500));
+        if (location.href !== snapUrl || window.__dealScoutNonce !== myNonce) return;
+        rawData = extractRaw();
+      }
+    }
 
     if (!rawData.raw_text || rawData.raw_text.length < 100) {
       console.debug('[DealScout] Insufficient page content — skipping');
