@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.21';
+  const VERSION  = '0.28.22';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -689,7 +689,7 @@
         for (let i = 0; i < 20; i++) {                        // 20 × 200ms = 4s max
           await new Promise(r => setTimeout(r, 200));
           if (location.href !== snapUrl || window.__dealScoutNonce !== myNonce) return;
-          const _bodyNow = (mainEl.innerText || '').toLowerCase().slice(0, 800);
+          const _bodyNow = _textAfterH1(mainEl, currentTitle).toLowerCase();
           if (!_pw.every(w => _bodyNow.includes(w))) {
             console.debug('[DealScout] Old body cleared after', (i + 1) * 200, 'ms — settling');
             _cleared = true;
