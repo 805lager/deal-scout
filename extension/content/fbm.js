@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.20';
+  const VERSION  = '0.28.21';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -667,43 +667,45 @@
     // didn't match). Claude extracts from raw text — no structured title required.
     // This matches v0.28.16 behaviour where hard loads always attempted extraction.
 
-    // ── Phase 2: new title confirmed — poll until body content swaps (SPA nav only)
-    // FBM updates the h1 well before it unmounts the old listing's body component.
-    // A MutationObserver or flat sleep is unreliable because mutations may finish
-    // before Phase 2 even starts (h1 often changes 500–800 ms before bg re-injects
-    // fbm.js, so by t=900ms the DOM is already "quiet" even though the BODY text is
-    // still the previous listing's content).
+    // ── Phase 2: new title confirmed — wait until old listing content leaves DOM ──
+    // WHY previous approaches failed:
+    //   • Flat wait: too short when FBM is slow (user's machine / network).
+    //   • MutationObserver: FBM finishes mutations before Phase 2 even starts.
+    //   • prevBodySnip / _textAfterH1: the pivot h1 changes when Phase 1 fires;
+    //     FBM's loading-skeleton replaces the old body text instantly (appears to
+    //     the comparator as "body has changed") even before real content loads.
     //
-    // The reliable signal is the body snapshot saved at t=0 in _onFbmNav:
-    //   __dealScoutPrevBodySnip = _textAfterH1(mainEl).slice(0,120)
-    //
-    // We poll every 200ms until that text differs — meaning FBM has actually swapped
-    // the body under the new h1. Hard cap: 6s. Then add a 400ms settle before extract.
+    // CORRECT SIGNAL: the old listing's prevTitle keywords in mainEl.innerText.
+    //   • Captured as local var `prevTitle` — doesn't depend on any h1 pivot.
+    //   • After Phase 1 the old h1 is gone but the OLD BODY TEXT (price,
+    //     description, seller info) still contains prevTitle terms.
+    //   • Once FBM fully replaces the body those terms vanish → safe to extract.
+    //   • Polls every 200ms, hard cap 20 × 200ms = 4s, then 400ms settle.
     if (isSpaNav) {
-      const prevBodySnip = window.__dealScoutPrevBodySnip || '';
-      if (prevBodySnip) {
-        console.debug('[DealScout] Title ready at attempt', attempt,
-          '— polling body for content swap (snip:', prevBodySnip.slice(0, 30) + '…)');
-        let bodyChanged = false;
-        for (let i = 0; i < 30; i++) {                         // 30 × 200ms = 6s max
+      const _pw = (prevTitle || '').toLowerCase().split(/\s+/).filter(w => w.length > 3).slice(0, 3);
+      if (_pw.length >= 2) {
+        console.debug('[DealScout] Phase 2 — watching for old body text to clear; keywords:', _pw);
+        let _cleared = false;
+        for (let i = 0; i < 20; i++) {                        // 20 × 200ms = 4s max
           await new Promise(r => setTimeout(r, 200));
           if (location.href !== snapUrl || window.__dealScoutNonce !== myNonce) return;
-          const nowSnip = _textAfterH1(mainEl).slice(0, 120);
-          if (nowSnip !== prevBodySnip) {
-            console.debug('[DealScout] Body swapped after', (i + 1) * 200, 'ms');
-            bodyChanged = true;
+          const _bodyNow = (mainEl.innerText || '').toLowerCase().slice(0, 800);
+          if (!_pw.every(w => _bodyNow.includes(w))) {
+            console.debug('[DealScout] Old body cleared after', (i + 1) * 200, 'ms — settling');
+            _cleared = true;
             break;
           }
         }
-        if (!bodyChanged) {
-          console.debug('[DealScout] Body poll timeout (6s) — proceeding anyway');
+        if (!_cleared) {
+          console.debug('[DealScout] Phase 2 timeout (4s) — proceeding anyway');
         }
       } else {
-        console.debug('[DealScout] No prevBodySnip — using flat 1.5s settle');
+        // prevTitle too short for keyword matching — flat 1.5s fallback
+        console.debug('[DealScout] Phase 2 — short/empty prevTitle, flat 1.5s settle');
         await new Promise(r => setTimeout(r, 1500));
         if (location.href !== snapUrl || window.__dealScoutNonce !== myNonce) return;
       }
-      // Brief settle for any trailing DOM updates after the swap is detected
+      // Final settle — let any trailing React updates complete
       await new Promise(r => setTimeout(r, 400));
       if (location.href !== snapUrl || window.__dealScoutNonce !== myNonce) return;
     }
@@ -2384,14 +2386,6 @@
         }
         return '';
       })();
-
-      // Snapshot the body text-after-h1 RIGHT NOW so Phase 2 can poll for the
-      // moment FBM actually swaps this content for the new listing. Captured at
-      // t=0 — DOM still shows the listing we are leaving.
-      {
-        const _snEl = document.querySelector('[role="main"]') || document.querySelector('main') || document.body;
-        window.__dealScoutPrevBodySnip = _textAfterH1(_snEl).slice(0, 120);
-      }
 
       // Reset the per-navigation mismatch-retry flag so the new listing can
       // use a retry if its score is discarded by the bleed guards.
