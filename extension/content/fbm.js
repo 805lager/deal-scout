@@ -645,6 +645,9 @@
     // NEW listing content, ready to extract. Max wait: 20 × 200ms = 4s.
     const isSpaNav = typeof prevTitle === 'string' && prevTitle !== '';
     let notReady;
+    // Tracks whether the body text has changed from the previous listing's fingerprint.
+    // Set inside the isSpaNav block and read by the attempt-20 bleed guard below.
+    let _spaBodyChanged = true;
 
     if (isSpaNav) {
       const prevSnippet    = window.__dealScoutPrevBodySnippet || '';
@@ -659,6 +662,7 @@
       window.__dealScoutLastBodySnapshot = bodySnippet;
 
       const bodyChanged    = !prevSnippet || bodySnippet !== prevSnippet;
+      _spaBodyChanged = bodyChanged;
       const bodyStable     = bodySnippet !== '' && bodySnippet === lastSnapshot;
       // Require price to be visible in the body text that sits AFTER the h1.
       // This replaces the old bodyLong (>=80) gate: it's specific (a rendered
@@ -702,10 +706,31 @@
       if (location.href !== snapUrl || window.__dealScoutNonce !== myNonce) return;
       return autoScore(attempt + 1);
     }
+
+    // ── Attempt-20 bleed guard ────────────────────────────────────────────────
+    // If we timed out (notReady=true at attempt 20) on a SPA nav where the body
+    // text hasn't changed from the previous listing's fingerprint, the DOM still
+    // contains the OLD listing's content. Extracting now guarantees bleed.
+    //
+    // Root cause this fixes: clearing sentinels here → next autoScore run has
+    // isSpaNav=false → no bodyChanged check → immediately extracts stale DOM.
+    //
+    // Fix: preserve sentinels so any subsequent autoScore (from a late background
+    // re-injection or _onFbmNav pushState) still treats this as a SPA nav and
+    // waits for bodyChanged=true. When the new listing's body eventually renders,
+    // bodyChanged fires correctly and extraction runs cleanly.
+    if (notReady && isSpaNav && !_spaBodyChanged) {
+      console.debug('[DealScout] Attempt-20 timeout: body still matches previous listing — preserving sentinels to prevent bleed');
+      if (window.__dealScoutNonce === myNonce) window.__dealScoutRunning = false;
+      return;
+    }
+
     console.debug('[DealScout] Page ready at attempt', attempt,
       isSpaNav ? '(SPA nav)' : '(hard load)');
 
-    // Clear the SPA sentinels
+    // Clear the SPA sentinels — only reached when content has actually changed
+    // (bodyChanged=true) or on hard page loads (isSpaNav=false). The attempt-20
+    // timeout path with an unchanged body exits above, keeping sentinels intact.
     window.__dealScoutPrevTitle = undefined;
     window.__dealScoutPrevBodySnippet = undefined;
     window.__dealScoutLastBodySnapshot = undefined;
