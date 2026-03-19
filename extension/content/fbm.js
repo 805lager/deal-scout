@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.23';
+  const VERSION  = '0.28.24';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -642,8 +642,34 @@
     const mainText = mainEl.innerText || '';
     const hasContent = mainText.length > 100;
 
+    // ── Image-presence check (restored from v0.27.0) ─────────────────────────
+    // FBM renders the listing photo AFTER the full listing component is hydrated.
+    // A full-size scontent image (clientWidth ≥ 200) in the top 900px is the
+    // most reliable signal that title + price + description are all in the DOM.
+    // This physical signal (image fetched → decoded → laid out) has no text-
+    // inspection ambiguity, making it far more reliable than body-text checks.
+    // imageMissing is ignored after attempt 12 (≈2.4 s) so no-image listings
+    // still proceed rather than spinning forever.
+    const _isCardEl = img =>
+      !!img.closest('a[href*="/marketplace/item/"]') ||
+      !!img.closest('div[data-testid="marketplace-search-item"]') ||
+      !!img.closest('[role="listitem"] a') ||
+      !!img.closest('aside') ||
+      !!img.closest('[data-testid*="sponsored"]') ||
+      !!img.closest('[aria-label*="Sponsored"]');
+    const hasMainImage = Array.from(document.querySelectorAll('img[src*="scontent"]')).some(img => {
+      if (_isCardEl(img)) return false;
+      const w = img.clientWidth || img.offsetWidth || 0;
+      if (w < 200) return false;
+      const absTop = img.getBoundingClientRect().top + window.scrollY;
+      return absTop < 900;
+    });
+    const imageMissing = !hasMainImage && attempt < 12;
+
     const isSpaNav = typeof prevTitle === 'string' && prevTitle !== '';
-    const notReady = isSpaNav ? (titleIsStale || !hasContent) : (!currentTitle || !hasContent);
+    const notReady = isSpaNav
+      ? (titleIsStale || !hasContent || imageMissing)
+      : (!currentTitle || !hasContent || imageMissing);
 
     if (attempt % 5 === 0 || (notReady && attempt > 0)) {
       console.debug('[DealScout] Readiness check', { attempt, isSpaNav, titleIsStale, hasContent, currentTitle: currentTitle.slice(0, 40) });
@@ -667,15 +693,14 @@
     // didn't match). Claude extracts from raw text — no structured title required.
     // This matches v0.28.16 behaviour where hard loads always attempted extraction.
 
-    // ── Phase 2: flat settle wait (SPA nav only) ─────────────────────────────────
-    // After the new listing's h1 is confirmed (Phase 1), FBM still needs time to
-    // replace the body content (price, description, seller info) under it.
-    // A flat 2 s wait is simple and covers all real-world FBM load scenarios.
-    // DOM-polling approaches (v0.28.19–0.28.22) all failed due to subtle FBM DOM
-    // structure ambiguities we can't reliably observe — flat wait wins.
+    // ── Phase 2: short settle after image confirms listing is ready ─────────────
+    // Phase 1's image-presence check already confirmed the listing component is
+    // fully rendered (photo decoded + laid out = React hydration complete).
+    // We still wait a brief 500 ms to let any trailing reconciliation finish
+    // (e.g. FBM's lazy-loaded seller info), but we no longer need 2 s here.
     if (isSpaNav) {
-      console.debug('[DealScout] Phase 2 — flat 2s settle for SPA nav');
-      await new Promise(r => setTimeout(r, 2000));
+      console.debug('[DealScout] Phase 2 — 500ms settle after image-confirmed readiness');
+      await new Promise(r => setTimeout(r, 500));
       if (location.href !== snapUrl || window.__dealScoutNonce !== myNonce) return;
     }
 
