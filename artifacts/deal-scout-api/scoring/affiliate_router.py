@@ -541,6 +541,10 @@ CATEGORY_MAP = {
     "impact driver":       "tools",
     "impact wrench":       "tools",
     "impact":              "tools",
+    "self-propelled mower":"tools",   # longer than "lawn mower" → matched first; prevents Claude's "outdoor" override
+    "self propelled mower":"tools",
+    "riding mower":        "tools",
+    "zero turn mower":     "tools",
     "lawn mower":          "tools",
     "leaf blower":         "tools",
     "pressure washer":     "tools",
@@ -996,6 +1000,14 @@ CATEGORY_MAP = {
     "pet carrier":         "pets",
     "aquarium":            "pets",
     "fish tank":           "pets",
+    "aquarium filter":     "pets",
+    "canister filter":     "pets",
+    "aquarium canister":   "pets",
+    "fluval":              "pets",    # Fluval is a leading aquarium filter brand
+    "tank stand":          "pets",    # fish tank stand
+    "aquarium stand":      "pets",
+    "aquarium heater":     "pets",
+    "fish filter":         "pets",
     "bird cage":           "pets",
     "hamster":             "pets",
     "rabbit":              "pets",

@@ -521,16 +521,28 @@ async def score_listing(listing: ListingRequest, request: Request):
     # ── Step 4: Generate affiliate recommendations ──────────────────────────────
     # Category detection priority:
     #   1. Claude's affiliate_category field (set by the scoring LLM — most accurate)
+    #      Exception A: "general" is never accepted from Claude — it's the no-match
+    #        fallback and causes the worst affiliate results. Fall back to keyword.
+    #      Exception B: "soft" categories (outdoor/home/sports/camping) are overridden
+    #        by keyword detection when keyword gives a more specific result. Prevents
+    #        Claude returning "outdoor" for a lawnmower (→ REI) instead of "tools"
+    #        (→ Home Depot/Lowes).
     #   2. is_vehicle override (content script explicitly flagged this as a vehicle)
     #   3. Keyword-based detect_category() (fast fallback for when Claude omits the field)
-    _valid_categories = set(CATEGORY_PROGRAMS.keys()) | {"general"}
+    _SOFT_CATS        = {"outdoor", "home", "sports", "camping"}
+    _valid_categories = set(CATEGORY_PROGRAMS.keys())   # "general" intentionally excluded
     claude_category   = (deal_score.affiliate_category or "").strip().lower()
     if claude_category and claude_category in _valid_categories:
-        category_detected = claude_category
-        log.info(f"[Category] Claude → '{category_detected}'")
+        # Accept Claude's category unless it's soft AND keyword gives something better
+        if claude_category in _SOFT_CATS and _prelim_category not in _SOFT_CATS and _prelim_category != "general":
+            log.info(f"[Category] Claude soft '{claude_category}' overridden by keyword '{_prelim_category}'")
+            category_detected = _prelim_category
+        else:
+            category_detected = claude_category
+            log.info(f"[Category] Claude → '{category_detected}'")
     else:
         if claude_category:
-            log.warning(f"[Category] Claude returned unknown value '{claude_category}' — falling back to keyword detection")
+            log.warning(f"[Category] Claude returned '{claude_category}' (unknown or 'general') — falling back to keyword detection")
         category_detected = _prelim_category
         log.info(f"[Category] Keyword → '{category_detected}'")
 
@@ -570,8 +582,8 @@ async def score_listing(listing: ListingRequest, request: Request):
     except Exception as e:
         import traceback
         log.warning(f"Security scoring failed: {traceback.format_exc()}")
-        from scoring.security_scorer import SecurityScore as _SS
-        security = _SS(score=5, risk_level="unknown", flags=[], recommendation="unable to assess")
+        from scoring.security_scorer import SecurityScore as _SS, _score_to_risk, _score_to_recommendation
+        security = _SS(score=5, risk_level=_score_to_risk(5), flags=[], recommendation=_score_to_recommendation(5))
 
     # ── Step 5: Serialize ────────────────────────────────────────────────────
     from dataclasses import asdict as dc_asdict
@@ -990,9 +1002,16 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                     deal_score.should_buy = False
 
             # ── Step 4: Affiliate + security ──────────────────────────────────
-            _valid_cats      = set(CATEGORY_PROGRAMS.keys()) | {"general"}
-            claude_cat       = (deal_score.affiliate_category or "").strip().lower()
-            category_detected = claude_cat if (claude_cat and claude_cat in _valid_cats) else _prelim_category
+            _SOFT_CATS_s  = {"outdoor", "home", "sports", "camping"}
+            _valid_cats   = set(CATEGORY_PROGRAMS.keys())  # "general" excluded intentionally
+            claude_cat    = (deal_score.affiliate_category or "").strip().lower()
+            if claude_cat and claude_cat in _valid_cats:
+                if claude_cat in _SOFT_CATS_s and _prelim_category not in _SOFT_CATS_s and _prelim_category != "general":
+                    category_detected = _prelim_category
+                else:
+                    category_detected = claude_cat
+            else:
+                category_detected = _prelim_category
             if listing.is_vehicle and category_detected not in ("vehicles", "cars", "trucks"):
                 category_detected = "vehicles"
 
@@ -1019,8 +1038,8 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
             try:
                 security = await _security_task
             except Exception:
-                from scoring.security_scorer import SecurityScore as _SS
-                security = _SS(score=5, risk_level="unknown", flags=[], recommendation="unable to assess")
+                from scoring.security_scorer import SecurityScore as _SS, _score_to_risk, _score_to_recommendation
+                security = _SS(score=5, risk_level=_score_to_risk(5), flags=[], recommendation=_score_to_recommendation(5))
 
             # ── Step 5: Serialize ─────────────────────────────────────────────
             sold_items_sample   = [_dc_asdict(i) for i in (market_value.sold_items_sample   or [])]
