@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.11';
+  const VERSION  = '0.28.12';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -923,16 +923,30 @@
           const evt = JSON.parse(line.slice(6));
 
           if (evt.type === 'progress') {
+            // Re-check nonce before mutating the panel — navigation may have
+            // happened between when reader.read() resolved and now. The top-of-
+            // loop check guards against cross-chunk navigation, but a single
+            // chunk can contain multiple events and navigation can interleave
+            // between the top-of-loop check and individual event handlers.
+            if (window.__dealScoutNonce !== myNonce) { reader.cancel(); return; }
             renderProgress(evt.label);
 
           } else if (evt.type === 'extracted') {
+            if (window.__dealScoutNonce !== myNonce) { reader.cancel(); return; }
             // Title+price appear immediately (~1s into the score)
             extractedTitle = evt.data.title;
             renderLoading(evt.data);
 
           } else if (evt.type === 'score') {
-            // Guard: title mismatch — same as the old Guard 4 in callScoringAPI.
-            // Catches the edge case where the DOM swapped listings while streaming.
+            // Hard nonce guard — catches the race where the user navigated WHILE
+            // the final score chunk was being processed. renderNavigating() clears
+            // the panel, then renderResult() would overwrite it with old data.
+            // Checking the nonce here (after any await points inside reader.read)
+            // is the only reliable way to prevent that stale render.
+            if (window.__dealScoutNonce !== myNonce) { reader.cancel(); return; }
+
+            // Guard: title mismatch — catches the case where the DOM swapped
+            // listings while streaming (text bleed passed readiness checks).
             if (extractedTitle) {
               const _words = s =>
                 s.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(w => w.length > 2);
@@ -944,6 +958,8 @@
                 }
                 return '';
               })();
+              // If the page has a non-generic title and it shares ZERO words
+              // with what we scored, this is definitely stale — discard.
               if (domTitleNow && scoredSet.size > 0) {
                 const overlap = _words(domTitleNow).filter(w => scoredSet.has(w)).length;
                 if (overlap === 0) {
@@ -952,6 +968,8 @@
                   return;
                 }
               }
+              // If domTitleNow is EMPTY (page still loading), we already passed
+              // the nonce check above — safe to render.
             }
 
             const result = evt.data;
@@ -973,6 +991,7 @@
               .catch(() => {});
 
           } else if (evt.type === 'error') {
+            if (window.__dealScoutNonce !== myNonce) { reader.cancel(); return; }
             // "Page not ready" is retryable — throw so autoScore can re-extract
             // and retry rather than immediately showing an error to the user.
             if (evt.message && evt.message.includes('page may still be loading')) {
