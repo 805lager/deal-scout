@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.8';
+  const VERSION  = '0.28.9';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -644,6 +644,10 @@
 
       const bodyChanged    = !prevSnippet || bodySnippet !== prevSnippet;
       const bodyStable     = bodySnippet !== '' && bodySnippet === lastSnapshot;
+      // Ensure there are at least 80 chars of real content after the h1 before
+      // extracting. This prevents Claude from receiving a half-loaded page where
+      // only the title has rendered and returning "Unknown".
+      const bodyLong       = bodySnippet.length >= 80;
       // FBM shows "FREE" (not "$0") for free listings — match both forms.
       const hasPriceInText = /(\$\s*\d|\bfree\b)/i.test(mainText);
 
@@ -656,12 +660,12 @@
       const imgChanged  = !prevImgSrc || attempt >= 15 || curImgSrc !== prevImgSrc;
 
       notReady = titleIsStale || !hasContent ||
-                 !bodyChanged || !bodyStable || !hasPriceInText || !imgChanged;
+                 !bodyChanged || !bodyStable || !bodyLong || !hasPriceInText || !imgChanged;
 
       if (attempt % 5 === 0 || (notReady && attempt > 0 && attempt % 2 === 0)) {
         console.debug('[DealScout] Readiness check', {
           attempt, titleIsStale, hasContent, bodyChanged, bodyStable,
-          hasPriceInText, imgChanged,
+          bodyLong, bodyLen: bodySnippet.length, hasPriceInText, imgChanged,
         });
       }
     } else {
@@ -784,7 +788,27 @@
     const mainEl = document.querySelector('[role="main"]')
                 || document.querySelector('main')
                 || document.body;
-    const rawText = (mainEl.innerText || '').slice(0, 4000);
+
+    // Build listing-focused text: include up to 200 chars before the h1 for
+    // context (breadcrumbs, page-level price) then up to 3800 chars after the h1
+    // (price, description, seller). Using DOM TreeWalker avoids the indexOf
+    // false-match bug where a breadcrumb echoes the title above the main content.
+    // Falls back to full innerText slice if no h1 found.
+    const _rh1 = mainEl.querySelector('h1[dir="auto"]');
+    let _rpre = '', _rpost = '', _rpast = false, _rnode;
+    const _rtw = document.createTreeWalker(mainEl, NodeFilter.SHOW_TEXT, null);
+    while ((_rnode = _rtw.nextNode())) {
+      if (!_rpast) {
+        if (_rh1 && _rh1.contains(_rnode)) { _rpast = true; _rpost += _rnode.textContent; }
+        else { _rpre += _rnode.textContent; }
+      } else {
+        _rpost += _rnode.textContent;
+        if (_rpost.length >= 3800) break;
+      }
+    }
+    const rawText = _rh1
+      ? (_rpre.slice(-200) + _rpost).slice(0, 4000)
+      : (mainEl.innerText || '').slice(0, 4000);
 
     return {
       raw_text:    rawText,
