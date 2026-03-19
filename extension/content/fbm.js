@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.12';
+  const VERSION  = '0.28.14';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -651,7 +651,8 @@
 
     if (isSpaNav) {
       const prevSnippet    = window.__dealScoutPrevBodySnippet || '';
-      const lastSnapshot   = window.__dealScoutLastBodySnapshot || '';
+      const lastSnapshot   = window.__dealScoutLastBodySnapshot  || '';
+      const lastSnapshot2  = window.__dealScoutLastBodySnapshot2 || '';
 
       // Compute bodySnippet from the text BELOW the actual h1 DOM element, using
       // TreeWalker. This avoids the indexOf false-match bug where the listing title
@@ -659,11 +660,32 @@
       // would find that first occurrence and return text that changed prematurely,
       // making bodyChanged fire before the real listing body had updated.
       const bodySnippet = _textAfterH1(mainEl, currentTitle);
-      window.__dealScoutLastBodySnapshot = bodySnippet;
+      // Rotate the two-slot snapshot ring: slot2 ← slot1, slot1 ← current.
+      window.__dealScoutLastBodySnapshot2 = lastSnapshot;
+      window.__dealScoutLastBodySnapshot  = bodySnippet;
 
-      const bodyChanged    = !prevSnippet || bodySnippet !== prevSnippet;
+      const bodyChanged = !prevSnippet || bodySnippet !== prevSnippet;
       _spaBodyChanged = bodyChanged;
-      const bodyStable     = bodySnippet !== '' && bodySnippet === lastSnapshot;
+
+      // ── 3-poll body stability ───────────────────────────────────────────────
+      // Require the body-after-h1 text to be IDENTICAL across THREE consecutive
+      // 200 ms polls (600 ms window) before we trust it as settled content.
+      // Root cause this fixes: FBM React renders the new listing's h1 first and
+      // briefly stabilises with old body content below it (~400 ms). The old
+      // 2-poll check (400 ms) was fooled by that intermediate state — bodyStable
+      // fired true while the body text was still the previous listing's content,
+      // causing extraction to run against stale DOM. 600 ms outlasts this window.
+      const bodyStable = bodySnippet !== ''
+                      && bodySnippet === lastSnapshot
+                      && lastSnapshot === lastSnapshot2;
+
+      // ── Minimum body length ─────────────────────────────────────────────────
+      // If the text after the new h1 is very short (< 80 chars), only the h1
+      // skeleton has rendered — the listing body content hasn't arrived yet.
+      // Prevents false-positive bodyChanged when the new h1 renders alone before
+      // any body content is present below it.
+      const bodySnippetMinLen = bodySnippet.length >= 80;
+
       // Require price to be visible in the body text that sits AFTER the h1.
       // This replaces the old bodyLong (>=80) gate: it's specific (a rendered
       // price means real listing content is present) and works for short
@@ -686,13 +708,13 @@
       // hasPriceInText is a fallback for edge-cases where price precedes the h1.
       const priceReady = hasPriceInBody || hasPriceInText;
       notReady = titleIsStale || !hasContent ||
-                 !bodyChanged || !bodyStable || !priceReady || !imgChanged;
+                 !bodyChanged || !bodyStable || !bodySnippetMinLen || !priceReady || !imgChanged;
 
       if (attempt % 5 === 0 || (notReady && attempt > 0 && attempt % 2 === 0)) {
         console.debug('[DealScout] Readiness check', {
           attempt, titleIsStale, hasContent, bodyChanged, bodyStable,
-          hasPriceInBody, hasPriceInText, priceReady,
-          bodyLen: bodySnippet.length, imgChanged,
+          bodySnippetMinLen, bodyLen: bodySnippet.length,
+          hasPriceInBody, hasPriceInText, priceReady, imgChanged,
         });
       }
     } else {
@@ -731,10 +753,11 @@
     // Clear the SPA sentinels — only reached when content has actually changed
     // (bodyChanged=true) or on hard page loads (isSpaNav=false). The attempt-20
     // timeout path with an unchanged body exits above, keeping sentinels intact.
-    window.__dealScoutPrevTitle = undefined;
-    window.__dealScoutPrevBodySnippet = undefined;
-    window.__dealScoutLastBodySnapshot = undefined;
-    window.__dealScoutPrevImgSrc = undefined;
+    window.__dealScoutPrevTitle          = undefined;
+    window.__dealScoutPrevBodySnippet    = undefined;
+    window.__dealScoutLastBodySnapshot   = undefined;
+    window.__dealScoutLastBodySnapshot2  = undefined;
+    window.__dealScoutPrevImgSrc         = undefined;
 
     // Gather raw data for server-side extraction
     const rawData = extractRaw();
@@ -881,9 +904,21 @@
       ? (_rpre.slice(-200) + _rpost).slice(0, 4000)
       : (mainEl.innerText || '').slice(0, 4000);
 
+    // True photo count for security scorer — count ALL non-card scontent images
+    // within the top 900px of the page (absolute page position, scroll-invariant),
+    // regardless of CSS visibility. This catches carousel frames that FBM keeps in
+    // the DOM but positions off-screen horizontally (display is NOT none — they pass
+    // getComputedStyle checks — but they're outside the visible carousel window).
+    // We send up to 3 image URLs for Claude Vision, but the full count lets the
+    // security scorer correctly assess "only N photos" risk without false positives.
+    const _raw_photoCount = _raw_all.filter(img =>
+      !_raw_isCard(img) && _raw_absTop(img) < 900
+    ).length || imageUrls.length;
+
     return {
       raw_text:    rawText,
       image_urls:  imageUrls,
+      photo_count: _raw_photoCount,
       platform:    'facebook_marketplace',
       listing_url: location.href,
     };
@@ -2349,8 +2384,9 @@
       // Fingerprint the text that appears AFTER the h1 element in the DOM.
       // Using DOM traversal (not indexOf) means breadcrumbs/headers that echo
       // the title above the main content area can never cause a false match.
-      window.__dealScoutPrevBodySnippet = _textAfterH1(_mainNow, window.__dealScoutPrevTitle);
-      window.__dealScoutLastBodySnapshot = '';
+      window.__dealScoutPrevBodySnippet  = _textAfterH1(_mainNow, window.__dealScoutPrevTitle);
+      window.__dealScoutLastBodySnapshot  = '';
+      window.__dealScoutLastBodySnapshot2 = '';
       // Image fingerprint — first scontent img inside [role="main"], stripped of
       // query params (CDN tokens change per-request; the path is stable per image).
       const _prevImg = _mainNow.querySelector('img[src*="scontent"]');
