@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.9';
+  const VERSION  = '0.28.10';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -121,7 +121,8 @@
   // until we've passed the actual h1 element — uniquely identifying the
   // price/description/seller block that genuinely takes 1–3 s to update.
   function _textAfterH1(containerEl) {
-    const h1 = containerEl.querySelector('h1[dir="auto"]');
+    const h1 = containerEl.querySelector('h1[dir="auto"]')
+            || containerEl.querySelector('h1');
     if (!h1) return (containerEl.innerText || '').slice(200, 650).trim();
     const walker = document.createTreeWalker(containerEl, NodeFilter.SHOW_TEXT, null);
     let buf = '', past = false, node;
@@ -644,10 +645,13 @@
 
       const bodyChanged    = !prevSnippet || bodySnippet !== prevSnippet;
       const bodyStable     = bodySnippet !== '' && bodySnippet === lastSnapshot;
-      // Ensure there are at least 80 chars of real content after the h1 before
-      // extracting. This prevents Claude from receiving a half-loaded page where
-      // only the title has rendered and returning "Unknown".
-      const bodyLong       = bodySnippet.length >= 80;
+      // Require price to be visible in the body text that sits AFTER the h1.
+      // This replaces the old bodyLong (>=80) gate: it's specific (a rendered
+      // price means real listing content is present) and works for short
+      // listings like "Duck decoys $50" that have <80 chars after the h1.
+      // Falls back to searching the full mainText if bodySnippet has no price —
+      // handles edge-cases where FBM places the price above the h1 element.
+      const hasPriceInBody = /(\$\s*\d|\bfree\b)/i.test(bodySnippet);
       // FBM shows "FREE" (not "$0") for free listings — match both forms.
       const hasPriceInText = /(\$\s*\d|\bfree\b)/i.test(mainText);
 
@@ -659,13 +663,17 @@
       const curImgSrc   = curImg ? curImg.src.split('?')[0] : '';
       const imgChanged  = !prevImgSrc || attempt >= 15 || curImgSrc !== prevImgSrc;
 
+      // hasPriceInBody is the primary price gate (price after h1 = real content).
+      // hasPriceInText is a fallback for edge-cases where price precedes the h1.
+      const priceReady = hasPriceInBody || hasPriceInText;
       notReady = titleIsStale || !hasContent ||
-                 !bodyChanged || !bodyStable || !bodyLong || !hasPriceInText || !imgChanged;
+                 !bodyChanged || !bodyStable || !priceReady || !imgChanged;
 
       if (attempt % 5 === 0 || (notReady && attempt > 0 && attempt % 2 === 0)) {
         console.debug('[DealScout] Readiness check', {
           attempt, titleIsStale, hasContent, bodyChanged, bodyStable,
-          bodyLong, bodyLen: bodySnippet.length, hasPriceInText, imgChanged,
+          hasPriceInBody, hasPriceInText, priceReady,
+          bodyLen: bodySnippet.length, imgChanged,
         });
       }
     } else {
@@ -767,8 +775,21 @@
       !!img.closest('aside') ||
       !!img.closest('[data-testid*="sponsored"]') ||
       !!img.closest('[aria-label*="Sponsored"]');
+    // Exclude images that are invisible (hidden by CSS, zero-size, or
+    // detached from the visible render tree). FBM's React renderer keeps
+    // previous-listing image elements in the DOM after SPA navigation —
+    // they are hidden via display:none or have zero clientWidth. Without
+    // this check those stale images bleed into the next listing's score.
+    const _raw_isVisible = img => {
+      if (!img.offsetParent && img.tagName !== 'BODY') return false;
+      const st = window.getComputedStyle(img);
+      if (st.display === 'none' || st.visibility === 'hidden') return false;
+      const r = img.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    };
     const _raw_pick = (minW, maxTop = 900) => _raw_all
       .filter(img => {
+        if (!_raw_isVisible(img)) return false;
         if (_raw_isCard(img)) return false;
         const w = img.clientWidth || img.offsetWidth || 0;
         if (minW && w < minW) return false;
@@ -794,7 +815,8 @@
     // (price, description, seller). Using DOM TreeWalker avoids the indexOf
     // false-match bug where a breadcrumb echoes the title above the main content.
     // Falls back to full innerText slice if no h1 found.
-    const _rh1 = mainEl.querySelector('h1[dir="auto"]');
+    const _rh1 = mainEl.querySelector('h1[dir="auto"]')
+              || mainEl.querySelector('h1');
     let _rpre = '', _rpost = '', _rpast = false, _rnode;
     const _rtw = document.createTreeWalker(mainEl, NodeFilter.SHOW_TEXT, null);
     while ((_rnode = _rtw.nextNode())) {
