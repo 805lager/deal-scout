@@ -604,8 +604,19 @@
 
     if (isSpaNav) {
       const prevSnippet    = window.__dealScoutPrevBodySnippet || '';
-      const bodySnippet    = mainText.slice(50, 500);
       const lastSnapshot   = window.__dealScoutLastBodySnapshot || '';
+
+      // Compute bodySnippet from the text BELOW the current h1 — same technique
+      // used when saving prevBodySnippet. Comparing only post-title content means
+      // a h1 change alone never triggers bodyChanged; only price/description/seller
+      // changes (the slow-updating parts) count. This is the core bleed fix.
+      const _titleEnd = currentTitle
+        ? mainText.indexOf(currentTitle)
+        : -1;
+      const _bodyFrom = _titleEnd >= 0
+        ? _titleEnd + currentTitle.length
+        : Math.min(200, Math.floor(mainText.length / 2));
+      const bodySnippet = mainText.slice(_bodyFrom, _bodyFrom + 450).trim();
       window.__dealScoutLastBodySnapshot = bodySnippet;
 
       const bodyChanged    = !prevSnippet || bodySnippet !== prevSnippet;
@@ -2198,7 +2209,20 @@
       // sometimes for 1–3+ seconds. We wait until BOTH have changed AND the body
       // has stabilised before extracting.
       const _mainNow = document.querySelector('[role="main"]') || document.body;
-      window.__dealScoutPrevBodySnippet = (_mainNow.innerText || '').slice(50, 500);
+      const _allTextNow = (_mainNow.innerText || '');
+      // CRITICAL: exclude the h1 title from the fingerprint. The h1 updates
+      // immediately on navigation (it lives inside [role="main"]), so any slice
+      // that includes it would make bodyChanged fire the instant the title
+      // updates — before the price/description have re-rendered. We want to
+      // fingerprint only the body BELOW the title (price, description, seller).
+      const _prevTitleForSnippet = window.__dealScoutPrevTitle || '';
+      const _titlePos = _prevTitleForSnippet
+        ? _allTextNow.indexOf(_prevTitleForSnippet)
+        : -1;
+      const _snippetStart = _titlePos >= 0
+        ? _titlePos + _prevTitleForSnippet.length
+        : Math.min(200, Math.floor(_allTextNow.length / 2));
+      window.__dealScoutPrevBodySnippet = _allTextNow.slice(_snippetStart, _snippetStart + 450).trim();
       window.__dealScoutLastBodySnapshot = '';
       // Image fingerprint — first scontent img inside [role="main"], stripped of
       // query params (CDN tokens change per-request; the path is stable per image).
