@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.25';
+  const VERSION  = '0.28.26';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -675,8 +675,7 @@
     // The `attempt < 15` timeout (3 s at 200ms/poll) ensures listings with no
     // description still proceed rather than spinning.
     const descEl = document.querySelector('[data-testid="marketplace-pdp-description"]')
-                || document.querySelector('[class*="xz9dl007"]')
-                || document.querySelector('div[dir="auto"][style*="white-space: pre-wrap"]');
+                || document.querySelector('[class*="xz9dl007"]');
     const descMissing = !descEl && attempt < 15;
 
     const isSpaNav = typeof prevTitle === 'string' && prevTitle !== '';
@@ -982,6 +981,47 @@
             if (window.__dealScoutNonce !== myNonce) { reader.cancel(); return; }
             // Title+price appear immediately (~1s into the score)
             extractedTitle = evt.data.title;
+
+            // ── Early bleed guard ──────────────────────────────────────────────
+            // Check BEFORE calling renderLoading — if Claude extracted the OLD
+            // listing's title, cancel the stream and retry without ever showing
+            // the stale title to the user. This is ~10-14s earlier than the
+            // score-event guards and prevents the old title from flashing in panel.
+            if (isSpaNav && capturedPrevTitle && extractedTitle) {
+              const _ew = s => s.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(w => w.length > 2);
+              const _eWprev = _ew(capturedPrevTitle), _ePrevSet = new Set(_eWprev);
+              const _eScore = _ew(extractedTitle);
+              const _eRatio = _ePrevSet.size > 0 ? _eScore.filter(w => _ePrevSet.has(w)).length / _ePrevSet.size : 0;
+              const _eDomTitle = (() => {
+                for (const el of document.querySelectorAll('h1[dir="auto"]')) {
+                  const t = el.textContent.trim();
+                  if (t && !_GENERIC_TITLES.has(t.toLowerCase())) return t;
+                }
+                return '';
+              })();
+              const _eDomWords = _eDomTitle ? new Set(_ew(_eDomTitle)) : null;
+              const _eZeroOverlap = _eDomWords && _eDomWords.size > 0 &&
+                _eScore.filter(w => _eDomWords.has(w)).length === 0;
+
+              if (_eRatio > 0.3 || _eZeroOverlap) {
+                console.debug('[DealScout] Early bleed at extracted — cancelling:',
+                  extractedTitle, '(prev:', capturedPrevTitle, ')');
+                reader.cancel();
+                renderLoading({}); // keep spinner, clear any old title
+                const _eAlreadyRetried = window.__dealScoutMismatchRetried === myNonce;
+                if (!_eAlreadyRetried && window.__dealScoutNonce === myNonce) {
+                  window.__dealScoutMismatchRetried = myNonce;
+                  setTimeout(() => {
+                    if (window.__dealScoutNonce === myNonce && location.href === snapUrl) {
+                      autoScore(0);
+                    }
+                  }, 2500);
+                } else if (_eAlreadyRetried && window.__dealScoutNonce === myNonce) {
+                  renderError('Listing still loading — use RESCORE button');
+                }
+                return;
+              }
+            }
             renderLoading(evt.data);
 
           } else if (evt.type === 'score') {
@@ -1010,22 +1050,21 @@
                 const prevSet       = new Set(prevWords);
                 const overlapWPrev  = scoredWords.filter(w => prevSet.has(w)).length;
                 const prevMatchRatio = prevSet.size > 0 ? overlapWPrev / prevSet.size : 0;
-                if (prevMatchRatio > 0.5) {
+                if (prevMatchRatio > 0.3) {
                   console.debug('[DealScout] Score matches old listing — discarding:',
                     extractedTitle, '(prev:', capturedPrevTitle, ')');
                   const alreadyRetried = window.__dealScoutMismatchRetried === myNonce;
                   if (!alreadyRetried && window.__dealScoutNonce === myNonce) {
                     reader.cancel();
                     window.__dealScoutMismatchRetried = myNonce;
+                    renderLoading({}); // clear stale title immediately
                     setTimeout(() => {
                       if (window.__dealScoutNonce === myNonce && location.href === snapUrl) {
                         autoScore(0);
                       }
-                    }, SPA_SETTLE_MS);
+                    }, 2500);
                   } else if (alreadyRetried && window.__dealScoutNonce === myNonce) {
-                    // Retry already used and score still stale — show terminal error so
-                    // the panel never stays stuck in loading state indefinitely.
-                    renderError('Listing still loading — please refresh the page');
+                    renderError('Listing still loading — use RESCORE button');
                   }
                   return;
                 }
@@ -1049,15 +1088,14 @@
                   if (!alreadyRetried && window.__dealScoutNonce === myNonce) {
                     reader.cancel();
                     window.__dealScoutMismatchRetried = myNonce;
+                    renderLoading({}); // clear stale title immediately
                     setTimeout(() => {
                       if (window.__dealScoutNonce === myNonce && location.href === snapUrl) {
                         autoScore(0);
                       }
-                    }, SPA_SETTLE_MS);
+                    }, 2500);
                   } else if (alreadyRetried && window.__dealScoutNonce === myNonce) {
-                    // Retry already used and score still mismatched — show terminal error
-                    // so the panel never stays stuck in loading state indefinitely.
-                    renderError('Listing still loading — please refresh the page');
+                    renderError('Listing still loading — use RESCORE button');
                   }
                   return;
                 }
