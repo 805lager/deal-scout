@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.14';
+  const VERSION  = '0.28.15';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -654,12 +654,26 @@
       const lastSnapshot   = window.__dealScoutLastBodySnapshot  || '';
       const lastSnapshot2  = window.__dealScoutLastBodySnapshot2 || '';
 
-      // Compute bodySnippet from the text BELOW the actual h1 DOM element, using
-      // TreeWalker. This avoids the indexOf false-match bug where the listing title
-      // also appears in breadcrumbs/headers above the main content — a string search
-      // would find that first occurrence and return text that changed prematurely,
-      // making bodyChanged fire before the real listing body had updated.
-      const bodySnippet = _textAfterH1(mainEl, currentTitle);
+      // Compute bodySnippet using prevTitle as the h1 search hint — the SAME anchor
+      // used to compute prevBodySnippet at nav time.
+      //
+      // WHY prevTitle, not currentTitle:
+      //   prevBodySnippet was saved at nav time with _textAfterH1(mainEl, prevTitle).
+      //   It anchors to the OLD listing's h1 element. If we use currentTitle here,
+      //   the pivot shifts the moment the new h1 appears in the DOM — the new h1 is
+      //   at a different DOM position so "_textAfterH1(mainEl, newTitle)" captures
+      //   different text than "_textAfterH1(mainEl, oldTitle)", even when the old
+      //   body content is still below the old h1. This causes bodyChanged=true while
+      //   the old listing's content is still fully visible — the bleed.
+      //
+      // With prevTitle as hint:
+      //   - Old h1 still in DOM → _textAfterH1 finds it → returns old body text
+      //     → bodyChanged=false → keep waiting ✓
+      //   - Old h1 removed from DOM → _textAfterH1 falls back to first non-generic
+      //     h1 (new listing's h1) → returns new body text → bodyChanged=true ✓
+      //   - Both h1s in DOM simultaneously → finds old h1 first (hint matches) →
+      //     returns old body text → bodyChanged=false → keep waiting ✓
+      const bodySnippet = _textAfterH1(mainEl, prevTitle);
       // Rotate the two-slot snapshot ring: slot2 ← slot1, slot1 ← current.
       window.__dealScoutLastBodySnapshot2 = lastSnapshot;
       window.__dealScoutLastBodySnapshot  = bodySnippet;
