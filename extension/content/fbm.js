@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.15';
+  const VERSION  = '0.28.16';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -648,32 +648,23 @@
     // Tracks whether the body text has changed from the previous listing's fingerprint.
     // Set inside the isSpaNav block and read by the attempt-20 bleed guard below.
     let _spaBodyChanged = true;
+    // Set inside isSpaNav block; read by the attempt-20 bleed guard below.
+    // Tracks whether the old listing's h1 is still present in the DOM on the
+    // LAST poll before the guard fires. If true, old content is definitely
+    // still visible and extraction must be blocked.
+    let _oldH1Present = false;
 
     if (isSpaNav) {
       const prevSnippet    = window.__dealScoutPrevBodySnippet || '';
       const lastSnapshot   = window.__dealScoutLastBodySnapshot  || '';
       const lastSnapshot2  = window.__dealScoutLastBodySnapshot2 || '';
 
-      // Compute bodySnippet using prevTitle as the h1 search hint — the SAME anchor
-      // used to compute prevBodySnippet at nav time.
-      //
-      // WHY prevTitle, not currentTitle:
-      //   prevBodySnippet was saved at nav time with _textAfterH1(mainEl, prevTitle).
-      //   It anchors to the OLD listing's h1 element. If we use currentTitle here,
-      //   the pivot shifts the moment the new h1 appears in the DOM — the new h1 is
-      //   at a different DOM position so "_textAfterH1(mainEl, newTitle)" captures
-      //   different text than "_textAfterH1(mainEl, oldTitle)", even when the old
-      //   body content is still below the old h1. This causes bodyChanged=true while
-      //   the old listing's content is still fully visible — the bleed.
-      //
-      // With prevTitle as hint:
-      //   - Old h1 still in DOM → _textAfterH1 finds it → returns old body text
-      //     → bodyChanged=false → keep waiting ✓
-      //   - Old h1 removed from DOM → _textAfterH1 falls back to first non-generic
-      //     h1 (new listing's h1) → returns new body text → bodyChanged=true ✓
-      //   - Both h1s in DOM simultaneously → finds old h1 first (hint matches) →
-      //     returns old body text → bodyChanged=false → keep waiting ✓
-      const bodySnippet = _textAfterH1(mainEl, prevTitle);
+      // Compute bodySnippet using the CURRENT listing's h1 as the pivot.
+      // This provides an "escape valve": as soon as the new h1 appears, the
+      // pivot shifts and bodySnippet changes, setting _spaBodyChanged=true.
+      // The oldH1Present check below then separately prevents extraction
+      // while the old h1 is still in the DOM — no pivot-shift bleed.
+      const bodySnippet = _textAfterH1(mainEl, currentTitle);
       // Rotate the two-slot snapshot ring: slot2 ← slot1, slot1 ← current.
       window.__dealScoutLastBodySnapshot2 = lastSnapshot;
       window.__dealScoutLastBodySnapshot  = bodySnippet;
@@ -721,12 +712,26 @@
       // hasPriceInBody is the primary price gate (price after h1 = real content).
       // hasPriceInText is a fallback for edge-cases where price precedes the h1.
       const priceReady = hasPriceInBody || hasPriceInText;
-      notReady = titleIsStale || !hasContent ||
+
+      // Explicit old-h1 DOM check: if the previous listing's h1 element is still
+      // present in the DOM, FBM has not yet replaced the listing content — even if
+      // bodyChanged=true via pivot-shift. This is the targeted bleed guard.
+      //
+      //   bodyChanged=true (pivot-shift) + oldH1Present=true  → notReady=true ✓
+      //   bodyChanged=true + oldH1Present=false → notReady depends on other flags ✓
+      //   bodyChanged=false + oldH1Present=true  → notReady=true ✓ (redundant but safe)
+      const prevTitleKey = prevTitle.toLowerCase().slice(0, 20);
+      const oldH1Present = !!prevTitleKey && Array.from(
+        mainEl.querySelectorAll('h1[dir="auto"]')
+      ).some(el => el.textContent.trim().toLowerCase().startsWith(prevTitleKey));
+      _oldH1Present = oldH1Present;
+
+      notReady = titleIsStale || !hasContent || oldH1Present ||
                  !bodyChanged || !bodyStable || !bodySnippetMinLen || !priceReady || !imgChanged;
 
       if (attempt % 5 === 0 || (notReady && attempt > 0 && attempt % 2 === 0)) {
         console.debug('[DealScout] Readiness check', {
-          attempt, titleIsStale, hasContent, bodyChanged, bodyStable,
+          attempt, titleIsStale, hasContent, oldH1Present, bodyChanged, bodyStable,
           bodySnippetMinLen, bodyLen: bodySnippet.length,
           hasPriceInBody, hasPriceInText, priceReady, imgChanged,
         });
@@ -744,20 +749,33 @@
     }
 
     // ── Attempt-20 bleed guard ────────────────────────────────────────────────
-    // If we timed out (notReady=true at attempt 20) on a SPA nav where the body
-    // text hasn't changed from the previous listing's fingerprint, the DOM still
-    // contains the OLD listing's content. Extracting now guarantees bleed.
+    // If we timed out (notReady=true at attempt 20) on a SPA nav, check whether
+    // old content is still visible. Two triggers:
     //
-    // Root cause this fixes: clearing sentinels here → next autoScore run has
-    // isSpaNav=false → no bodyChanged check → immediately extracts stale DOM.
+    //   !_spaBodyChanged  — body text never changed from the previous listing's
+    //                       fingerprint; old DOM is definitely still present.
+    //   _oldH1Present     — old listing's h1 is still in the DOM; pivot-shift
+    //                       may have already set bodyChanged=true, but the actual
+    //                       content hasn't swapped yet (bleed vector).
     //
-    // Fix: preserve sentinels so any subsequent autoScore (from a late background
-    // re-injection or _onFbmNav pushState) still treats this as a SPA nav and
-    // waits for bodyChanged=true. When the new listing's body eventually renders,
-    // bodyChanged fires correctly and extraction runs cleanly.
-    if (notReady && isSpaNav && !_spaBodyChanged) {
-      console.debug('[DealScout] Attempt-20 timeout: body still matches previous listing — preserving sentinels to prevent bleed');
-      if (window.__dealScoutNonce === myNonce) window.__dealScoutRunning = false;
+    // When either is true, preserve sentinels AND schedule a retry after 2 s so
+    // we keep polling rather than leaving the panel stuck forever on "Analyzing…".
+    // Cap at 4 retries (~12 s total from first attempt-20) then fall through.
+    if (notReady && isSpaNav && (!_spaBodyChanged || _oldH1Present)) {
+      console.debug('[DealScout] Attempt-20 timeout: old content still visible',
+        { _spaBodyChanged, _oldH1Present });
+      if (window.__dealScoutNonce === myNonce) {
+        window.__dealScoutRunning = false;
+        const retries = window.__dealScoutSpaRetries || 0;
+        if (retries < 4) {
+          window.__dealScoutSpaRetries = retries + 1;
+          clearTimeout(window.__dealScoutRescanTimer);
+          window.__dealScoutRescanTimer = setTimeout(() => {
+            if (window.__dealScoutNonce === myNonce) autoScore(0);
+          }, 2000);
+        }
+        // After 4 retries fall through to extraction as a last resort.
+      }
       return;
     }
 
@@ -2401,6 +2419,7 @@
       window.__dealScoutPrevBodySnippet  = _textAfterH1(_mainNow, window.__dealScoutPrevTitle);
       window.__dealScoutLastBodySnapshot  = '';
       window.__dealScoutLastBodySnapshot2 = '';
+      window.__dealScoutSpaRetries        = 0;  // reset per-navigation retry counter
       // Image fingerprint — first scontent img inside [role="main"], stripped of
       // query params (CDN tokens change per-request; the path is stable per image).
       const _prevImg = _mainNow.querySelector('img[src*="scontent"]');
