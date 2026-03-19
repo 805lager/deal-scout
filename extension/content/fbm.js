@@ -950,6 +950,10 @@
                         autoScore(0);
                       }
                     }, SPA_SETTLE_MS);
+                  } else if (alreadyRetried && window.__dealScoutNonce === myNonce) {
+                    // Retry already used and score still stale — show terminal error so
+                    // the panel never stays stuck in loading state indefinitely.
+                    renderError('Listing still loading — please refresh the page');
                   }
                   return;
                 }
@@ -978,6 +982,10 @@
                         autoScore(0);
                       }
                     }, SPA_SETTLE_MS);
+                  } else if (alreadyRetried && window.__dealScoutNonce === myNonce) {
+                    // Retry already used and score still mismatched — show terminal error
+                    // so the panel never stays stuck in loading state indefinitely.
+                    renderError('Listing still loading — please refresh the page');
                   }
                   return;
                 }
