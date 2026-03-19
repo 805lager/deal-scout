@@ -1,0 +1,81 @@
+2
+⚠ AVOID
+Critical photo mismatch — listing wrong product entirely.
+high confidence · haiku-4-5
+Asking price $50
+Rec. offer $50
+Good
+📍 Spring Valley, CA
+The listing claims to sell a Dyson V7 Animal cordless vacuum, but the photograph clearly shows a Ryobi AirStrike nail gun (18-gauge brad nailer). This is either a severe listing error or a data integrity problem. At $50, a Ryobi nail gun is not unreasonable, but the fundamental mismatch between title and image makes this listing impossible to evaluate accurately. Do not proceed without clarification from the seller.
+📈 Market Comparison
+🧠 AI estimate
+AI market avg (est.)
+$200
+AI price range
+$150 – $280
+New retail
+$399
+📌
+Dyson V7 Animal
+Confidence
+high
+● $150 below market (-75%)
+V7 Animal is a popular mid-range cordless model; $50 asking price is significantly below market value, suggesting either a great deal or undisclosed damage/functionality issues.
+🔍 Dyson V7 Animal cordless vacuum
+high confidence · 10 estimated comps
+✅ Seller established since 2016 (builds some trust despite photo error)
+✅ States charger is included and additional accessories offered
+✅ Local pickup (eliminates shipping risk)
+⚠ Product in photo (Ryobi nail gun) does not match listing title (Dyson vacuum)
+⚠ Vague description ('other accessories' unspecified) raises doubt about what is actually included
+⚠ Photo-title mismatch suggests either careless listing or potential bait-and-switch
+If the actual item is a Ryobi AirStrike 18-gauge brad nailer, the fair used value is approximately $60–$90 depending on condition and whether it includes the battery and charger shown. A Dyson V7 Animal at $50 would be an exceptional deal (75% off market), but that is not what is pictured.
+⚠️ Better Options Below
+This deal is overpriced. Skip it.
+Affiliate
+🛒
+Amazon
+Prime eligible • Free returns
+$399
+$349 pricier new
+New condition · Amazon pricing
+Shop Amazon →
+🏷️
+eBay
+Money-back guarantee • Buyer protection
+Compare used prices · seller ratings
+Compare on eBay →
+🏠
+Home Depot
+In-store pickup • Pro discounts
+$399
+$349 pricier new
+New condition · Home Depot pricing
+Shop Home Depot →
+🛡️
+LOW RISK
+Security
+safe to proceed
+• Price significantly below market value for this model
+• Only 1 photo provided for $50 appliance
+• Vague description of included accessories
+• Seller requires in-person pickup only
+👍 Good reliability
+🤖 Google AI
+Dyson V7 Animal
+✓ Excellent suction power and cleaning performance on pet hair
+✓ Durable construction and materials overall
+✓ Strong initial performance and owner satisfaction
+⚠ Battery degradation after 2-3 years of regular use
+⚠ Motor failure reported in some units, typically out of warranty
+⚠ Dyson customer service and warranty claim difficulties
+Owners generally praise the V7 Animal's cleaning effectiveness for pet hair, but express frustration with battery lifespan limitations and Dyson's warranty support. Most report 2-4 years of reliable use before encountering significant issues.
+💬 NEGOTIATION MESSAGE
+Hi — I'm interested, but I noticed the photo shows a Ryobi nail gun while your title says Dyson vacuum. Can you clarify what you're actually selling and confirm the condition? Thanks!
+Copy Message
+Was this score accurate?
+👍
+Yes, accurate
+👎
+No, off
+Deal Scout v0.28.18

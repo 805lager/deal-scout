@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.18';
+  const VERSION  = '0.28.19';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -667,13 +667,49 @@
     // didn't match). Claude extracts from raw text — no structured title required.
     // This matches v0.28.16 behaviour where hard loads always attempted extraction.
 
-    // ── Phase 2: new title confirmed — flat settle wait (SPA nav only) ───────
-    // FBM renders the new listing's h1 before swapping the body content below it.
-    // Sleeping SPA_SETTLE_MS after the title change guarantees the body has settled
-    // on the new listing's content before we extract — no body fingerprinting needed.
+    // ── Phase 2: new title confirmed — wait for DOM to stop mutating (SPA nav only)
+    // FBM renders the h1 early but the body (price, description, seller info) updates
+    // later as React reconciles its component tree. A flat time-based wait is unreliable
+    // because network speed / device speed dictate how long that takes.
+    //
+    // Instead: MutationObserver watches [role="main"] and resolves once the DOM has been
+    // quiet for DOM_DEBOUNCE_MS (500 ms). Hard cap DOM_SETTLE_MAX_MS (5 s) so we never
+    // hang if FBM keeps mutating (e.g. lazy-loaded sidebar items).
     if (isSpaNav) {
-      console.debug('[DealScout] Title ready at attempt', attempt, '— waiting', SPA_SETTLE_MS, 'ms for body to settle');
-      await new Promise(r => setTimeout(r, SPA_SETTLE_MS));
+      const DOM_DEBOUNCE_MS   = 500;
+      const DOM_SETTLE_MAX_MS = 5000;
+      console.debug('[DealScout] Title ready at attempt', attempt, '— watching DOM for settle…');
+      await new Promise(resolve => {
+        // Prefer the listing section (h1's ancestor up to 5 levels) over the full
+        // [role="main"] so that lazy-loaded "Similar items" sidebar mutations don't
+        // keep resetting the debounce timer.
+        const listingRoot = (() => {
+          for (const h1 of document.querySelectorAll('h1[dir="auto"]')) {
+            const t = h1.textContent.trim();
+            if (t && !_GENERIC_TITLES.has(t.toLowerCase())) {
+              let el = h1.parentElement;
+              for (let i = 0; i < 5; i++) {
+                if (!el || el === mainEl) break;
+                el = el.parentElement;
+              }
+              return el || mainEl;
+            }
+          }
+          return mainEl;
+        })();
+
+        let timer = null;
+        const done = () => { clearTimeout(timer); obs.disconnect(); resolve(); };
+        const obs  = new MutationObserver(() => {
+          clearTimeout(timer);
+          timer = setTimeout(done, DOM_DEBOUNCE_MS);
+        });
+        obs.observe(listingRoot, { childList: true, subtree: true, characterData: true });
+        // Hard timeout — proceed even if DOM never settles
+        setTimeout(done, DOM_SETTLE_MAX_MS);
+        // Start initial debounce in case DOM is already quiet
+        timer = setTimeout(done, DOM_DEBOUNCE_MS);
+      });
       if (location.href !== snapUrl || window.__dealScoutNonce !== myNonce) return;
     }
 
