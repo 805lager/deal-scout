@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.24';
+  const VERSION  = '0.28.25';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -666,16 +666,29 @@
     });
     const imageMissing = !hasMainImage && attempt < 12;
 
+    // ── Description element check (restored from v0.26.48) ───────────────────
+    // This is the KEY signal missing since v0.27.0. When FBM navigates listings
+    // in-place, React UNMOUNTS the old description element and REMOUNTS it for
+    // the new listing. During that transition, descEl is null — the DOM is in
+    // a partially-updated state. Once descEl re-appears, React has fully
+    // rendered the new listing body (title + price + description all present).
+    // The `attempt < 15` timeout (3 s at 200ms/poll) ensures listings with no
+    // description still proceed rather than spinning.
+    const descEl = document.querySelector('[data-testid="marketplace-pdp-description"]')
+                || document.querySelector('[class*="xz9dl007"]')
+                || document.querySelector('div[dir="auto"][style*="white-space: pre-wrap"]');
+    const descMissing = !descEl && attempt < 15;
+
     const isSpaNav = typeof prevTitle === 'string' && prevTitle !== '';
     const notReady = isSpaNav
-      ? (titleIsStale || !hasContent || imageMissing)
-      : (!currentTitle || !hasContent || imageMissing);
+      ? (titleIsStale || !hasContent || descMissing || imageMissing)
+      : (!currentTitle || !hasContent || descMissing || imageMissing);
 
     if (attempt % 5 === 0 || (notReady && attempt > 0)) {
-      console.debug('[DealScout] Readiness check', { attempt, isSpaNav, titleIsStale, hasContent, currentTitle: currentTitle.slice(0, 40) });
+      console.debug('[DealScout] Readiness check', { attempt, isSpaNav, titleIsStale, hasContent, descMissing, imageMissing, currentTitle: currentTitle.slice(0, 40) });
     }
 
-    if (notReady && attempt < 20) {
+    if (notReady && attempt < 25) {
       await new Promise(r => setTimeout(r, 200));
       // Bail if the user navigated away — both URL and nonce must still match.
       if (location.href !== snapUrl || window.__dealScoutNonce !== myNonce) return;
@@ -683,8 +696,8 @@
     }
 
     if (notReady && isSpaNav) {
-      // SPA nav: title never changed after 4 s — old content still showing.
-      // Give up rather than scoring the previous listing's content.
+      // SPA nav: still not ready after 25 × 200 ms = 5 s — give up rather
+      // than scoring stale content.
       console.debug('[DealScout] Readiness timeout (SPA nav) — giving up');
       if (window.__dealScoutNonce === myNonce) window.__dealScoutRunning = false;
       return;
