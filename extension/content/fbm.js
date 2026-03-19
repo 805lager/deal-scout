@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.27';
+  const VERSION  = '0.28.28';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -686,6 +686,16 @@
     if (attempt % 5 === 0 || (notReady && attempt > 0)) {
       console.debug('[DealScout] Readiness check', { attempt, isSpaNav, titleIsStale, hasContent, descMissing, imageMissing, currentTitle: currentTitle.slice(0, 40) });
     }
+    if (window.__dealScoutDiag && window.__dealScoutDiag.phase1Log) {
+      window.__dealScoutDiag.phase1Log.push({
+        a: attempt,
+        title: currentTitle.slice(0, 40),
+        stale: titleIsStale ? 1 : 0,
+        content: hasContent ? 1 : 0,
+        desc: descMissing ? 0 : 1,
+        img: !hasMainImage ? 0 : 1,
+      });
+    }
 
     if (notReady && attempt < 25) {
       await new Promise(r => setTimeout(r, 200));
@@ -707,6 +717,7 @@
 
     // Record Phase 1 outcome for diagnostics
     if (window.__dealScoutDiag) {
+      window.__dealScoutDiag.isSpaNav = isSpaNav;
       window.__dealScoutDiag.phase1Polls = attempt;
       window.__dealScoutDiag.phase1Blockers = [
         titleIsStale && 'titleStale', descMissing && 'descMissing',
@@ -734,10 +745,36 @@
     // Clear SPA sentinel so the next navigation starts fresh.
     window.__dealScoutPrevTitle = undefined;
 
+    // ── Pre-extraction DOM snapshot ─────────────────────────────────────────────
+    // Captured just before extractRaw() so we can compare DOM state vs API result.
+    if (window.__dealScoutDiag) {
+      const _domH1 = (() => {
+        for (const el of document.querySelectorAll('h1[dir="auto"]')) {
+          const t = el.textContent.trim();
+          if (t && !_GENERIC_TITLES.has(t.toLowerCase())) return t;
+        }
+        return '';
+      })();
+      const _de1 = document.querySelector('[data-testid="marketplace-pdp-description"]');
+      const _de2 = !_de1 && document.querySelector('[class*="xz9dl007"]');
+      const _diagImg = Array.from(document.querySelectorAll('img[src*="scontent"]')).some(img => {
+        if (!!img.closest('a[href*="/marketplace/item/"]') || !!img.closest('aside')) return false;
+        const w = img.clientWidth || img.offsetWidth || 0;
+        return w >= 200 && img.getBoundingClientRect().top + window.scrollY < 900;
+      });
+      window.__dealScoutDiag.domTitleAtExtract = _domH1.slice(0, 60);
+      window.__dealScoutDiag.urlAtExtract = location.href.slice(-80);
+      window.__dealScoutDiag.descElFoundBy = _de1 ? 'data-testid' : _de2 ? 'class-xz9dl007' : 'NONE';
+      window.__dealScoutDiag.hasImageAtExtract = _diagImg;
+      window.__dealScoutDiag.navMsToExtract = Date.now() - (window.__dealScoutDiag.navStartMs || Date.now());
+    }
+
     // Gather raw data for server-side extraction
     let rawData = extractRaw();
     if (window.__dealScoutDiag) {
-      window.__dealScoutDiag.postExtractRawSnip = (rawData.raw_text || '').slice(0, 120).replace(/\s+/g, ' ');
+      window.__dealScoutDiag.rawTextLen = (rawData.raw_text || '').length;
+      window.__dealScoutDiag.rawTextStart = (rawData.raw_text || '').slice(0, 200).replace(/\s+/g, ' ');
+      window.__dealScoutDiag.extractedUrl = (rawData.url || '').slice(-80);
     }
 
     // ── Post-extraction bleed guard ────────────────────────────────────────────
@@ -748,15 +785,26 @@
     if (isSpaNav && capturedPrevTitle && rawData.raw_text) {
       const _pWords = capturedPrevTitle.toLowerCase()
         .split(/\s+/).filter(w => w.length > 3).slice(0, 4);
+      let _bleedCount = 0;
       for (let _r = 0; _r < 3; _r++) {
         if (_pWords.length < 2) break;
         const _rLow = rawData.raw_text.toLowerCase().slice(0, 1500);
         // "Still old" = first two prevTitle keywords both present in extracted text
         if (!_pWords.slice(0, 2).every(w => _rLow.includes(w))) break;
+        _bleedCount++;
         console.debug('[DealScout] Bleed guard: old content detected — re-extracting in 1.5s (retry', _r + 1, ')');
         await new Promise(r => setTimeout(r, 1500));
         if (location.href !== snapUrl || window.__dealScoutNonce !== myNonce) return;
         rawData = extractRaw();
+      }
+      if (window.__dealScoutDiag) {
+        window.__dealScoutDiag.postExtractBleed = _bleedCount === 0
+          ? 'clean'
+          : `fired-${_bleedCount}x-pWords:${_pWords.join('|')}`;
+        if (_bleedCount > 0) {
+          window.__dealScoutDiag.rawTextStart = (rawData.raw_text || '').slice(0, 200).replace(/\s+/g, ' ');
+          window.__dealScoutDiag.rawTextLen = (rawData.raw_text || '').length;
+        }
       }
     }
 
@@ -2531,9 +2579,19 @@
       // Initialize per-nav diagnostics so the Debug button always shows fresh info.
       window.__dealScoutDiag = {
         v: VERSION, nav: new Date().toLocaleTimeString(),
+        navStartMs: Date.now(),
+        isBgReinjected: !!window.__dealScoutInjected,
         prevTitle: window.__dealScoutPrevTitle || '(none)',
+        snapUrl: location.href.slice(-80),
+        isSpaNav: null,
+        phase1Log: [],
         phase1Polls: '?', phase1Blockers: '?',
-        postExtractRawSnip: '?',
+        domTitleAtExtract: '?', urlAtExtract: '?',
+        descElFoundBy: '?', hasImageAtExtract: '?',
+        rawTextLen: 0, rawTextStart: '?',
+        extractedUrl: '?',
+        postExtractBleed: 'skipped',
+        navMsToExtract: '?',
         earlyGuard: '(not checked)', scoreGuardA: '(not reached)', scoreGuardB: '(not reached)',
         retries: 0, finalTitle: '?', finalScore: '?',
       };
