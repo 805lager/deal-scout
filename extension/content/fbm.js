@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.26';
+  const VERSION  = '0.28.27';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -705,6 +705,15 @@
     // didn't match). Claude extracts from raw text — no structured title required.
     // This matches v0.28.16 behaviour where hard loads always attempted extraction.
 
+    // Record Phase 1 outcome for diagnostics
+    if (window.__dealScoutDiag) {
+      window.__dealScoutDiag.phase1Polls = attempt;
+      window.__dealScoutDiag.phase1Blockers = [
+        titleIsStale && 'titleStale', descMissing && 'descMissing',
+        imageMissing && 'imgMissing', !hasContent && 'noContent',
+      ].filter(Boolean).join(',') || 'none';
+    }
+
     // ── Phase 2: short settle after image confirms listing is ready ─────────────
     // Phase 1's image-presence check already confirmed the listing component is
     // fully rendered (photo decoded + laid out = React hydration complete).
@@ -727,6 +736,9 @@
 
     // Gather raw data for server-side extraction
     let rawData = extractRaw();
+    if (window.__dealScoutDiag) {
+      window.__dealScoutDiag.postExtractRawSnip = (rawData.raw_text || '').slice(0, 120).replace(/\s+/g, ' ');
+    }
 
     // ── Post-extraction bleed guard ────────────────────────────────────────────
     // Even after the flat wait, very slow devices / network conditions can leave
@@ -987,7 +999,9 @@
             // listing's title, cancel the stream and retry without ever showing
             // the stale title to the user. This is ~10-14s earlier than the
             // score-event guards and prevents the old title from flashing in panel.
-            if (isSpaNav && capturedPrevTitle && extractedTitle) {
+            // NOTE: isSpaNav is NOT in scope here (it's autoScore-local). Use
+            // !!capturedPrevTitle as the equivalent signal — it's a parameter.
+            if (capturedPrevTitle && extractedTitle) {
               const _ew = s => s.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(w => w.length > 2);
               const _eWprev = _ew(capturedPrevTitle), _ePrevSet = new Set(_eWprev);
               const _eScore = _ew(extractedTitle);
@@ -1004,8 +1018,14 @@
                 _eScore.filter(w => _eDomWords.has(w)).length === 0;
 
               if (_eRatio > 0.3 || _eZeroOverlap) {
+                const _eReason = _eRatio > 0.3 ? `A(ratio=${_eRatio.toFixed(2)})` : `B(zero-overlap,dom="${_eDomTitle.slice(0,30)}")`;
                 console.debug('[DealScout] Early bleed at extracted — cancelling:',
-                  extractedTitle, '(prev:', capturedPrevTitle, ')');
+                  extractedTitle, '(prev:', capturedPrevTitle, ') reason:', _eReason);
+                if (window.__dealScoutDiag) {
+                  window.__dealScoutDiag.extractedTitle = extractedTitle;
+                  window.__dealScoutDiag.earlyGuard = 'FIRED-' + _eReason;
+                  window.__dealScoutDiag.retries = (window.__dealScoutDiag.retries || 0) + 1;
+                }
                 reader.cancel();
                 renderLoading({}); // keep spinner, clear any old title
                 const _eAlreadyRetried = window.__dealScoutMismatchRetried === myNonce;
@@ -1017,9 +1037,15 @@
                     }
                   }, 2500);
                 } else if (_eAlreadyRetried && window.__dealScoutNonce === myNonce) {
+                  if (window.__dealScoutDiag) window.__dealScoutDiag.earlyGuard += ' → retry-exhausted';
                   renderError('Listing still loading — use RESCORE button');
                 }
                 return;
+              }
+              // Guard passed — log the extracted title
+              if (window.__dealScoutDiag) {
+                window.__dealScoutDiag.extractedTitle = extractedTitle;
+                window.__dealScoutDiag.earlyGuard = `passed(ratio=${_eRatio.toFixed(2)})`;
               }
             }
             renderLoading(evt.data);
@@ -1053,6 +1079,10 @@
                 if (prevMatchRatio > 0.3) {
                   console.debug('[DealScout] Score matches old listing — discarding:',
                     extractedTitle, '(prev:', capturedPrevTitle, ')');
+                  if (window.__dealScoutDiag) {
+                    window.__dealScoutDiag.scoreGuardA = `FIRED(ratio=${prevMatchRatio.toFixed(2)})`;
+                    window.__dealScoutDiag.retries = (window.__dealScoutDiag.retries || 0) + 1;
+                  }
                   const alreadyRetried = window.__dealScoutMismatchRetried === myNonce;
                   if (!alreadyRetried && window.__dealScoutNonce === myNonce) {
                     reader.cancel();
@@ -1081,9 +1111,14 @@
               })();
               if (domTitleNow && scoredSet.size > 0) {
                 const overlap = _words(domTitleNow).filter(w => scoredSet.has(w)).length;
+                if (window.__dealScoutDiag) window.__dealScoutDiag.scoreGuardB = `checked(overlap=${overlap},dom="${domTitleNow.slice(0,30)}")`;
                 if (overlap === 0) {
                   console.debug('[DealScout] Title mismatch — discarding stale score:',
                     extractedTitle, '→', domTitleNow);
+                  if (window.__dealScoutDiag) {
+                    window.__dealScoutDiag.scoreGuardB = `FIRED(dom="${domTitleNow.slice(0,30)}")`;
+                    window.__dealScoutDiag.retries = (window.__dealScoutDiag.retries || 0) + 1;
+                  }
                   const alreadyRetried = window.__dealScoutMismatchRetried === myNonce;
                   if (!alreadyRetried && window.__dealScoutNonce === myNonce) {
                     reader.cancel();
@@ -1122,6 +1157,10 @@
             // round-trip above would otherwise slip a stale score through.
             if (window.__dealScoutNonce !== myNonce) { reader.cancel(); return; }
 
+            if (window.__dealScoutDiag) {
+              window.__dealScoutDiag.finalTitle = result.title;
+              window.__dealScoutDiag.finalScore = result.score;
+            }
             renderScore(result);
             chrome.runtime.sendMessage({ type: 'BADGE_UPDATE', score: result.score })
               .catch(() => {});
@@ -1226,6 +1265,34 @@
     return document.getElementById(PANEL_ID) || showPanel();
   }
 
+  // ── Debug Button ─────────────────────────────────────────────────────────────
+  // Appended to the panel bottom by renderLoading + renderScore. Lets the user
+  // copy the internal diagnostics JSON without opening DevTools — paste into chat.
+  function _renderDiagButton(panel) {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'padding:4px 10px 8px;text-align:right';
+    const btn = document.createElement('button');
+    btn.textContent = '📋 Copy Debug Info';
+    btn.title = 'Copy internal diagnostics to clipboard — paste into chat to help debug';
+    btn.style.cssText = 'font-size:10px;color:#4b5563;background:none;border:1px solid #374151;'
+      + 'border-radius:4px;cursor:pointer;padding:2px 7px;opacity:0.7';
+    btn.onmouseenter = () => { btn.style.opacity = '1'; };
+    btn.onmouseleave = () => { btn.style.opacity = '0.7'; };
+    btn.onclick = () => {
+      const info = window.__dealScoutDiag || { note: 'no diag (non-SPA load or first open)' };
+      const text = JSON.stringify(info, null, 2);
+      navigator.clipboard.writeText(text).then(() => {
+        btn.textContent = '✓ Copied!';
+        setTimeout(() => { btn.textContent = '📋 Copy Debug Info'; }, 2000);
+      }).catch(() => {
+        // Fallback: show value in a prompt so user can copy manually
+        prompt('Copy this debug info:', text);
+      });
+    };
+    wrap.appendChild(btn);
+    panel.appendChild(wrap);
+  }
+
   // ── Navigation Transition State ───────────────────────────────────────────────
   // Called immediately when SPA navigation is detected, before the new DOM loads.
   // Clears the old score instantly so the user never reads a stale result.
@@ -1308,6 +1375,8 @@
     `;
     lBody.appendChild(spinner);
 
+    _renderDiagButton(panel);
+
     // Inject spinner animation if not already present
     if (!document.getElementById('ds-spin-style')) {
       const style = document.createElement('style');
@@ -1357,6 +1426,7 @@
     renderBundleBreakdown(r, panel);
     renderNegotiationMessage(r, panel);
     renderFooter(r, panel);
+    _renderDiagButton(panel);
   }
 
   // ── Header ────────────────────────────────────────────────────────────────────
@@ -2458,6 +2528,15 @@
       window.__dealScoutMismatchRetried = undefined;
 
       console.debug('[DealScout] Nav detected (old:', oldId, '→ new:', newId || 'unknown', ') prevTitle:', window.__dealScoutPrevTitle);
+      // Initialize per-nav diagnostics so the Debug button always shows fresh info.
+      window.__dealScoutDiag = {
+        v: VERSION, nav: new Date().toLocaleTimeString(),
+        prevTitle: window.__dealScoutPrevTitle || '(none)',
+        phase1Polls: '?', phase1Blockers: '?',
+        postExtractRawSnip: '?',
+        earlyGuard: '(not checked)', scoreGuardA: '(not reached)', scoreGuardB: '(not reached)',
+        retries: 0, finalTitle: '?', finalScore: '?',
+      };
       // Clear the panel IMMEDIATELY at t=0 — don't wait 800ms for bg re-injection.
       // Without this the old listing's score (including "Better Options" cards) is
       // visible for almost a second after the user clicks to navigate.
