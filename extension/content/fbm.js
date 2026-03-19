@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.17';
+  const VERSION  = '0.28.18';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -168,6 +168,14 @@
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === "RESCORE") {
+      // Force-reset the mutex so a stuck or in-flight run never silently blocks
+      // the button.  Abort any in-flight stream first so it doesn't clobber the
+      // new run's panel output.
+      if (window.__dealScoutAbort) {
+        window.__dealScoutAbort.abort();
+        window.__dealScoutAbort = null;
+      }
+      window.__dealScoutRunning = false;
       removePanel();
       clearTimeout(window.__dealScoutRescanTimer);
       window.__dealScoutRescanTimer = setTimeout(autoScore, 400);
@@ -648,12 +656,16 @@
       return autoScore(attempt + 1);
     }
 
-    if (notReady) {
-      // Timed out at attempt 20 — page never became ready. Release mutex and bail.
-      console.debug('[DealScout] Readiness timeout — giving up');
+    if (notReady && isSpaNav) {
+      // SPA nav: title never changed after 4 s — old content still showing.
+      // Give up rather than scoring the previous listing's content.
+      console.debug('[DealScout] Readiness timeout (SPA nav) — giving up');
       if (window.__dealScoutNonce === myNonce) window.__dealScoutRunning = false;
       return;
     }
+    // Hard page load: fall through to extraction even if notReady (e.g. h1 selector
+    // didn't match). Claude extracts from raw text — no structured title required.
+    // This matches v0.28.16 behaviour where hard loads always attempted extraction.
 
     // ── Phase 2: new title confirmed — flat settle wait (SPA nav only) ───────
     // FBM renders the new listing's h1 before swapping the body content below it.
