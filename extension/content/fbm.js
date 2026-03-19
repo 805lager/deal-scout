@@ -28,7 +28,12 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.16';
+  const VERSION  = '0.28.17';
+  // Flat settle wait after the new listing's h1 appears (SPA nav).
+  // FBM renders the new h1 before swapping the body content below it.
+  // Waiting 1500 ms after title change ensures the body has settled on the new
+  // listing's content before we extract — eliminates body-fingerprint bleed.
+  const SPA_SETTLE_MS = 1500;
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -599,14 +604,18 @@
     const snapUrl = location.href;
     const myNonce = window.__dealScoutNonce;
 
-    // ── Readiness check ───────────────────────────────────────────────────────
-    // Claude handles all extraction server-side, so we only need two signals:
-    //   A. Title is not stale from the previous listing (SPA nav guard).
-    //   B. Page has enough text to send (>100 chars).
-    //   C. For SPA navs: body content has changed from the saved fingerprint,
-    //      settled (stable across two polls), and shows a price. See below.
+    // ── Readiness check — Phase 1: wait for new listing title ────────────────
+    // For SPA navs (prevTitle is set), poll every 200 ms (max 20 × 200 ms = 4 s)
+    // until the new listing's h1 has replaced the old one. This is the only
+    // condition we check here — body-content checks have been removed because
+    // they caused false-positives when FBM renders the new h1 before swapping
+    // the body content below it (the root cause of all previous bleed bugs).
     //
-    // Max wait: 20 × 200 ms = 4 s.
+    // After the new title appears we do a flat SPA_SETTLE_MS wait (Phase 2)
+    // to let FBM finish rendering the body under the new h1, then extract.
+    //
+    // For hard page loads there is no prevTitle, so we just wait for a non-empty
+    // title and enough text to be present, then proceed immediately.
 
     const prevTitle = window.__dealScoutPrevTitle;
     const currentTitle = (() => {
@@ -625,120 +634,11 @@
     const mainText = mainEl.innerText || '';
     const hasContent = mainText.length > 100;
 
-    // SPA-navigation body-render gap:
-    // FBM keeps the OLD listing's body content rendered (description, price, seller)
-    // while fetching the new listing — sometimes for 1–3+ seconds. Time-based waits
-    // (1.2 s, 2.4 s) are unreliable because render time varies by listing and network.
-    //
-    // Content-fingerprint approach (only for SPA navs):
-    //   1. bodyChanged — At navigation time (_onFbmNav) we saved a 450-char snippet
-    //      of [role="main"].innerText. We wait until the current body text is
-    //      DIFFERENT from that snapshot — meaning FBM has replaced the old content.
-    //   2. bodyStable  — We then wait for the body to be IDENTICAL across two
-    //      consecutive 200ms polls. This ensures React has finished its render
-    //      cycle and we're not mid-update.
-    //   3. hasPriceInText — The new listing's price ($N) must be visible. Skeleton
-    //      loading states don't show a price, so this guards against scoring before
-    //      actual content renders.
-    //
-    // Combined: bodyChanged + bodyStable + hasPriceInText = body has settled on
-    // NEW listing content, ready to extract. Max wait: 20 × 200ms = 4s.
     const isSpaNav = typeof prevTitle === 'string' && prevTitle !== '';
-    let notReady;
-    // Tracks whether the body text has changed from the previous listing's fingerprint.
-    // Set inside the isSpaNav block and read by the attempt-20 bleed guard below.
-    let _spaBodyChanged = true;
-    // Set inside isSpaNav block; read by the attempt-20 bleed guard below.
-    // Tracks whether the old listing's h1 is still present in the DOM on the
-    // LAST poll before the guard fires. If true, old content is definitely
-    // still visible and extraction must be blocked.
-    let _oldH1Present = false;
+    const notReady = isSpaNav ? (titleIsStale || !hasContent) : (!currentTitle || !hasContent);
 
-    if (isSpaNav) {
-      const prevSnippet    = window.__dealScoutPrevBodySnippet || '';
-      const lastSnapshot   = window.__dealScoutLastBodySnapshot  || '';
-      const lastSnapshot2  = window.__dealScoutLastBodySnapshot2 || '';
-
-      // Compute bodySnippet using the CURRENT listing's h1 as the pivot.
-      // This provides an "escape valve": as soon as the new h1 appears, the
-      // pivot shifts and bodySnippet changes, setting _spaBodyChanged=true.
-      // The oldH1Present check below then separately prevents extraction
-      // while the old h1 is still in the DOM — no pivot-shift bleed.
-      const bodySnippet = _textAfterH1(mainEl, currentTitle);
-      // Rotate the two-slot snapshot ring: slot2 ← slot1, slot1 ← current.
-      window.__dealScoutLastBodySnapshot2 = lastSnapshot;
-      window.__dealScoutLastBodySnapshot  = bodySnippet;
-
-      const bodyChanged = !prevSnippet || bodySnippet !== prevSnippet;
-      _spaBodyChanged = bodyChanged;
-
-      // ── 3-poll body stability ───────────────────────────────────────────────
-      // Require the body-after-h1 text to be IDENTICAL across THREE consecutive
-      // 200 ms polls (600 ms window) before we trust it as settled content.
-      // Root cause this fixes: FBM React renders the new listing's h1 first and
-      // briefly stabilises with old body content below it (~400 ms). The old
-      // 2-poll check (400 ms) was fooled by that intermediate state — bodyStable
-      // fired true while the body text was still the previous listing's content,
-      // causing extraction to run against stale DOM. 600 ms outlasts this window.
-      const bodyStable = bodySnippet !== ''
-                      && bodySnippet === lastSnapshot
-                      && lastSnapshot === lastSnapshot2;
-
-      // ── Minimum body length ─────────────────────────────────────────────────
-      // If the text after the new h1 is very short (< 80 chars), only the h1
-      // skeleton has rendered — the listing body content hasn't arrived yet.
-      // Prevents false-positive bodyChanged when the new h1 renders alone before
-      // any body content is present below it.
-      const bodySnippetMinLen = bodySnippet.length >= 80;
-
-      // Require price to be visible in the body text that sits AFTER the h1.
-      // This replaces the old bodyLong (>=80) gate: it's specific (a rendered
-      // price means real listing content is present) and works for short
-      // listings like "Duck decoys $50" that have <80 chars after the h1.
-      // Falls back to searching the full mainText if bodySnippet has no price —
-      // handles edge-cases where FBM places the price above the h1 element.
-      const hasPriceInBody = /(\$\s*\d|\bfree\b)/i.test(bodySnippet);
-      // FBM shows "FREE" (not "$0") for free listings — match both forms.
-      const hasPriceInText = /(\$\s*\d|\bfree\b)/i.test(mainText);
-
-      // Image fingerprint: wait for the first main listing image to differ from
-      // the one we had at nav time. If the old listing had no image, skip check.
-      // Only enforce for the first 15 attempts (~3s) so it can't spin forever.
-      const prevImgSrc  = window.__dealScoutPrevImgSrc || '';
-      const curImg      = mainEl.querySelector('img[src*="scontent"]');
-      const curImgSrc   = curImg ? curImg.src.split('?')[0] : '';
-      const imgChanged  = !prevImgSrc || attempt >= 15 || curImgSrc !== prevImgSrc;
-
-      // hasPriceInBody is the primary price gate (price after h1 = real content).
-      // hasPriceInText is a fallback for edge-cases where price precedes the h1.
-      const priceReady = hasPriceInBody || hasPriceInText;
-
-      // Explicit old-h1 DOM check: if the previous listing's h1 element is still
-      // present in the DOM, FBM has not yet replaced the listing content — even if
-      // bodyChanged=true via pivot-shift. This is the targeted bleed guard.
-      //
-      //   bodyChanged=true (pivot-shift) + oldH1Present=true  → notReady=true ✓
-      //   bodyChanged=true + oldH1Present=false → notReady depends on other flags ✓
-      //   bodyChanged=false + oldH1Present=true  → notReady=true ✓ (redundant but safe)
-      const prevTitleKey = prevTitle.toLowerCase().slice(0, 20);
-      const oldH1Present = !!prevTitleKey && Array.from(
-        mainEl.querySelectorAll('h1[dir="auto"]')
-      ).some(el => el.textContent.trim().toLowerCase().startsWith(prevTitleKey));
-      _oldH1Present = oldH1Present;
-
-      notReady = titleIsStale || !hasContent || oldH1Present ||
-                 !bodyChanged || !bodyStable || !bodySnippetMinLen || !priceReady || !imgChanged;
-
-      if (attempt % 5 === 0 || (notReady && attempt > 0 && attempt % 2 === 0)) {
-        console.debug('[DealScout] Readiness check', {
-          attempt, titleIsStale, hasContent, oldH1Present, bodyChanged, bodyStable,
-          bodySnippetMinLen, bodyLen: bodySnippet.length,
-          hasPriceInBody, hasPriceInText, priceReady, imgChanged,
-        });
-      }
-    } else {
-      // Hard page load — title and content checks are enough.
-      notReady = !currentTitle || !hasContent;
+    if (attempt % 5 === 0 || (notReady && attempt > 0)) {
+      console.debug('[DealScout] Readiness check', { attempt, isSpaNav, titleIsStale, hasContent, currentTitle: currentTitle.slice(0, 40) });
     }
 
     if (notReady && attempt < 20) {
@@ -748,48 +648,31 @@
       return autoScore(attempt + 1);
     }
 
-    // ── Attempt-20 bleed guard ────────────────────────────────────────────────
-    // If we timed out (notReady=true at attempt 20) on a SPA nav, check whether
-    // old content is still visible. Two triggers:
-    //
-    //   !_spaBodyChanged  — body text never changed from the previous listing's
-    //                       fingerprint; old DOM is definitely still present.
-    //   _oldH1Present     — old listing's h1 is still in the DOM; pivot-shift
-    //                       may have already set bodyChanged=true, but the actual
-    //                       content hasn't swapped yet (bleed vector).
-    //
-    // When either is true, preserve sentinels AND schedule a retry after 2 s so
-    // we keep polling rather than leaving the panel stuck forever on "Analyzing…".
-    // Cap at 4 retries (~12 s total from first attempt-20) then fall through.
-    if (notReady && isSpaNav && (!_spaBodyChanged || _oldH1Present)) {
-      console.debug('[DealScout] Attempt-20 timeout: old content still visible',
-        { _spaBodyChanged, _oldH1Present });
-      if (window.__dealScoutNonce === myNonce) {
-        window.__dealScoutRunning = false;
-        const retries = window.__dealScoutSpaRetries || 0;
-        if (retries < 4) {
-          window.__dealScoutSpaRetries = retries + 1;
-          clearTimeout(window.__dealScoutRescanTimer);
-          window.__dealScoutRescanTimer = setTimeout(() => {
-            if (window.__dealScoutNonce === myNonce) autoScore(0);
-          }, 2000);
-        }
-        // After 4 retries fall through to extraction as a last resort.
-      }
+    if (notReady) {
+      // Timed out at attempt 20 — page never became ready. Release mutex and bail.
+      console.debug('[DealScout] Readiness timeout — giving up');
+      if (window.__dealScoutNonce === myNonce) window.__dealScoutRunning = false;
       return;
+    }
+
+    // ── Phase 2: new title confirmed — flat settle wait (SPA nav only) ───────
+    // FBM renders the new listing's h1 before swapping the body content below it.
+    // Sleeping SPA_SETTLE_MS after the title change guarantees the body has settled
+    // on the new listing's content before we extract — no body fingerprinting needed.
+    if (isSpaNav) {
+      console.debug('[DealScout] Title ready at attempt', attempt, '— waiting', SPA_SETTLE_MS, 'ms for body to settle');
+      await new Promise(r => setTimeout(r, SPA_SETTLE_MS));
+      if (location.href !== snapUrl || window.__dealScoutNonce !== myNonce) return;
     }
 
     console.debug('[DealScout] Page ready at attempt', attempt,
       isSpaNav ? '(SPA nav)' : '(hard load)');
 
-    // Clear the SPA sentinels — only reached when content has actually changed
-    // (bodyChanged=true) or on hard page loads (isSpaNav=false). The attempt-20
-    // timeout path with an unchanged body exits above, keeping sentinels intact.
-    window.__dealScoutPrevTitle          = undefined;
-    window.__dealScoutPrevBodySnippet    = undefined;
-    window.__dealScoutLastBodySnapshot   = undefined;
-    window.__dealScoutLastBodySnapshot2  = undefined;
-    window.__dealScoutPrevImgSrc         = undefined;
+    // Capture prevTitle into a local var BEFORE clearing the sentinel so we can
+    // pass it to callStreamingAPI for the prev-title discard check.
+    const capturedPrevTitle = prevTitle || '';
+    // Clear SPA sentinel — only prevTitle is needed now (body/img fingerprints removed).
+    window.__dealScoutPrevTitle = undefined;
 
     // Gather raw data for server-side extraction
     const rawData = extractRaw();
@@ -805,7 +688,7 @@
     const abort = new AbortController();
     window.__dealScoutAbort = abort;
     try {
-      await callStreamingAPI(rawData, abort, myNonce, snapUrl);
+      await callStreamingAPI(rawData, abort, myNonce, snapUrl, capturedPrevTitle);
     } catch (err) {
       if (abort.signal.aborted) return;
       if (window.__dealScoutNonce !== myNonce || location.href !== snapUrl) return;
@@ -823,7 +706,7 @@
           const abort2 = new AbortController();
           window.__dealScoutAbort = abort2;
           try {
-            await callStreamingAPI(freshData, abort2, myNonce, snapUrl);
+            await callStreamingAPI(freshData, abort2, myNonce, snapUrl, capturedPrevTitle);
           } catch (err2) {
             if (!abort2.signal.aborted &&
                 window.__dealScoutNonce === myNonce &&
@@ -970,7 +853,7 @@
   //   as they arrive — no polling, no WebSocket upgrade, no CORS complexity.
   //   AbortController cancels the stream at the network layer on navigation.
 
-  async function callStreamingAPI(rawData, abort, myNonce, snapUrl) {
+  async function callStreamingAPI(rawData, abort, myNonce, snapUrl, capturedPrevTitle) {
     // Show panel immediately with initial spinner (no title yet)
     showPanel();
     renderLoading({});
@@ -1037,12 +920,43 @@
             // is the only reliable way to prevent that stale render.
             if (window.__dealScoutNonce !== myNonce) { reader.cancel(); return; }
 
-            // Guard: title mismatch — catches the case where the DOM swapped
-            // listings while streaming (text bleed passed readiness checks).
+            // ── Title bleed guards ──────────────────────────────────────────────
+            // Two complementary checks. Each can trigger a single retry per
+            // navigation (guarded by __dealScoutMismatchRetried === myNonce).
+            const _words = s =>
+              s.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(w => w.length > 2);
+
             if (extractedTitle) {
-              const _words = s =>
-                s.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(w => w.length > 2);
-              const scoredSet = new Set(_words(extractedTitle));
+              const scoredWords = _words(extractedTitle);
+              const scoredSet   = new Set(scoredWords);
+
+              // Guard A: score title overlaps >50% with the listing we navigated
+              // FROM (capturedPrevTitle). This means Claude extracted old DOM
+              // content that was still rendered during the settle wait.
+              if (capturedPrevTitle) {
+                const prevWords     = _words(capturedPrevTitle);
+                const prevSet       = new Set(prevWords);
+                const overlapWPrev  = scoredWords.filter(w => prevSet.has(w)).length;
+                const prevMatchRatio = prevSet.size > 0 ? overlapWPrev / prevSet.size : 0;
+                if (prevMatchRatio > 0.5) {
+                  console.debug('[DealScout] Score matches old listing — discarding:',
+                    extractedTitle, '(prev:', capturedPrevTitle, ')');
+                  const alreadyRetried = window.__dealScoutMismatchRetried === myNonce;
+                  if (!alreadyRetried && window.__dealScoutNonce === myNonce) {
+                    reader.cancel();
+                    window.__dealScoutMismatchRetried = myNonce;
+                    setTimeout(() => {
+                      if (window.__dealScoutNonce === myNonce && location.href === snapUrl) {
+                        autoScore(0);
+                      }
+                    }, SPA_SETTLE_MS);
+                  }
+                  return;
+                }
+              }
+
+              // Guard B: score title shares ZERO words with the current DOM title.
+              // Catches any remaining bleed not caught by Guard A.
               const domTitleNow = (() => {
                 for (const el of document.querySelectorAll('h1[dir="auto"]')) {
                   const t = el.textContent.trim();
@@ -1050,17 +964,25 @@
                 }
                 return '';
               })();
-              // If the page has a non-generic title and it shares ZERO words
-              // with what we scored, this is definitely stale — discard.
               if (domTitleNow && scoredSet.size > 0) {
                 const overlap = _words(domTitleNow).filter(w => scoredSet.has(w)).length;
                 if (overlap === 0) {
                   console.debug('[DealScout] Title mismatch — discarding stale score:',
                     extractedTitle, '→', domTitleNow);
+                  const alreadyRetried = window.__dealScoutMismatchRetried === myNonce;
+                  if (!alreadyRetried && window.__dealScoutNonce === myNonce) {
+                    reader.cancel();
+                    window.__dealScoutMismatchRetried = myNonce;
+                    setTimeout(() => {
+                      if (window.__dealScoutNonce === myNonce && location.href === snapUrl) {
+                        autoScore(0);
+                      }
+                    }, SPA_SETTLE_MS);
+                  }
                   return;
                 }
               }
-              // If domTitleNow is EMPTY (page still loading), we already passed
+              // If domTitleNow is EMPTY (page still loading) we already passed
               // the nonce check above — safe to render.
             }
 
@@ -1077,6 +999,10 @@
               });
               if (afResp?.success) result.affiliateLinks = afResp.links;
             } catch (_) { /* non-critical */ }
+
+            // Nonce guard AFTER affiliate await — a navigation during the async
+            // round-trip above would otherwise slip a stale score through.
+            if (window.__dealScoutNonce !== myNonce) { reader.cancel(); return; }
 
             renderScore(result);
             chrome.runtime.sendMessage({ type: 'BADGE_UPDATE', score: result.score })
@@ -2408,22 +2334,10 @@
         return '';
       })();
 
-      // Save a body fingerprint AND first-image fingerprint of the CURRENT listing
-      // at t=0. FBM keeps old content rendered while the new listing loads —
-      // sometimes for 1–3+ seconds. We wait until BOTH have changed AND the body
-      // has stabilised before extracting.
-      const _mainNow = document.querySelector('[role="main"]') || document.body;
-      // Fingerprint the text that appears AFTER the h1 element in the DOM.
-      // Using DOM traversal (not indexOf) means breadcrumbs/headers that echo
-      // the title above the main content area can never cause a false match.
-      window.__dealScoutPrevBodySnippet  = _textAfterH1(_mainNow, window.__dealScoutPrevTitle);
-      window.__dealScoutLastBodySnapshot  = '';
-      window.__dealScoutLastBodySnapshot2 = '';
-      window.__dealScoutSpaRetries        = 0;  // reset per-navigation retry counter
-      // Image fingerprint — first scontent img inside [role="main"], stripped of
-      // query params (CDN tokens change per-request; the path is stable per image).
-      const _prevImg = _mainNow.querySelector('img[src*="scontent"]');
-      window.__dealScoutPrevImgSrc = _prevImg ? _prevImg.src.split('?')[0] : '';
+      // Reset the per-navigation mismatch-retry flag so the new listing can
+      // use a retry if its score is discarded by the bleed guards.
+      // (Set to undefined rather than deleting — same effect, avoids property churn.)
+      window.__dealScoutMismatchRetried = undefined;
 
       console.debug('[DealScout] Nav detected (old:', oldId, '→ new:', newId || 'unknown', ') prevTitle:', window.__dealScoutPrevTitle);
       // Clear the panel IMMEDIATELY at t=0 — don't wait 800ms for bg re-injection.
