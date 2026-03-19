@@ -131,7 +131,7 @@ async def extract_listing_from_text(
 
         data = json.loads(text)
         log.info(
-            f"[Extract] '{data.get('title', '?')}' @ ${data.get('price', 0):.0f} "
+            f"[Extract] '{data.get('title', '?')}' @ ${(data.get('price') or 0):.0f} "
             f"({platform})"
         )
         return data
