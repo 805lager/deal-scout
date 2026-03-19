@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.7';
+  const VERSION  = '0.28.8';
   const PANEL_ID  = "deal-scout-panel";
   // API_BASE must live here (before guard) — autoScore → renderError uses it.
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
@@ -106,6 +106,34 @@
   function isSearchOrCategory() {
     return /facebook\.com\/marketplace\/(search|category|[^/]+\/)/.test(location.href)
         && !isListingPage();
+  }
+
+  // ── DOM helpers ───────────────────────────────────────────────────────────────
+
+  // Returns up to 450 chars of text content that comes AFTER the h1[dir="auto"]
+  // inside `containerEl`, using a DOM TreeWalker (not string search).
+  //
+  // WHY NOT indexOf? The listing title also appears in FBM breadcrumbs / page
+  // headers that update *before* the main listing body. A string search finds
+  // those earlier occurrences and returns the (different) text that follows them,
+  // making bodyChanged fire immediately even while the old listing body is still
+  // in the DOM. TreeWalker visits nodes in document order and we skip everything
+  // until we've passed the actual h1 element — uniquely identifying the
+  // price/description/seller block that genuinely takes 1–3 s to update.
+  function _textAfterH1(containerEl) {
+    const h1 = containerEl.querySelector('h1[dir="auto"]');
+    if (!h1) return (containerEl.innerText || '').slice(200, 650).trim();
+    const walker = document.createTreeWalker(containerEl, NodeFilter.SHOW_TEXT, null);
+    let buf = '', past = false, node;
+    while ((node = walker.nextNode())) {
+      if (!past) {
+        if (h1.contains(node)) past = true;
+        continue;
+      }
+      buf += node.textContent;
+      if (buf.length >= 500) break;
+    }
+    return buf.slice(0, 450).trim();
   }
 
   // ── Auto-score on listing pages ───────────────────────────────────────────────
@@ -606,17 +634,12 @@
       const prevSnippet    = window.__dealScoutPrevBodySnippet || '';
       const lastSnapshot   = window.__dealScoutLastBodySnapshot || '';
 
-      // Compute bodySnippet from the text BELOW the current h1 — same technique
-      // used when saving prevBodySnippet. Comparing only post-title content means
-      // a h1 change alone never triggers bodyChanged; only price/description/seller
-      // changes (the slow-updating parts) count. This is the core bleed fix.
-      const _titleEnd = currentTitle
-        ? mainText.indexOf(currentTitle)
-        : -1;
-      const _bodyFrom = _titleEnd >= 0
-        ? _titleEnd + currentTitle.length
-        : Math.min(200, Math.floor(mainText.length / 2));
-      const bodySnippet = mainText.slice(_bodyFrom, _bodyFrom + 450).trim();
+      // Compute bodySnippet from the text BELOW the actual h1 DOM element, using
+      // TreeWalker. This avoids the indexOf false-match bug where the listing title
+      // also appears in breadcrumbs/headers above the main content — a string search
+      // would find that first occurrence and return text that changed prematurely,
+      // making bodyChanged fire before the real listing body had updated.
+      const bodySnippet = _textAfterH1(mainEl);
       window.__dealScoutLastBodySnapshot = bodySnippet;
 
       const bodyChanged    = !prevSnippet || bodySnippet !== prevSnippet;
@@ -2209,20 +2232,10 @@
       // sometimes for 1–3+ seconds. We wait until BOTH have changed AND the body
       // has stabilised before extracting.
       const _mainNow = document.querySelector('[role="main"]') || document.body;
-      const _allTextNow = (_mainNow.innerText || '');
-      // CRITICAL: exclude the h1 title from the fingerprint. The h1 updates
-      // immediately on navigation (it lives inside [role="main"]), so any slice
-      // that includes it would make bodyChanged fire the instant the title
-      // updates — before the price/description have re-rendered. We want to
-      // fingerprint only the body BELOW the title (price, description, seller).
-      const _prevTitleForSnippet = window.__dealScoutPrevTitle || '';
-      const _titlePos = _prevTitleForSnippet
-        ? _allTextNow.indexOf(_prevTitleForSnippet)
-        : -1;
-      const _snippetStart = _titlePos >= 0
-        ? _titlePos + _prevTitleForSnippet.length
-        : Math.min(200, Math.floor(_allTextNow.length / 2));
-      window.__dealScoutPrevBodySnippet = _allTextNow.slice(_snippetStart, _snippetStart + 450).trim();
+      // Fingerprint the text that appears AFTER the h1 element in the DOM.
+      // Using DOM traversal (not indexOf) means breadcrumbs/headers that echo
+      // the title above the main content area can never cause a false match.
+      window.__dealScoutPrevBodySnippet = _textAfterH1(_mainNow);
       window.__dealScoutLastBodySnapshot = '';
       // Image fingerprint — first scontent img inside [role="main"], stripped of
       // query params (CDN tokens change per-request; the path is stable per image).
