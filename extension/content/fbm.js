@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.32';
+  const VERSION  = '0.28.33';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -862,14 +862,19 @@
     // path where pushState doesn't fire). Both act as "what was the old listing".
     const _effectivePrev = capturedPrevTitle || window.__dealScoutRecoveredPrevTitle || '';
     if ((isSpaNav || !!window.__dealScoutBgReinjected) && _effectivePrev && rawData.raw_text) {
+      // >= 3 (not > 3): captures 3-char model tokens like "20v", "18v", "dcf"
+      // that are stripped by the old filter but are strong bleed signals.
       const _pWords = _effectivePrev.toLowerCase()
-        .split(/\s+/).filter(w => w.length > 3).slice(0, 4);
+        .split(/\s+/).filter(w => w.length >= 3).slice(0, 4);
       let _bleedCount = 0;
       for (let _r = 0; _r < 3; _r++) {
-        if (_pWords.length < 2) break;
+        // < 1 (not < 2): even a single strong keyword (e.g. "dewalt", "ryobi")
+        // is enough to identify the old listing. < 2 silently skipped short titles.
+        if (_pWords.length < 1) break;
         const _rLow = rawData.raw_text.toLowerCase().slice(0, 1500);
-        // "Still old" = first two prevTitle keywords both present in extracted text
-        if (!_pWords.slice(0, 2).every(w => _rLow.includes(w))) break;
+        // "Still old" = all available check keywords (up to 2) present in text.
+        const _checkWords = _pWords.slice(0, 2);
+        if (!_checkWords.every(w => _rLow.includes(w))) break;
         _bleedCount++;
         console.debug('[DealScout] Bleed guard: old content detected — re-extracting in 1.5s (retry', _r + 1, ')');
         await new Promise(r => setTimeout(r, 1500));
@@ -885,6 +890,19 @@
           window.__dealScoutDiag.rawTextLen = (rawData.raw_text || '').length;
         }
       }
+      // If all 3 retries were consumed and raw_text is STILL the old listing,
+      // abort rather than score stale data. FBM may have failed to swap the DOM.
+      if (_bleedCount === 3) {
+        const _stillOld = _pWords.slice(0, 2).every(
+          w => (rawData.raw_text || '').toLowerCase().slice(0, 1500).includes(w)
+        );
+        if (_stillOld) {
+          console.debug('[DealScout] Bleed guard: exhausted 3 retries — DOM still stale, aborting score');
+          if (window.__dealScoutDiag) window.__dealScoutDiag.postExtractBleed += '-ABORTED';
+          if (window.__dealScoutNonce === myNonce) window.__dealScoutRunning = false;
+          return;
+        }
+      }
     }
 
     // ── Guard C: forward bleed check ─────────────────────────────────────────
@@ -894,10 +912,22 @@
     // If the DOM h1 says "Nissan Titan" but raw_text leads with "2 JETSKI FOR SALE",
     // the keywords "nissan" and "titan" won't be found → bleed detected → re-extract.
     if (rawData.raw_text && (isSpaNav || !!window.__dealScoutBgReinjected)) {
-      const _cDomTitle = (window.__dealScoutDiag && window.__dealScoutDiag.domTitleAtExtract) || '';
+      // Prefer h1 (domTitleAtExtract); fall back to document.title (strips
+      // " | Facebook Marketplace | Facebook" and similar suffixes). This lets
+      // Guard C fire even when FBM doesn't render the listing in an h1[dir=auto].
+      const _cDomH1 = (window.__dealScoutDiag && window.__dealScoutDiag.domTitleAtExtract) || '';
+      const _cDocTitle = _cDomH1 ? '' :
+        document.title.replace(/\s*[|\-–]\s*facebook.*/i, '').trim();
+      const _cDomTitle = _cDomH1 || _cDocTitle;
+      if (window.__dealScoutDiag && _cDocTitle) {
+        window.__dealScoutDiag.guardCDocTitle = _cDocTitle;
+      }
+      // >= 3 (not > 3): keep short model tokens like "18v", "20v"
       const _cWords = _cDomTitle.toLowerCase()
-        .split(/\s+/).filter(w => w.length > 3).slice(0, 4);
-      if (_cWords.length >= 2) {
+        .split(/\s+/).filter(w => w.length >= 3).slice(0, 4);
+      // >= 1 (not >= 2): a single strong brand keyword (e.g. "ryobi") is
+      // enough to verify the current listing is in raw_text.
+      if (_cWords.length >= 1) {
         let _cBleedCount = 0;
         for (let _r = 0; _r < 3; _r++) {
           const _cLow = rawData.raw_text.toLowerCase().slice(0, 2000);
