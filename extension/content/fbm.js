@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.39';
+  const VERSION  = '0.28.40';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -1311,6 +1311,9 @@
               }
             }
             renderLoading(evt.data);
+            if (window.__dealScoutDiag) {
+              window.__dealScoutDiag.msToExtracted = Date.now() - (window.__dealScoutDiag.navStartMs || Date.now());
+            }
 
           } else if (evt.type === 'score') {
             // Hard nonce guard — catches the race where the user navigated WHILE
@@ -1420,8 +1423,39 @@
             if (window.__dealScoutNonce !== myNonce) { reader.cancel(); return; }
 
             if (window.__dealScoutDiag) {
-              window.__dealScoutDiag.finalTitle = result.title;
-              window.__dealScoutDiag.finalScore = result.score;
+              const _d = window.__dealScoutDiag;
+              _d.msToScore     = Date.now() - (_d.navStartMs || Date.now());
+              _d.finalTitle    = result.title;
+              _d.finalScore    = result.score;
+              _d.verdict       = result.verdict;
+              _d.aiConfidence  = result.ai_confidence;
+              _d.modelUsed     = result.model_used;
+              // Price & listing basics
+              _d.price         = result.price;
+              _d.condition     = result.condition;
+              // Market comparison
+              _d.dataSource    = result.data_source;
+              _d.marketConf    = result.market_confidence;
+              _d.queryUsed     = result.query_used;
+              _d.soldAvg       = result.sold_avg;
+              _d.soldLow       = result.sold_low;
+              _d.soldHigh      = result.sold_high;
+              _d.newPrice      = result.new_price;
+              _d.recommendedOffer = result.recommended_offer;
+              // AI flags (counts + first two words each for quick scanning)
+              _d.greenFlagCount = Array.isArray(result.green_flags) ? result.green_flags.length : 0;
+              _d.redFlagCount   = Array.isArray(result.red_flags)   ? result.red_flags.length   : 0;
+              _d.greenFlags     = Array.isArray(result.green_flags) ? result.green_flags : [];
+              _d.redFlags       = Array.isArray(result.red_flags)   ? result.red_flags   : [];
+              // Affiliate / buy-new
+              _d.buyNewTrigger  = result.buy_new_trigger || false;
+              _d.affiliateCount = Array.isArray(result.affiliate_cards) ? result.affiliate_cards.length : 0;
+              _d.affiliatePrograms = Array.isArray(result.affiliate_cards)
+                ? result.affiliate_cards.map(c => c.program_key || c.title).slice(0, 5)
+                : [];
+              // Security & reputation
+              _d.securityRisk   = result.security_score?.risk_level || null;
+              _d.reliabilityTier = result.product_evaluation?.reliability_tier || null;
             }
             // Persist the scored title + listing ID so the NEXT navigation's
             // autoScore (bg-reinjected path) can recover prevTitle without
@@ -1540,34 +1574,6 @@
     return document.getElementById(PANEL_ID) || showPanel();
   }
 
-  // ── Debug Button ─────────────────────────────────────────────────────────────
-  // Appended to the panel bottom by renderLoading + renderScore. Lets the user
-  // copy the internal diagnostics JSON without opening DevTools — paste into chat.
-  function _renderDiagButton(panel) {
-    const wrap = document.createElement('div');
-    wrap.style.cssText = 'padding:4px 10px 8px;text-align:right';
-    const btn = document.createElement('button');
-    btn.textContent = '📋 Copy Debug Info';
-    btn.title = 'Copy internal diagnostics to clipboard — paste into chat to help debug';
-    btn.style.cssText = 'font-size:10px;color:#4b5563;background:none;border:1px solid #374151;'
-      + 'border-radius:4px;cursor:pointer;padding:2px 7px;opacity:0.7';
-    btn.onmouseenter = () => { btn.style.opacity = '1'; };
-    btn.onmouseleave = () => { btn.style.opacity = '0.7'; };
-    btn.onclick = () => {
-      const info = window.__dealScoutDiag || { note: 'no diag (non-SPA load or first open)' };
-      const text = JSON.stringify(info, null, 2);
-      navigator.clipboard.writeText(text).then(() => {
-        btn.textContent = '✓ Copied!';
-        setTimeout(() => { btn.textContent = '📋 Copy Debug Info'; }, 2000);
-      }).catch(() => {
-        // Fallback: show value in a prompt so user can copy manually
-        prompt('Copy this debug info:', text);
-      });
-    };
-    wrap.appendChild(btn);
-    panel.appendChild(wrap);
-  }
-
   // ── Navigation Transition State ───────────────────────────────────────────────
   // Called immediately when SPA navigation is detected, before the new DOM loads.
   // Clears the old score instantly so the user never reads a stale result.
@@ -1650,8 +1656,6 @@
     `;
     lBody.appendChild(spinner);
 
-    _renderDiagButton(panel);
-
     // Inject spinner animation if not already present
     if (!document.getElementById('ds-spin-style')) {
       const style = document.createElement('style');
@@ -1701,7 +1705,6 @@
     renderBundleBreakdown(r, panel);
     renderNegotiationMessage(r, panel);
     renderFooter(r, panel);
-    _renderDiagButton(panel);
   }
 
   // ── Header ────────────────────────────────────────────────────────────────────

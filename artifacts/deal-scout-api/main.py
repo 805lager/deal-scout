@@ -2148,19 +2148,48 @@ async def get_diag():
     summary = []
     for r in reports:
         summary.append({
-            "nav": r.get("nav"),
-            "v": r.get("v"),
-            "loadType": r.get("loadType"),
-            "strategy": r.get("phase1Strategy"),
-            "polls": r.get("phase1Polls"),
-            "blockers": r.get("phase1Blockers"),
-            "fpChanged": r.get("fingerprintChanged"),
-            "ms": r.get("navMsToExtract"),
-            "finalTitle": r.get("finalTitle"),
-            "finalScore": r.get("finalScore"),
-            "bleed": r.get("postExtractBleed"),
-            "guardC": r.get("guardC"),
-            "retries": r.get("retries"),
+            # Timing
+            "nav":           r.get("nav"),
+            "msToExtracted": r.get("msToExtracted"),
+            "msToScore":     r.get("msToScore"),
+            "msPhase1":      r.get("navMsToExtract"),
+            # Navigation / readiness
+            "v":             r.get("v"),
+            "loadType":      r.get("loadType"),
+            "strategy":      r.get("phase1Strategy"),
+            "polls":         r.get("phase1Polls"),
+            "blockers":      r.get("phase1Blockers"),
+            "fpChanged":     r.get("fingerprintChanged"),
+            # Score
+            "finalTitle":    r.get("finalTitle"),
+            "score":         r.get("finalScore"),
+            "verdict":       r.get("verdict"),
+            "aiConf":        r.get("aiConfidence"),
+            "price":         r.get("price"),
+            "condition":     r.get("condition"),
+            # Market
+            "dataSource":    r.get("dataSource"),
+            "marketConf":    r.get("marketConf"),
+            "queryUsed":     r.get("queryUsed"),
+            "soldAvg":       r.get("soldAvg"),
+            "soldLow":       r.get("soldLow"),
+            "soldHigh":      r.get("soldHigh"),
+            "newPrice":      r.get("newPrice"),
+            "recOffer":      r.get("recommendedOffer"),
+            # Flags
+            "greenFlags":    r.get("greenFlagCount"),
+            "redFlags":      r.get("redFlagCount"),
+            # Affiliates
+            "buyNew":        r.get("buyNewTrigger"),
+            "affiliates":    r.get("affiliateCount"),
+            "programs":      r.get("affiliatePrograms"),
+            # Safety
+            "security":      r.get("securityRisk"),
+            "reliability":   r.get("reliabilityTier"),
+            # Bleed guards
+            "bleed":         r.get("postExtractBleed"),
+            "guardC":        r.get("guardC"),
+            "retries":       r.get("retries"),
         })
     return {"count": len(reports), "summary": summary, "reports": reports}
 
