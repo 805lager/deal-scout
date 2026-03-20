@@ -628,7 +628,7 @@
       // ── Diagnostics bootstrap ─────────────────────────────────────────────
       // For SPA navs via pushState, _onFbmNav already initialized window.__dealScoutDiag.
       // For hard loads and bg-reinjected-without-pushState, it's null — initialize now
-      // so the Copy Debug button always shows data.
+      // so auto-POST to /diag captures data for every load type.
       // NOTE: window.__dealScoutBgReinjected is set accurately by the re-injection guard
       // above (true = bg re-inject, false = first injection). Do NOT use
       // window.__dealScoutInjected here — it's always true by the time autoScore runs.
@@ -2834,7 +2834,7 @@
       window.__dealScoutMismatchRetried = undefined;
 
       console.debug('[DealScout] Nav detected (old:', oldId, '→ new:', newId || 'unknown', ') prevTitle:', window.__dealScoutPrevTitle);
-      // Initialize per-nav diagnostics so the Debug button always shows fresh info.
+      // Initialize per-nav diagnostics so auto-POST to /diag always captures fresh data.
       window.__dealScoutDiag = {
         v: VERSION, nav: new Date().toLocaleTimeString(),
         navStartMs: Date.now(),
