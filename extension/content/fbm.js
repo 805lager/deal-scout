@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.33';
+  const VERSION  = '0.28.34';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -661,22 +661,27 @@
     const snapUrl = location.href;
     const myNonce = window.__dealScoutNonce;
 
-    // ── Fallback prevTitle for bg-reinjected path ─────────────────────────────
-    // FBM doesn't call our pushState override so window.__dealScoutPrevTitle is
-    // never set by _onFbmNav. Fall back to the title of the most recently scored
-    // listing. IMPORTANT: write to __dealScoutRecoveredPrevTitle (NOT to
-    // __dealScoutPrevTitle) so Phase 1 stays in hard-load mode (isSpaNav=false).
-    // Setting isSpaNav=true by populating __dealScoutPrevTitle causes Phase 1 to
-    // treat an empty h1 as "stale" and time out without scoring — the freeze seen
-    // in v0.28.31. The recovered title feeds only the post-extraction bleed guard.
-    if (!!window.__dealScoutBgReinjected && !window.__dealScoutPrevTitle) {
+    // ── Recover prevTitle for any nav type ────────────────────────────────────
+    // FBM SPA nav can result in three injection scenarios:
+    //   (a) bg-reinjected: background.js re-injected, __dealScoutBgReinjected=true
+    //   (b) fresh-inject: FBM tore down the JS context so __dealScoutInjected was
+    //       cleared, extension sees a fresh injection, isBgReinjected=false — but
+    //       DOM content may still be from the previous listing during React hydration
+    //   (c) real hard load: browser fully reloaded the page
+    // Cases (a) and (b) are indistinguishable from the extension's perspective,
+    // but both can carry stale DOM content. Recover prevTitle from __dealScoutLastScoredTitle
+    // whenever the listing ID changed, regardless of injection path.
+    // IMPORTANT: write to __dealScoutRecoveredPrevTitle, NOT __dealScoutPrevTitle,
+    // so Phase 1 stays in hard-load mode (isSpaNav=false). Setting prevTitle would
+    // make Phase 1 treat an empty h1 as "stale" → freeze (v0.28.31 regression).
+    if (!window.__dealScoutPrevTitle) {
       const _lastId = window.__dealScoutLastScoredId || '';
       const _currId = _listingIdFromUrl(location.href);
       if (_lastId && _currId && _lastId !== _currId && window.__dealScoutLastScoredTitle) {
         window.__dealScoutRecoveredPrevTitle = window.__dealScoutLastScoredTitle;
         if (window.__dealScoutDiag) {
           window.__dealScoutDiag.recoveredPrevTitle = window.__dealScoutLastScoredTitle;
-          window.__dealScoutDiag.loadType = 'spa-bg-reinjected-prevTitleRecovered';
+          window.__dealScoutDiag.loadType = (window.__dealScoutDiag.loadType || 'hard') + '+prevTitleRecovered';
         }
       }
     }
@@ -861,7 +866,11 @@
     // back to the title recovered from the last scored listing (bg-reinjected
     // path where pushState doesn't fire). Both act as "what was the old listing".
     const _effectivePrev = capturedPrevTitle || window.__dealScoutRecoveredPrevTitle || '';
-    if ((isSpaNav || !!window.__dealScoutBgReinjected) && _effectivePrev && rawData.raw_text) {
+    // Fire whenever _effectivePrev is set, regardless of injection path.
+    // FBM can shed the JS context (isBgReinjected=false, isSpaNav=false) while
+    // keeping stale DOM content — the old injection-path gate silently skipped
+    // the guard in that case. Data-driven: if we know the previous listing, check.
+    if (_effectivePrev && rawData.raw_text) {
       // >= 3 (not > 3): captures 3-char model tokens like "20v", "18v", "dcf"
       // that are stripped by the old filter but are strong bleed signals.
       const _pWords = _effectivePrev.toLowerCase()
@@ -911,7 +920,9 @@
     // path (where isSpaNav=false and Guard A/B are never reached).
     // If the DOM h1 says "Nissan Titan" but raw_text leads with "2 JETSKI FOR SALE",
     // the keywords "nissan" and "titan" won't be found → bleed detected → re-extract.
-    if (rawData.raw_text && (isSpaNav || !!window.__dealScoutBgReinjected)) {
+    // Guard C fires whenever we can derive a current-listing title (from h1 or
+    // document.title). No injection-path gate — same reasoning as bleed guard above.
+    if (rawData.raw_text) {
       // Prefer h1 (domTitleAtExtract); fall back to document.title (strips
       // " | Facebook Marketplace | Facebook" and similar suffixes). This lets
       // Guard C fire even when FBM doesn't render the listing in an h1[dir=auto].
