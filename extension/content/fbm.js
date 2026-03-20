@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.34';
+  const VERSION  = '0.28.35';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -95,6 +95,10 @@
       // Clear any previously-recovered prevTitle so it doesn't persist into
       // the next scoring cycle.
       window.__dealScoutRecoveredPrevTitle = undefined;
+      // Clear the snap URL/nonce so the new autoScore(0) captures fresh values
+      // instead of inheriting the previous cycle's stale ones.
+      window.__dealScoutSnapUrl   = undefined;
+      window.__dealScoutSnapNonce = undefined;
       renderNavigating();
       clearTimeout(window.__dealScoutRescanTimer);
       window.__dealScoutRescanTimer = setTimeout(autoScore, 100);
@@ -658,23 +662,30 @@
       }
     }
 
-    const snapUrl = location.href;
-    const myNonce = window.__dealScoutNonce;
+    // ── Snap URL + nonce — captured ONCE at attempt 0, never re-captured ────────
+    // Each Phase 1 poll schedules autoScore(attempt+1) via setTimeout. If a
+    // navigation fires between poll N and N+1, background.js increments
+    // window.__dealScoutNonce. The old code re-captured both values at every
+    // attempt, so the recursive call silently adopted the NEW nonce — defeating
+    // the abort guard and allowing the stale autoScore to run to completion.
+    // Fix: capture at attempt 0, store in window, read from window thereafter.
+    if (attempt === 0) {
+      window.__dealScoutSnapUrl   = location.href;
+      window.__dealScoutSnapNonce = window.__dealScoutNonce;
+    }
+    const snapUrl  = window.__dealScoutSnapUrl;
+    const myNonce  = window.__dealScoutSnapNonce;
 
-    // ── Recover prevTitle for any nav type ────────────────────────────────────
+    // ── Recover prevTitle (attempt 0 only) ───────────────────────────────────
     // FBM SPA nav can result in three injection scenarios:
     //   (a) bg-reinjected: background.js re-injected, __dealScoutBgReinjected=true
     //   (b) fresh-inject: FBM tore down the JS context so __dealScoutInjected was
     //       cleared, extension sees a fresh injection, isBgReinjected=false — but
     //       DOM content may still be from the previous listing during React hydration
     //   (c) real hard load: browser fully reloaded the page
-    // Cases (a) and (b) are indistinguishable from the extension's perspective,
-    // but both can carry stale DOM content. Recover prevTitle from __dealScoutLastScoredTitle
-    // whenever the listing ID changed, regardless of injection path.
-    // IMPORTANT: write to __dealScoutRecoveredPrevTitle, NOT __dealScoutPrevTitle,
-    // so Phase 1 stays in hard-load mode (isSpaNav=false). Setting prevTitle would
-    // make Phase 1 treat an empty h1 as "stale" → freeze (v0.28.31 regression).
-    if (!window.__dealScoutPrevTitle) {
+    // Run only at attempt 0 — this is a one-time setup, not a per-poll action.
+    // Running on every attempt caused "+prevTitleRecovered" to appear 25+ times.
+    if (attempt === 0 && !window.__dealScoutPrevTitle) {
       const _lastId = window.__dealScoutLastScoredId || '';
       const _currId = _listingIdFromUrl(location.href);
       if (_lastId && _currId && _lastId !== _currId && window.__dealScoutLastScoredTitle) {
@@ -928,7 +939,10 @@
       // Guard C fire even when FBM doesn't render the listing in an h1[dir=auto].
       const _cDomH1 = (window.__dealScoutDiag && window.__dealScoutDiag.domTitleAtExtract) || '';
       const _cDocTitle = _cDomH1 ? '' :
-        document.title.replace(/\s*[|\-–]\s*facebook.*/i, '').trim();
+        document.title
+          .replace(/^Marketplace\s*[-–|]\s*/i, '')   // strip leading "Marketplace - "
+          .replace(/\s*[|\-–]\s*facebook.*/i, '')     // strip trailing "| Facebook..."
+          .trim();
       const _cDomTitle = _cDomH1 || _cDocTitle;
       if (window.__dealScoutDiag && _cDocTitle) {
         window.__dealScoutDiag.guardCDocTitle = _cDocTitle;
