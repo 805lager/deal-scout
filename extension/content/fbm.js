@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.30';
+  const VERSION  = '0.28.31';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -657,6 +657,24 @@
 
     const snapUrl = location.href;
     const myNonce = window.__dealScoutNonce;
+
+    // ── Fallback prevTitle for bg-reinjected path ─────────────────────────────
+    // FBM doesn't call our pushState override so window.__dealScoutPrevTitle is
+    // never set by _onFbmNav. Fall back to the title of the most recently scored
+    // listing: if we scored listing X and the current URL is listing Y (different
+    // ID), inject X's title as prevTitle to activate ALL existing bleed guards
+    // (Phase 1 titleIsStale, post-extraction bleed guard, Guard C).
+    if (!!window.__dealScoutBgReinjected && !window.__dealScoutPrevTitle) {
+      const _lastId = window.__dealScoutLastScoredId || '';
+      const _currId = _listingIdFromUrl(location.href);
+      if (_lastId && _currId && _lastId !== _currId && window.__dealScoutLastScoredTitle) {
+        window.__dealScoutPrevTitle = window.__dealScoutLastScoredTitle;
+        if (window.__dealScoutDiag) {
+          window.__dealScoutDiag.prevTitle = window.__dealScoutLastScoredTitle + ' [recovered]';
+          window.__dealScoutDiag.loadType = 'spa-bg-reinjected-prevTitleRecovered';
+        }
+      }
+    }
 
     // ── Readiness check — Phase 1: wait for new listing title ────────────────
     // For SPA navs (prevTitle is set), poll every 200 ms (max 20 × 200 ms = 4 s)
@@ -1298,6 +1316,11 @@
               window.__dealScoutDiag.finalTitle = result.title;
               window.__dealScoutDiag.finalScore = result.score;
             }
+            // Persist the scored title + listing ID so the NEXT navigation's
+            // autoScore (bg-reinjected path) can recover prevTitle without
+            // relying on the pushState intercept that FBM doesn't always trigger.
+            window.__dealScoutLastScoredTitle = result.title || '';
+            window.__dealScoutLastScoredId = _listingIdFromUrl(snapUrl);
             renderScore(result);
             chrome.runtime.sendMessage({ type: 'BADGE_UPDATE', score: result.score })
               .catch(() => {});
