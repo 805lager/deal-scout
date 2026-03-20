@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.31';
+  const VERSION  = '0.28.32';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -92,6 +92,9 @@
       // Reset the diag so the next autoScore() starts fresh (not accumulating
       // phase1Log entries from the previous run onto the same object).
       window.__dealScoutDiag = null;
+      // Clear any previously-recovered prevTitle so it doesn't persist into
+      // the next scoring cycle.
+      window.__dealScoutRecoveredPrevTitle = undefined;
       renderNavigating();
       clearTimeout(window.__dealScoutRescanTimer);
       window.__dealScoutRescanTimer = setTimeout(autoScore, 100);
@@ -661,16 +664,18 @@
     // ── Fallback prevTitle for bg-reinjected path ─────────────────────────────
     // FBM doesn't call our pushState override so window.__dealScoutPrevTitle is
     // never set by _onFbmNav. Fall back to the title of the most recently scored
-    // listing: if we scored listing X and the current URL is listing Y (different
-    // ID), inject X's title as prevTitle to activate ALL existing bleed guards
-    // (Phase 1 titleIsStale, post-extraction bleed guard, Guard C).
+    // listing. IMPORTANT: write to __dealScoutRecoveredPrevTitle (NOT to
+    // __dealScoutPrevTitle) so Phase 1 stays in hard-load mode (isSpaNav=false).
+    // Setting isSpaNav=true by populating __dealScoutPrevTitle causes Phase 1 to
+    // treat an empty h1 as "stale" and time out without scoring — the freeze seen
+    // in v0.28.31. The recovered title feeds only the post-extraction bleed guard.
     if (!!window.__dealScoutBgReinjected && !window.__dealScoutPrevTitle) {
       const _lastId = window.__dealScoutLastScoredId || '';
       const _currId = _listingIdFromUrl(location.href);
       if (_lastId && _currId && _lastId !== _currId && window.__dealScoutLastScoredTitle) {
-        window.__dealScoutPrevTitle = window.__dealScoutLastScoredTitle;
+        window.__dealScoutRecoveredPrevTitle = window.__dealScoutLastScoredTitle;
         if (window.__dealScoutDiag) {
-          window.__dealScoutDiag.prevTitle = window.__dealScoutLastScoredTitle + ' [recovered]';
+          window.__dealScoutDiag.recoveredPrevTitle = window.__dealScoutLastScoredTitle;
           window.__dealScoutDiag.loadType = 'spa-bg-reinjected-prevTitleRecovered';
         }
       }
@@ -852,8 +857,12 @@
     // old listing content in the DOM.  Verify the extracted text doesn't still
     // look like the previous listing.  If it does, wait 1.5 s and re-extract
     // (up to 3 retries = 4.5 s extra at most).
-    if (isSpaNav && capturedPrevTitle && rawData.raw_text) {
-      const _pWords = capturedPrevTitle.toLowerCase()
+    // _effectivePrev: use the pushState-captured prevTitle when available; fall
+    // back to the title recovered from the last scored listing (bg-reinjected
+    // path where pushState doesn't fire). Both act as "what was the old listing".
+    const _effectivePrev = capturedPrevTitle || window.__dealScoutRecoveredPrevTitle || '';
+    if ((isSpaNav || !!window.__dealScoutBgReinjected) && _effectivePrev && rawData.raw_text) {
+      const _pWords = _effectivePrev.toLowerCase()
         .split(/\s+/).filter(w => w.length > 3).slice(0, 4);
       let _bleedCount = 0;
       for (let _r = 0; _r < 3; _r++) {

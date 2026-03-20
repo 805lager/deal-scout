@@ -1,0 +1,158 @@
+{
+  "v": "0.28.31",
+  "nav": "6:12:49 PM",
+  "navStartMs": 1773969169793,
+  "loadType": "hard",
+  "isBgReinjected": false,
+  "prevTitle": "(none)",
+  "snapUrl": "ref=browse_tab&referral_code=marketplace_top_picks&referral_story_type=top_picks",
+  "isSpaNav": false,
+  "phase1Log": [
+    {
+      "a": 0,
+      "title": "1979 Chevrolet camaro Z/28 Coupe 2D",
+      "stale": 0,
+      "content": 1,
+      "desc": 0,
+      "img": 0
+    },
+    {
+      "a": 1,
+      "title": "1979 Chevrolet camaro Z/28 Coupe 2D",
+      "stale": 0,
+      "content": 1,
+      "desc": 0,
+      "img": 0
+    },
+    {
+      "a": 2,
+      "title": "1979 Chevrolet camaro Z/28 Coupe 2D",
+      "stale": 0,
+      "content": 1,
+      "desc": 0,
+      "img": 0
+    },
+    {
+      "a": 3,
+      "title": "1979 Chevrolet camaro Z/28 Coupe 2D",
+      "stale": 0,
+      "content": 1,
+      "desc": 0,
+      "img": 0
+    },
+    {
+      "a": 4,
+      "title": "1979 Chevrolet camaro Z/28 Coupe 2D",
+      "stale": 0,
+      "content": 1,
+      "desc": 0,
+      "img": 0
+    },
+    {
+      "a": 5,
+      "title": "1979 Chevrolet camaro Z/28 Coupe 2D",
+      "stale": 0,
+      "content": 1,
+      "desc": 0,
+      "img": 0
+    },
+    {
+      "a": 6,
+      "title": "1979 Chevrolet camaro Z/28 Coupe 2D",
+      "stale": 0,
+      "content": 1,
+      "desc": 0,
+      "img": 0
+    },
+    {
+      "a": 7,
+      "title": "1979 Chevrolet camaro Z/28 Coupe 2D",
+      "stale": 0,
+      "content": 1,
+      "desc": 0,
+      "img": 0
+    },
+    {
+      "a": 8,
+      "title": "1979 Chevrolet camaro Z/28 Coupe 2D",
+      "stale": 0,
+      "content": 1,
+      "desc": 0,
+      "img": 0
+    },
+    {
+      "a": 9,
+      "title": "1979 Chevrolet camaro Z/28 Coupe 2D",
+      "stale": 0,
+      "content": 1,
+      "desc": 0,
+      "img": 0
+    },
+    {
+      "a": 10,
+      "title": "1979 Chevrolet camaro Z/28 Coupe 2D",
+      "stale": 0,
+      "content": 1,
+      "desc": 0,
+      "img": 0
+    },
+    {
+      "a": 11,
+      "title": "1979 Chevrolet camaro Z/28 Coupe 2D",
+      "stale": 0,
+      "content": 1,
+      "desc": 0,
+      "img": 0
+    },
+    {
+      "a": 12,
+      "title": "1979 Chevrolet camaro Z/28 Coupe 2D",
+      "stale": 0,
+      "content": 1,
+      "desc": 0,
+      "img": 0
+    },
+    {
+      "a": 13,
+      "title": "1979 Chevrolet camaro Z/28 Coupe 2D",
+      "stale": 0,
+      "content": 1,
+      "desc": 0,
+      "img": 0
+    },
+    {
+      "a": 14,
+      "title": "1979 Chevrolet camaro Z/28 Coupe 2D",
+      "stale": 0,
+      "content": 1,
+      "desc": 0,
+      "img": 0
+    },
+    {
+      "a": 15,
+      "title": "1979 Chevrolet camaro Z/28 Coupe 2D",
+      "stale": 0,
+      "content": 1,
+      "desc": 1,
+      "img": 0
+    }
+  ],
+  "phase1Polls": 15,
+  "phase1Blockers": "none",
+  "domTitleAtExtract": "1979 Chevrolet camaro Z/28 Coupe 2D",
+  "urlAtExtract": "ref=browse_tab&referral_code=marketplace_top_picks&referral_story_type=top_picks",
+  "descElFoundBy": "NONE",
+  "hasImageAtExtract": false,
+  "rawTextLen": 1756,
+  "rawTextStart": "0:01 / 0:131979 Chevrolet camaro Z/28 Coupe 2D$4,500Listed 3 weeks ago in San Diego, CASend seller a messageHi Michael, is this still available?Hi Michael, is this still available?SendMessageSaveShare",
+  "extractedUrl": "",
+  "postExtractBleed": "skipped",
+  "guardC": "skipped",
+  "navMsToExtract": 4513,
+  "earlyGuard": "(not checked)",
+  "scoreGuardA": "(not reached)",
+  "scoreGuardB": "checked(overlap=5,dom=\"1979 Chevrolet camaro Z/28 Cou\")",
+  "retries": 0,
+  "finalTitle": "1979 Chevrolet Camaro Z/28 Coupe 2D",
+  "finalScore": 5
+}
