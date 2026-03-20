@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.43';
+  const VERSION  = '0.28.44';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -891,8 +891,12 @@
       })();
       const _titleFallback = (() => {
         const raw = document.title || '';
-        // Strip leading "(N) " notification badge and "Marketplace - " prefix
-        return raw.replace(/^\(\d+\)\s*/, '').replace(/^Marketplace\s*[-–]\s*/i, '').trim();
+        // Strip notification badge, "Marketplace - " prefix, and " | Facebook" suffix
+        return raw
+          .replace(/^\(\d+\)\s*/, '')
+          .replace(/^Marketplace\s*[-–]\s*/i, '')
+          .replace(/\s*\|\s*(?:facebook|meta)\s*$/i, '')
+          .trim();
       })();
       // FIX: check all 3 selectors that extractRaw() tries (was only checking 2)
       const _de1 = document.querySelector('[data-testid="marketplace-pdp-description"]');
@@ -2838,10 +2842,11 @@
           const t = el.textContent.trim();
           if (t && !_GENERIC_TITLES.has(t.toLowerCase())) return t;
         }
-        // document.title fallback: "(2) Marketplace - Weber Charcoal Grill"
+        // document.title fallback: "(2) Marketplace - Weber Grill" OR "Weber Grill | Facebook"
         const raw = (document.title || '')
-          .replace(/^\(\d+\)\s*/, '')
-          .replace(/^Marketplace\s*[-–]\s*/i, '')
+          .replace(/^\(\d+\)\s*/, '')              // strip notification badge "(2) "
+          .replace(/^Marketplace\s*[-–]\s*/i, '')  // strip "Marketplace - " prefix
+          .replace(/\s*\|\s*(?:facebook|meta)\s*$/i, '') // strip " | Facebook" suffix
           .trim();
         return (!raw || _GENERIC_TITLES.has(raw.toLowerCase())) ? '' : raw;
       })();

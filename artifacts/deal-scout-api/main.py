@@ -480,6 +480,7 @@ async def score_listing(listing: ListingRequest, request: Request):
             market_value_dict,
             image_url          = image_url,
             product_evaluation = product_eval,
+            photo_count        = listing.photo_count,
         )
     except RuntimeError as e:
         _security_task.cancel()
@@ -988,6 +989,7 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                     listing_dict, market_value_dict,
                     image_url          = image_url,
                     product_evaluation = product_eval,
+                    photo_count        = listing.photo_count,
                 )
             except Exception as _score_err:
                 _security_task.cancel()

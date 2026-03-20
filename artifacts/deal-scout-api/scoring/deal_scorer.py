@@ -142,7 +142,7 @@ def _format_seller_trust(trust: dict) -> str:
     return "\n".join(lines)
 
 
-def build_scoring_prompt(listing: dict, market_value: dict, product_evaluation=None) -> str:
+def build_scoring_prompt(listing: dict, market_value: dict, product_evaluation=None, photo_count: int = 0) -> str:
     """
     Build the prompt that Claude uses to score the deal.
 
@@ -215,6 +215,13 @@ Apply vehicle-specific reasoning:
     else:
         shipping_line = "\nShipping:     Free / local pickup (no additional cost)"
 
+    if photo_count > 1:
+        photos_line = f"\nPhotos:       {photo_count} available (you are analyzing photo 1 of {photo_count} — do NOT flag limited photo count as a red flag)"
+    elif photo_count == 1:
+        photos_line = "\nPhotos:       1 available"
+    else:
+        photos_line = "\nPhotos:       Not provided"
+
     return f"""You are an expert deal evaluator for a personal shopping assistant.
 Your job is to analyze a second-hand marketplace listing and produce a structured deal score.
 {multi_item_instruction}{vehicle_instruction}
@@ -224,7 +231,7 @@ Price:        {listing['raw_price_text']}{f" (reduced from ${listing['original_p
 Condition:    {listing.get('condition', 'Not specified')}
 Location:     {listing.get('location', 'Unknown')}
 Seller:       {listing.get('seller_name', 'Unknown')}
-Bundle/Set:   {'Yes — see multi-item instructions above' if is_multi else 'No — single item'}
+Bundle/Set:   {'Yes — see multi-item instructions above' if is_multi else 'No — single item'}{photos_line}
 Description:  {listing.get('description', 'No description provided')}
 
 ## SELLER TRUST
@@ -458,6 +465,7 @@ async def score_deal(
     market_value: dict,
     image_url: Optional[str] = None,
     product_evaluation=None,  # ProductEvaluation from product_evaluator — enriches Claude's context
+    photo_count: int = 0,
 ) -> Optional[DealScore]:
     """
     Send listing + market data to Claude and parse the deal score response.
@@ -476,7 +484,7 @@ async def score_deal(
         log.error("Get your key at: https://console.anthropic.com")
         return None
 
-    prompt = build_scoring_prompt(listing, market_value, product_evaluation)
+    prompt = build_scoring_prompt(listing, market_value, product_evaluation, photo_count=photo_count)
 
     # Attempt image fetch if URL provided
     # WHY CONCURRENT: fetch image while building prompt — saves ~0.5s
@@ -510,7 +518,12 @@ async def score_deal(
                     # flags them as mismatches with the listing title. This caused a couch listing to
                     # score 2/10 because Claude saw a bike in the background bookshelf area.
                     f"This photo is for a listing titled: '{listing.get('title', 'unknown item')}'\n\n"
-                    "IMPORTANT: Focus ONLY on the PRIMARY SUBJECT of this photo (the item being sold). "
+                    + (
+                        f"NOTE: This listing has {photo_count} total photo(s). You are analyzing photo 1 of {photo_count}. "
+                        "Do NOT flag limited photo quantity as a red flag — additional photos exist.\n\n"
+                        if photo_count > 1 else ""
+                    )
+                    + "IMPORTANT: Focus ONLY on the PRIMARY SUBJECT of this photo (the item being sold). "
                     "Background objects, room decor, and other items visible in the environment are "
                     "INCIDENTAL — they are NOT the listing item and should NOT affect your analysis. "
                     "If you see multiple objects, the item matching the listing title is the one being sold.\n\n"

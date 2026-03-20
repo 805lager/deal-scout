@@ -260,7 +260,7 @@ Reliability tier guide:
 - unknown: product not well-documented or too niche to assess
 
 Base this only on real owner feedback and documented issues, not marketing.
-Return unknown tier if you do not have sufficient data for this specific model."""
+If you lack model-specific data but know the brand's general reliability, use the brand-level tier at "low" confidence rather than returning "unknown". Only return "unknown" if the brand itself is obscure or you genuinely have no quality signal at all."""
 
     try:
         client = _anthropic.Anthropic(
