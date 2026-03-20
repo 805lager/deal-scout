@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.37';
+  const VERSION  = '0.28.38';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -841,9 +841,14 @@
       window.__dealScoutDiag.fingerprintChanged = _fingerprintChanged;
       window.__dealScoutDiag.phase1Polls = attempt;
       window.__dealScoutDiag.phase1Blockers = _useFingerprint
+        // Strategy A: only fingerprint change + content matter
         ? [!_fingerprintChanged && 'fpNoChange', !hasContent && 'noContent'].filter(Boolean).join(',') || 'none'
-        : [titleIsStale && 'titleStale', descMissing && 'descMissing',
-           imageMissing && 'imgMissing', !hasContent && 'noContent'].filter(Boolean).join(',') || 'none';
+        : isSpaNav
+        // Strategy B: h1 title + desc + image + content
+        ? [titleIsStale && 'titleStale', descMissing && 'descMissing',
+           imageMissing && 'imgMissing', !hasContent && 'noContent'].filter(Boolean).join(',') || 'none'
+        // Strategy C: only image + content (desc/h1 checks removed as they provide no signal)
+        : [imageMissing && 'imgMissing', !hasContent && 'noContent'].filter(Boolean).join(',') || 'none';
     }
 
     // ── Phase 2: short settle after image confirms listing is ready ─────────────
