@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.28';
+  const VERSION  = '0.28.29';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -607,6 +607,38 @@
         return;
       }
       window.__dealScoutRunning = true;
+
+      // ── Diagnostics bootstrap ─────────────────────────────────────────────
+      // For SPA navs, _onFbmNav already initialized window.__dealScoutDiag.
+      // For hard loads and re-injections where pushState wasn't intercepted,
+      // it's null — initialize it now so the Copy Debug button always shows data.
+      const _isReinjected = !!window.__dealScoutInjected;
+      if (!window.__dealScoutDiag) {
+        window.__dealScoutDiag = {
+          v: VERSION, nav: new Date().toLocaleTimeString(),
+          navStartMs: Date.now(),
+          loadType: _isReinjected ? 'spa-bg-reinjected-NO-PUSHSTATE' : 'hard',
+          isBgReinjected: _isReinjected,
+          prevTitle: window.__dealScoutPrevTitle || '(none)',
+          snapUrl: location.href.slice(-80),
+          isSpaNav: null,
+          phase1Log: [],
+          phase1Polls: '?', phase1Blockers: '?',
+          domTitleAtExtract: '?', urlAtExtract: '?',
+          descElFoundBy: '?', hasImageAtExtract: '?',
+          rawTextLen: 0, rawTextStart: '?',
+          extractedUrl: '?',
+          postExtractBleed: 'skipped',
+          navMsToExtract: '?',
+          earlyGuard: '(not checked)', scoreGuardA: '(not reached)', scoreGuardB: '(not reached)',
+          retries: 0, finalTitle: '?', finalScore: '?',
+        };
+      } else {
+        // Normal SPA nav — diag was set by _onFbmNav; stamp the load type.
+        if (!window.__dealScoutDiag.loadType) {
+          window.__dealScoutDiag.loadType = 'spa-via-pushstate';
+        }
+      }
     }
 
     const snapUrl = location.href;
