@@ -2125,6 +2125,52 @@ async def admin_dashboard(request: Request):
     }
 
 
+# ── Diagnostic report collection ─────────────────────────────────────────────
+# The extension auto-POSTs window.__dealScoutDiag after each score. Reports are
+# held in a bounded in-memory deque (max 500) so they survive the test session
+# but are wiped on API restart. No auth required — dev-only endpoint.
+
+_diag_store: deque = deque(maxlen=500)
+
+@app.post("/diag")
+async def collect_diag(request: Request):
+    try:
+        payload = await request.json()
+        payload["_server_ts"] = datetime.utcnow().isoformat()
+        _diag_store.append(payload)
+        return {"ok": True, "stored": len(_diag_store)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.get("/diag")
+async def get_diag():
+    reports = list(_diag_store)
+    summary = []
+    for r in reports:
+        summary.append({
+            "nav": r.get("nav"),
+            "v": r.get("v"),
+            "loadType": r.get("loadType"),
+            "strategy": r.get("phase1Strategy"),
+            "polls": r.get("phase1Polls"),
+            "blockers": r.get("phase1Blockers"),
+            "fpChanged": r.get("fingerprintChanged"),
+            "ms": r.get("navMsToExtract"),
+            "finalTitle": r.get("finalTitle"),
+            "finalScore": r.get("finalScore"),
+            "bleed": r.get("postExtractBleed"),
+            "guardC": r.get("guardC"),
+            "retries": r.get("retries"),
+        })
+    return {"count": len(reports), "summary": summary, "reports": reports}
+
+@app.delete("/diag")
+async def clear_diag():
+    n = len(_diag_store)
+    _diag_store.clear()
+    return {"ok": True, "cleared": n}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(

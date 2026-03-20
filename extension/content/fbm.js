@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.38';
+  const VERSION  = '0.28.39';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -1431,6 +1431,14 @@
             renderScore(result);
             chrome.runtime.sendMessage({ type: 'BADGE_UPDATE', score: result.score })
               .catch(() => {});
+            // Auto-ship diag report to /diag — fire and forget, never blocks.
+            if (window.__dealScoutDiag) {
+              fetch(`${API_BASE}/diag`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(window.__dealScoutDiag),
+              }).catch(() => {});
+            }
 
           } else if (evt.type === 'error') {
             if (window.__dealScoutNonce !== myNonce) { reader.cancel(); return; }

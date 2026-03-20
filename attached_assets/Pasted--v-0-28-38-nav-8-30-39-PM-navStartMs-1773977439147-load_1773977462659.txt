@@ -1,0 +1,150 @@
+{
+  "v": "0.28.38",
+  "nav": "8:30:39 PM",
+  "navStartMs": 1773977439147,
+  "loadType": "hard",
+  "isBgReinjected": false,
+  "prevTitle": "(none)",
+  "snapUrl": "5C%225531249236994548%5C%22%3A686%7D%2C%5C%22grouping_info%5C%22%3Anull%7D%22%7D",
+  "isSpaNav": false,
+  "phase1Log": [
+    {
+      "a": 0,
+      "fp": 0,
+      "title": "",
+      "stale": 0,
+      "content": 1,
+      "desc": 0,
+      "img": 0
+    },
+    {
+      "a": 1,
+      "fp": 0,
+      "title": "",
+      "stale": 0,
+      "content": 1,
+      "desc": 0,
+      "img": 0
+    },
+    {
+      "a": 2,
+      "fp": 0,
+      "title": "",
+      "stale": 0,
+      "content": 1,
+      "desc": 0,
+      "img": 0
+    },
+    {
+      "a": 3,
+      "fp": 0,
+      "title": "",
+      "stale": 0,
+      "content": 1,
+      "desc": 0,
+      "img": 0
+    },
+    {
+      "a": 4,
+      "fp": 0,
+      "title": "",
+      "stale": 0,
+      "content": 1,
+      "desc": 0,
+      "img": 0
+    },
+    {
+      "a": 5,
+      "fp": 0,
+      "title": "",
+      "stale": 0,
+      "content": 1,
+      "desc": 0,
+      "img": 0
+    },
+    {
+      "a": 6,
+      "fp": 0,
+      "title": "",
+      "stale": 0,
+      "content": 1,
+      "desc": 0,
+      "img": 0
+    },
+    {
+      "a": 7,
+      "fp": 0,
+      "title": "",
+      "stale": 0,
+      "content": 1,
+      "desc": 0,
+      "img": 0
+    },
+    {
+      "a": 8,
+      "fp": 0,
+      "title": "",
+      "stale": 0,
+      "content": 1,
+      "desc": 0,
+      "img": 0
+    },
+    {
+      "a": 9,
+      "fp": 0,
+      "title": "",
+      "stale": 0,
+      "content": 1,
+      "desc": 0,
+      "img": 0
+    },
+    {
+      "a": 10,
+      "fp": 0,
+      "title": "",
+      "stale": 0,
+      "content": 1,
+      "desc": 0,
+      "img": 0
+    },
+    {
+      "a": 11,
+      "fp": 0,
+      "title": "",
+      "stale": 0,
+      "content": 1,
+      "desc": 0,
+      "img": 0
+    },
+    {
+      "a": 12,
+      "fp": 0,
+      "title": "",
+      "stale": 0,
+      "content": 1,
+      "desc": 0,
+      "img": 0
+    }
+  ],
+  "phase1Polls": 12,
+  "phase1Blockers": "none",
+  "domTitleAtExtract": "",
+  "urlAtExtract": "5C%225531249236994548%5C%22%3A686%7D%2C%5C%22grouping_info%5C%22%3Anull%7D%22%7D",
+  "descElFoundBy": "NONE",
+  "hasImageAtExtract": false,
+  "rawTextLen": 1623,
+  "rawTextStart": "0:02 / 0:26SCUBAJET 400w SUP PRO w nose cone light.$499Buy nowCovered by Purchase ProtectionMessageSaveShareDetails ConditionUsed - GoodBrandscubajetBattery in as new shape and charger. Use estimate 3",
+  "extractedUrl": "",
+  "postExtractBleed": "skipped",
+  "guardC": "clean",
+  "navMsToExtract": 3346,
+  "earlyGuard": "(not checked)",
+  "scoreGuardA": "(not reached)",
+  "scoreGuardB": "(not reached)",
+  "retries": 0,
+  "finalTitle": "SCUBAJET 400w SUP PRO w nose cone light",
+  "finalScore": 3,
+  "phase1Strategy": "C-hard",
+  "fingerprintChanged": false,
+  "guardCDocTitle": "SCUBAJET 400w SUP PRO w nose cone light."
+}
