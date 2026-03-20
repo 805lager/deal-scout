@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.29';
+  const VERSION  = '0.28.30';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -85,6 +85,13 @@
         window.__dealScoutAbort = null;
       }
       window.__dealScoutRunning = false;
+      // Mark that this autoScore was triggered by a background.js re-injection
+      // (rather than a first page load). Used in autoScore() to apply settle
+      // wait and Guard C even when isSpaNav=false.
+      window.__dealScoutBgReinjected = true;
+      // Reset the diag so the next autoScore() starts fresh (not accumulating
+      // phase1Log entries from the previous run onto the same object).
+      window.__dealScoutDiag = null;
       renderNavigating();
       clearTimeout(window.__dealScoutRescanTimer);
       window.__dealScoutRescanTimer = setTimeout(autoScore, 100);
@@ -92,6 +99,7 @@
     return;
   }
   window.__dealScoutInjected = true;
+  window.__dealScoutBgReinjected = false; // first injection — not a bg re-inject
 
   // Load stored API base override (set via popup Settings panel)
   try {
@@ -609,10 +617,13 @@
       window.__dealScoutRunning = true;
 
       // ── Diagnostics bootstrap ─────────────────────────────────────────────
-      // For SPA navs, _onFbmNav already initialized window.__dealScoutDiag.
-      // For hard loads and re-injections where pushState wasn't intercepted,
-      // it's null — initialize it now so the Copy Debug button always shows data.
-      const _isReinjected = !!window.__dealScoutInjected;
+      // For SPA navs via pushState, _onFbmNav already initialized window.__dealScoutDiag.
+      // For hard loads and bg-reinjected-without-pushState, it's null — initialize now
+      // so the Copy Debug button always shows data.
+      // NOTE: window.__dealScoutBgReinjected is set accurately by the re-injection guard
+      // above (true = bg re-inject, false = first injection). Do NOT use
+      // window.__dealScoutInjected here — it's always true by the time autoScore runs.
+      const _isReinjected = !!window.__dealScoutBgReinjected;
       if (!window.__dealScoutDiag) {
         window.__dealScoutDiag = {
           v: VERSION, nav: new Date().toLocaleTimeString(),
@@ -628,7 +639,7 @@
           descElFoundBy: '?', hasImageAtExtract: '?',
           rawTextLen: 0, rawTextStart: '?',
           extractedUrl: '?',
-          postExtractBleed: 'skipped',
+          postExtractBleed: 'skipped', guardC: 'skipped',
           navMsToExtract: '?',
           earlyGuard: '(not checked)', scoreGuardA: '(not reached)', scoreGuardB: '(not reached)',
           retries: 0, finalTitle: '?', finalScore: '?',
@@ -637,6 +648,9 @@
         // Normal SPA nav — diag was set by _onFbmNav; stamp the load type.
         if (!window.__dealScoutDiag.loadType) {
           window.__dealScoutDiag.loadType = 'spa-via-pushstate';
+        }
+        if (!('guardC' in window.__dealScoutDiag)) {
+          window.__dealScoutDiag.guardC = 'skipped';
         }
       }
     }
@@ -762,7 +776,13 @@
     // fully rendered (photo decoded + laid out = React hydration complete).
     // We still wait a brief 500 ms to let any trailing reconciliation finish
     // (e.g. FBM's lazy-loaded seller info), but we no longer need 2 s here.
-    if (isSpaNav) {
+    //
+    // Also applies to bg-reinjected paths (isBgReinjected=true) even when
+    // isSpaNav=false. Diagnostic data shows FBM frequently updates the h1 +
+    // description element before the body text has fully swapped — 500ms gives
+    // React time to finish reconciliation before we extract.
+    const _needsPhase2 = isSpaNav || !!window.__dealScoutBgReinjected;
+    if (_needsPhase2) {
       console.debug('[DealScout] Phase 2 — 500ms settle after image-confirmed readiness');
       await new Promise(r => setTimeout(r, 500));
       if (location.href !== snapUrl || window.__dealScoutNonce !== myNonce) return;
@@ -837,6 +857,43 @@
           window.__dealScoutDiag.rawTextStart = (rawData.raw_text || '').slice(0, 200).replace(/\s+/g, ' ');
           window.__dealScoutDiag.rawTextLen = (rawData.raw_text || '').length;
         }
+      }
+    }
+
+    // ── Guard C: forward bleed check ─────────────────────────────────────────
+    // Verify the CURRENT listing's own title keywords appear in raw_text.
+    // Works without prevTitle — catches bleed in the bg-reinjected-NO-PUSHSTATE
+    // path (where isSpaNav=false and Guard A/B are never reached).
+    // If the DOM h1 says "Nissan Titan" but raw_text leads with "2 JETSKI FOR SALE",
+    // the keywords "nissan" and "titan" won't be found → bleed detected → re-extract.
+    if (rawData.raw_text && (isSpaNav || !!window.__dealScoutBgReinjected)) {
+      const _cDomTitle = (window.__dealScoutDiag && window.__dealScoutDiag.domTitleAtExtract) || '';
+      const _cWords = _cDomTitle.toLowerCase()
+        .split(/\s+/).filter(w => w.length > 3).slice(0, 4);
+      if (_cWords.length >= 2) {
+        let _cBleedCount = 0;
+        for (let _r = 0; _r < 3; _r++) {
+          const _cLow = rawData.raw_text.toLowerCase().slice(0, 2000);
+          // "Clean" = at least one of the first two dom-title keywords found in raw_text.
+          // Use ANY (not ALL) to avoid false-positives on short/unusual words.
+          if (_cWords.slice(0, 2).some(w => _cLow.includes(w))) break;
+          _cBleedCount++;
+          console.debug('[DealScout] Guard C: dom title not in raw_text — re-extracting in 1.5s (retry', _r + 1, ')');
+          await new Promise(r => setTimeout(r, 1500));
+          if (location.href !== snapUrl || window.__dealScoutNonce !== myNonce) return;
+          rawData = extractRaw();
+        }
+        if (window.__dealScoutDiag) {
+          window.__dealScoutDiag.guardC = _cBleedCount === 0
+            ? 'clean'
+            : `fired-${_cBleedCount}x-cWords:${_cWords.slice(0, 2).join('|')}`;
+          if (_cBleedCount > 0) {
+            window.__dealScoutDiag.rawTextStart = (rawData.raw_text || '').slice(0, 200).replace(/\s+/g, ' ');
+            window.__dealScoutDiag.rawTextLen = (rawData.raw_text || '').length;
+          }
+        }
+      } else if (window.__dealScoutDiag) {
+        window.__dealScoutDiag.guardC = 'skipped(no-h1-words)';
       }
     }
 
@@ -2622,7 +2679,7 @@
         descElFoundBy: '?', hasImageAtExtract: '?',
         rawTextLen: 0, rawTextStart: '?',
         extractedUrl: '?',
-        postExtractBleed: 'skipped',
+        postExtractBleed: 'skipped', guardC: 'skipped',
         navMsToExtract: '?',
         earlyGuard: '(not checked)', scoreGuardA: '(not reached)', scoreGuardB: '(not reached)',
         retries: 0, finalTitle: '?', finalScore: '?',
