@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.42';
+  const VERSION  = '0.28.43';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -640,7 +640,7 @@
           loadType: _isReinjected ? 'spa-bg-reinjected-NO-PUSHSTATE' : 'hard',
           isBgReinjected: _isReinjected,
           prevTitle: window.__dealScoutPrevTitle || '(none)',
-          snapUrl: location.href.slice(-80),
+          snapUrl: location.href.slice(0, 120),
           isSpaNav: null,
           phase1Log: [],
           phase1Polls: '?', phase1Blockers: '?',
@@ -2829,14 +2829,21 @@
       window.__dealScoutNonce = (window.__dealScoutNonce || 0) + 1;
 
       // Save the title RIGHT NOW — DOM still shows the listing we're leaving.
-      // Iterate all h1[dir="auto"] elements and skip known FBM nav terms so we
-      // never save "Notifications" or "Inbox" as the previous listing's title.
+      // FIX: h1[dir="auto"] is never populated on FBM listing pages, so prevTitle
+      // was always '' → isSpaNav always false → Strategy C on every navigation.
+      // Fall back to document.title (strip the "(N) Marketplace - " prefix) which
+      // reliably contains the listing name while still on the old listing's page.
       window.__dealScoutPrevTitle = (() => {
         for (const el of document.querySelectorAll('h1[dir="auto"]')) {
           const t = el.textContent.trim();
           if (t && !_GENERIC_TITLES.has(t.toLowerCase())) return t;
         }
-        return '';
+        // document.title fallback: "(2) Marketplace - Weber Charcoal Grill"
+        const raw = (document.title || '')
+          .replace(/^\(\d+\)\s*/, '')
+          .replace(/^Marketplace\s*[-–]\s*/i, '')
+          .trim();
+        return (!raw || _GENERIC_TITLES.has(raw.toLowerCase())) ? '' : raw;
       })();
 
       // Reset the per-navigation mismatch-retry flag so the new listing can
@@ -2851,7 +2858,7 @@
         navStartMs: Date.now(),
         isBgReinjected: !!window.__dealScoutInjected,
         prevTitle: window.__dealScoutPrevTitle || '(none)',
-        snapUrl: location.href.slice(-80),
+        snapUrl: location.href.slice(0, 120),
         isSpaNav: null,
         phase1Log: [],
         phase1Polls: '?', phase1Blockers: '?',
