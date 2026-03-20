@@ -2148,11 +2148,14 @@ async def get_diag():
     summary = []
     for r in reports:
         summary.append({
-            # Timing
+            # Timing (raw events + derived pipeline segments)
             "nav":           r.get("nav"),
+            "msPhase1":      r.get("navMsToExtract"),
             "msToExtracted": r.get("msToExtracted"),
             "msToScore":     r.get("msToScore"),
-            "msPhase1":      r.get("navMsToExtract"),
+            "msExtraction":  r.get("msExtraction"),
+            "msMarketLookup": r.get("msMarketLookup"),
+            "msScoring":     r.get("msScoring"),
             # Navigation / readiness
             "v":             r.get("v"),
             "loadType":      r.get("loadType"),

@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.40';
+  const VERSION  = '0.28.41';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -1250,6 +1250,14 @@
             // between the top-of-loop check and individual event handlers.
             if (window.__dealScoutNonce !== myNonce) { reader.cancel(); return; }
             renderProgress(evt.label);
+            // Record progress timeline entry with ms-from-navStart for segment analysis
+            if (window.__dealScoutDiag && evt.label) {
+              if (!window.__dealScoutDiag.progressTimeline) window.__dealScoutDiag.progressTimeline = [];
+              window.__dealScoutDiag.progressTimeline.push({
+                label: evt.label,
+                ms: Date.now() - (window.__dealScoutDiag.navStartMs || Date.now()),
+              });
+            }
 
           } else if (evt.type === 'extracted') {
             if (window.__dealScoutNonce !== myNonce) { reader.cancel(); return; }
@@ -1425,6 +1433,26 @@
             if (window.__dealScoutDiag) {
               const _d = window.__dealScoutDiag;
               _d.msToScore     = Date.now() - (_d.navStartMs || Date.now());
+
+              // ── Derived pipeline timing segments ───────────────────────────
+              // Two progress labels the API always emits (main.py lines 879, 935):
+              //   "Checking eBay market prices…"    → market lookup begins
+              //   "AI deal analysis in progress…"   → scoring begins
+              // Derived segments (ms from navStart):
+              //   msExtraction  = time navStart → extracted event
+              //   msMarketLookup = time extracted → market-lookup progress label
+              //   msScoring      = time scoring-progress label → score event
+              const _tl = _d.progressTimeline || [];
+              const _mktEntry  = _tl.find(e => e.label && e.label.includes('eBay market'));
+              const _aiEntry   = _tl.find(e => e.label && e.label.includes('AI deal'));
+              _d.msExtraction   = _d.msToExtracted || null;
+              _d.msMarketLookup = (_mktEntry && _aiEntry)
+                ? _aiEntry.ms - _mktEntry.ms
+                : (_mktEntry && _d.msToScore ? _d.msToScore - _mktEntry.ms : null);
+              _d.msScoring      = (_aiEntry && _d.msToScore)
+                ? _d.msToScore - _aiEntry.ms
+                : null;
+
               _d.finalTitle    = result.title;
               _d.finalScore    = result.score;
               _d.verdict       = result.verdict;
