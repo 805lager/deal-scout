@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.36';
+  const VERSION  = '0.28.37';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -780,8 +780,11 @@
       : (isSpaNav
         // Strategy B: h1 title must change away from old listing
         ? (titleIsStale || !hasContent || descMissing || imageMissing)
-        // Strategy C: hard load — wait for any content
-        : (!currentTitle || !hasContent || descMissing || imageMissing));
+        // Strategy C: hard load — image presence is the reliable hydration signal.
+        // h1 is never populated on FBM (title:"" in all diagnostics), and desc
+        // selectors frequently miss. Content + image are both present from attempt 0
+        // on hard loads; no need to wait 5 s burning all 25 polls.
+        : (!hasContent || imageMissing));
 
     if (attempt % 5 === 0 || (notReady && attempt > 0)) {
       console.debug('[DealScout] Readiness', {
