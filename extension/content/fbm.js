@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.41';
+  const VERSION  = '0.28.42';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -880,6 +880,8 @@
     // ── Pre-extraction DOM snapshot ─────────────────────────────────────────────
     // Captured just before extractRaw() so we can compare DOM state vs API result.
     if (window.__dealScoutDiag) {
+      // FIX: h1[dir="auto"] is never populated on FBM listing pages.
+      // Fall back to document.title and strip the "(N) Marketplace - " prefix.
       const _domH1 = (() => {
         for (const el of document.querySelectorAll('h1[dir="auto"]')) {
           const t = el.textContent.trim();
@@ -887,16 +889,24 @@
         }
         return '';
       })();
+      const _titleFallback = (() => {
+        const raw = document.title || '';
+        // Strip leading "(N) " notification badge and "Marketplace - " prefix
+        return raw.replace(/^\(\d+\)\s*/, '').replace(/^Marketplace\s*[-–]\s*/i, '').trim();
+      })();
+      // FIX: check all 3 selectors that extractRaw() tries (was only checking 2)
       const _de1 = document.querySelector('[data-testid="marketplace-pdp-description"]');
       const _de2 = !_de1 && document.querySelector('[class*="xz9dl007"]');
+      const _de3 = !_de1 && !_de2 && document.querySelector('div[dir="auto"][style*="white-space"]');
       const _diagImg = Array.from(document.querySelectorAll('img[src*="scontent"]')).some(img => {
         if (!!img.closest('a[href*="/marketplace/item/"]') || !!img.closest('aside')) return false;
         const w = img.clientWidth || img.offsetWidth || 0;
         return w >= 200 && img.getBoundingClientRect().top + window.scrollY < 900;
       });
-      window.__dealScoutDiag.domTitleAtExtract = _domH1.slice(0, 60);
-      window.__dealScoutDiag.urlAtExtract = location.href.slice(-80);
-      window.__dealScoutDiag.descElFoundBy = _de1 ? 'data-testid' : _de2 ? 'class-xz9dl007' : 'NONE';
+      window.__dealScoutDiag.domTitleAtExtract = (_domH1 || _titleFallback).slice(0, 80);
+      // FIX: was slice(-80) which captured URL tail (referral junk); now captures head (item ID)
+      window.__dealScoutDiag.urlAtExtract = location.href.slice(0, 120);
+      window.__dealScoutDiag.descElFoundBy = _de1 ? 'data-testid' : _de2 ? 'class-xz9dl007' : _de3 ? 'div-white-space' : 'NONE';
       window.__dealScoutDiag.hasImageAtExtract = _diagImg;
       window.__dealScoutDiag.navMsToExtract = Date.now() - (window.__dealScoutDiag.navStartMs || Date.now());
     }
@@ -906,7 +916,8 @@
     if (window.__dealScoutDiag) {
       window.__dealScoutDiag.rawTextLen = (rawData.raw_text || '').length;
       window.__dealScoutDiag.rawTextStart = (rawData.raw_text || '').slice(0, 200).replace(/\s+/g, ' ');
-      window.__dealScoutDiag.extractedUrl = (rawData.url || '').slice(-80);
+      // FIX: was slice(-80) which captured URL tail; now captures head with item ID
+      window.__dealScoutDiag.extractedUrl = (rawData.url || '').slice(0, 120);
     }
 
     // ── Post-extraction bleed guard ────────────────────────────────────────────
