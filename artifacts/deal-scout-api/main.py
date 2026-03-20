@@ -2126,81 +2126,105 @@ async def admin_dashboard(request: Request):
 
 
 # ── Diagnostic report collection ─────────────────────────────────────────────
-# The extension auto-POSTs window.__dealScoutDiag after each score. Reports are
-# held in a bounded in-memory deque (max 500) so they survive the test session
-# but are wiped on API restart. No auth required — dev-only endpoint.
+# The extension auto-POSTs window.__dealScoutDiag after each score.
+# Reports are persisted to the diag_reports table in PostgreSQL so they
+# survive API restarts. No auth required — dev-only endpoint.
+# Schema: diag_reports(id serial, server_ts timestamptz, payload jsonb)
 
-_diag_store: deque = deque(maxlen=500)
+def _diag_summary_row(r: dict) -> dict:
+    return {
+        # Timing (raw events + derived pipeline segments)
+        "nav":           r.get("nav"),
+        "msPhase1":      r.get("navMsToExtract"),
+        "msToExtracted": r.get("msToExtracted"),
+        "msToScore":     r.get("msToScore"),
+        "msExtraction":  r.get("msExtraction"),
+        "msMarketLookup": r.get("msMarketLookup"),
+        "msScoring":     r.get("msScoring"),
+        # Navigation / readiness
+        "v":             r.get("v"),
+        "loadType":      r.get("loadType"),
+        "strategy":      r.get("phase1Strategy"),
+        "polls":         r.get("phase1Polls"),
+        "blockers":      r.get("phase1Blockers"),
+        "fpChanged":     r.get("fingerprintChanged"),
+        # Score
+        "finalTitle":    r.get("finalTitle"),
+        "score":         r.get("finalScore"),
+        "verdict":       r.get("verdict"),
+        "aiConf":        r.get("aiConfidence"),
+        "price":         r.get("price"),
+        "condition":     r.get("condition"),
+        # Market
+        "dataSource":    r.get("dataSource"),
+        "marketConf":    r.get("marketConf"),
+        "queryUsed":     r.get("queryUsed"),
+        "soldAvg":       r.get("soldAvg"),
+        "soldLow":       r.get("soldLow"),
+        "soldHigh":      r.get("soldHigh"),
+        "newPrice":      r.get("newPrice"),
+        "recOffer":      r.get("recommendedOffer"),
+        # Flags
+        "greenFlags":    r.get("greenFlagCount"),
+        "redFlags":      r.get("redFlagCount"),
+        # Affiliates
+        "buyNew":        r.get("buyNewTrigger"),
+        "affiliates":    r.get("affiliateCount"),
+        "programs":      r.get("affiliatePrograms"),
+        # Safety
+        "security":      r.get("securityRisk"),
+        "reliability":   r.get("reliabilityTier"),
+        # Bleed guards
+        "bleed":         r.get("postExtractBleed"),
+        "guardC":        r.get("guardC"),
+        "retries":       r.get("retries"),
+    }
+
 
 @app.post("/diag")
 async def collect_diag(request: Request):
     try:
+        import json as _json
+        from scoring.data_pipeline import _get_pool
         payload = await request.json()
         payload["_server_ts"] = datetime.utcnow().isoformat()
-        _diag_store.append(payload)
-        return {"ok": True, "stored": len(_diag_store)}
+        pool = await _get_pool()
+        row = await pool.fetchrow(
+            "INSERT INTO diag_reports (payload) VALUES ($1::jsonb) RETURNING id",
+            _json.dumps(payload),
+        )
+        count = await pool.fetchval("SELECT COUNT(*) FROM diag_reports")
+        return {"ok": True, "id": row["id"], "stored": count}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+
 @app.get("/diag")
 async def get_diag():
-    reports = list(_diag_store)
-    summary = []
-    for r in reports:
-        summary.append({
-            # Timing (raw events + derived pipeline segments)
-            "nav":           r.get("nav"),
-            "msPhase1":      r.get("navMsToExtract"),
-            "msToExtracted": r.get("msToExtracted"),
-            "msToScore":     r.get("msToScore"),
-            "msExtraction":  r.get("msExtraction"),
-            "msMarketLookup": r.get("msMarketLookup"),
-            "msScoring":     r.get("msScoring"),
-            # Navigation / readiness
-            "v":             r.get("v"),
-            "loadType":      r.get("loadType"),
-            "strategy":      r.get("phase1Strategy"),
-            "polls":         r.get("phase1Polls"),
-            "blockers":      r.get("phase1Blockers"),
-            "fpChanged":     r.get("fingerprintChanged"),
-            # Score
-            "finalTitle":    r.get("finalTitle"),
-            "score":         r.get("finalScore"),
-            "verdict":       r.get("verdict"),
-            "aiConf":        r.get("aiConfidence"),
-            "price":         r.get("price"),
-            "condition":     r.get("condition"),
-            # Market
-            "dataSource":    r.get("dataSource"),
-            "marketConf":    r.get("marketConf"),
-            "queryUsed":     r.get("queryUsed"),
-            "soldAvg":       r.get("soldAvg"),
-            "soldLow":       r.get("soldLow"),
-            "soldHigh":      r.get("soldHigh"),
-            "newPrice":      r.get("newPrice"),
-            "recOffer":      r.get("recommendedOffer"),
-            # Flags
-            "greenFlags":    r.get("greenFlagCount"),
-            "redFlags":      r.get("redFlagCount"),
-            # Affiliates
-            "buyNew":        r.get("buyNewTrigger"),
-            "affiliates":    r.get("affiliateCount"),
-            "programs":      r.get("affiliatePrograms"),
-            # Safety
-            "security":      r.get("securityRisk"),
-            "reliability":   r.get("reliabilityTier"),
-            # Bleed guards
-            "bleed":         r.get("postExtractBleed"),
-            "guardC":        r.get("guardC"),
-            "retries":       r.get("retries"),
-        })
-    return {"count": len(reports), "summary": summary, "reports": reports}
+    try:
+        import json as _json
+        from scoring.data_pipeline import _get_pool
+        pool = await _get_pool()
+        rows = await pool.fetch(
+            "SELECT payload FROM diag_reports ORDER BY server_ts DESC LIMIT 500"
+        )
+        reports = [_json.loads(r["payload"]) for r in rows]
+        summary = [_diag_summary_row(r) for r in reports]
+        return {"count": len(reports), "summary": summary, "reports": reports}
+    except Exception as e:
+        return {"count": 0, "summary": [], "reports": [], "error": str(e)}
+
 
 @app.delete("/diag")
 async def clear_diag():
-    n = len(_diag_store)
-    _diag_store.clear()
-    return {"ok": True, "cleared": n}
+    try:
+        from scoring.data_pipeline import _get_pool
+        pool = await _get_pool()
+        result = await pool.execute("DELETE FROM diag_reports")
+        n = int(result.split()[-1]) if result else 0
+        return {"ok": True, "cleared": n}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 if __name__ == "__main__":
