@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.35';
+  const VERSION  = '0.28.36';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -97,8 +97,10 @@
       window.__dealScoutRecoveredPrevTitle = undefined;
       // Clear the snap URL/nonce so the new autoScore(0) captures fresh values
       // instead of inheriting the previous cycle's stale ones.
-      window.__dealScoutSnapUrl   = undefined;
-      window.__dealScoutSnapNonce = undefined;
+      window.__dealScoutSnapUrl        = undefined;
+      window.__dealScoutSnapNonce      = undefined;
+      // Clear the fingerprint so the new autoScore(0) captures a fresh baseline.
+      window.__dealScoutBaselineFingerprint = undefined;
       renderNavigating();
       clearTimeout(window.__dealScoutRescanTimer);
       window.__dealScoutRescanTimer = setTimeout(autoScore, 100);
@@ -697,19 +699,45 @@
       }
     }
 
-    // ── Readiness check — Phase 1: wait for new listing title ────────────────
-    // For SPA navs (prevTitle is set), poll every 200 ms (max 20 × 200 ms = 4 s)
-    // until the new listing's h1 has replaced the old one. This is the only
-    // condition we check here — body-content checks have been removed because
-    // they caused false-positives when FBM renders the new h1 before swapping
-    // the body content below it (the root cause of all previous bleed bugs).
+    // ── Readiness check — Phase 1 ─────────────────────────────────────────────
     //
-    // After the new title appears we do a flat SPA_SETTLE_MS wait (Phase 2)
-    // to let FBM finish rendering the body under the new h1, then extract.
+    // STRATEGY A — Body fingerprint polling (primary, for all navigation types):
+    //   History: h1[dir="auto"] is NEVER populated on FBM listing pages for the
+    //   navigation patterns we encounter (all diagnostics: title="" for all 26
+    //   polls). h1-based detection has provided zero signal across dozens of test
+    //   navigations. The fix: stop polling for a signal that doesn't exist.
     //
-    // For hard page loads there is no prevTitle, so we just wait for a non-empty
-    // title and enough text to be present, then proceed immediately.
+    //   At attempt 0 (when we know there was a previous listing), we snapshot the
+    //   first 300 chars of [role="main"].textContent as a "baseline fingerprint".
+    //   We then poll until the fingerprint changes — direct evidence that React
+    //   has swapped the listing content. No h1 needed, no title-matching needed.
+    //
+    //   If the fingerprint never changes within 25 polls (5 s) → location.reload()
+    //   as a guaranteed fallback. A page reload always produces fresh DOM content.
+    //   This is the behavior the user observed: "a page refresh fixes the issue."
+    //
+    // STRATEGY B — h1 title polling (kept for true SPA nav via pushState):
+    //   When background.js's pushState intercept fires, it sets
+    //   window.__dealScoutPrevTitle before re-injecting. These navigations
+    //   reliably populate h1 and the existing title logic works. Kept as a
+    //   parallel path for forward compatibility.
+    //
+    // STRATEGY C — Hard load (no previous listing context, no fingerprint):
+    //   Wait for content + image + description to be present, then proceed.
 
+    // ── Fingerprint baseline (attempt 0 only) ────────────────────────────────
+    // Capture when we know the DOM currently shows a PREVIOUS listing's content.
+    // This is the case whenever recoveredPrevTitle is set or isBgReinjected=true.
+    const _fpEl = document.querySelector('[role="main"]') || document.body;
+    if (attempt === 0 && (window.__dealScoutRecoveredPrevTitle || window.__dealScoutBgReinjected)) {
+      window.__dealScoutBaselineFingerprint = _fpEl.textContent.slice(0, 300);
+    }
+    const _useFingerprint = typeof window.__dealScoutBaselineFingerprint === 'string';
+    const _currentFingerprint = _useFingerprint ? _fpEl.textContent.slice(0, 300) : '';
+    const _fingerprintChanged = _useFingerprint &&
+      _currentFingerprint !== window.__dealScoutBaselineFingerprint;
+
+    // ── Supporting signals (used by Strategy B + C) ──────────────────────────
     const prevTitle = window.__dealScoutPrevTitle;
     const currentTitle = (() => {
       for (const el of document.querySelectorAll('h1[dir="auto"]')) {
@@ -718,23 +746,12 @@
       }
       return '';
     })();
-
-    // Stale = title still matches the listing we just LEFT (SPA, DOM not swapped yet)
     const titleIsStale = typeof prevTitle === 'string' && prevTitle !== '' &&
-                         (currentTitle === prevTitle || _GENERIC_TITLES.has(currentTitle.toLowerCase()) || currentTitle === '');
+      (currentTitle === prevTitle || _GENERIC_TITLES.has(currentTitle.toLowerCase()) || currentTitle === '');
 
     const mainEl = document.querySelector('[role="main"]') || document.querySelector('main') || document.body;
-    const mainText = mainEl.innerText || '';
-    const hasContent = mainText.length > 100;
+    const hasContent = (mainEl.innerText || '').length > 100;
 
-    // ── Image-presence check (restored from v0.27.0) ─────────────────────────
-    // FBM renders the listing photo AFTER the full listing component is hydrated.
-    // A full-size scontent image (clientWidth ≥ 200) in the top 900px is the
-    // most reliable signal that title + price + description are all in the DOM.
-    // This physical signal (image fetched → decoded → laid out) has no text-
-    // inspection ambiguity, making it far more reliable than body-text checks.
-    // imageMissing is ignored after attempt 12 (≈2.4 s) so no-image listings
-    // still proceed rather than spinning forever.
     const _isCardEl = img =>
       !!img.closest('a[href*="/marketplace/item/"]') ||
       !!img.closest('div[data-testid="marketplace-search-item"]') ||
@@ -746,68 +763,84 @@
       if (_isCardEl(img)) return false;
       const w = img.clientWidth || img.offsetWidth || 0;
       if (w < 200) return false;
-      const absTop = img.getBoundingClientRect().top + window.scrollY;
-      return absTop < 900;
+      return img.getBoundingClientRect().top + window.scrollY < 900;
     });
     const imageMissing = !hasMainImage && attempt < 12;
 
-    // ── Description element check (restored from v0.26.48) ───────────────────
-    // This is the KEY signal missing since v0.27.0. When FBM navigates listings
-    // in-place, React UNMOUNTS the old description element and REMOUNTS it for
-    // the new listing. During that transition, descEl is null — the DOM is in
-    // a partially-updated state. Once descEl re-appears, React has fully
-    // rendered the new listing body (title + price + description all present).
-    // The `attempt < 15` timeout (3 s at 200ms/poll) ensures listings with no
-    // description still proceed rather than spinning.
     const descEl = document.querySelector('[data-testid="marketplace-pdp-description"]')
                 || document.querySelector('[class*="xz9dl007"]');
     const descMissing = !descEl && attempt < 15;
 
     const isSpaNav = typeof prevTitle === 'string' && prevTitle !== '';
-    const notReady = isSpaNav
-      ? (titleIsStale || !hasContent || descMissing || imageMissing)
-      : (!currentTitle || !hasContent || descMissing || imageMissing);
+
+    // ── notReady: which strategy decides? ────────────────────────────────────
+    const notReady = _useFingerprint
+      // Strategy A: wait for DOM content to change from the baseline
+      ? (!_fingerprintChanged || !hasContent)
+      : (isSpaNav
+        // Strategy B: h1 title must change away from old listing
+        ? (titleIsStale || !hasContent || descMissing || imageMissing)
+        // Strategy C: hard load — wait for any content
+        : (!currentTitle || !hasContent || descMissing || imageMissing));
 
     if (attempt % 5 === 0 || (notReady && attempt > 0)) {
-      console.debug('[DealScout] Readiness check', { attempt, isSpaNav, titleIsStale, hasContent, descMissing, imageMissing, currentTitle: currentTitle.slice(0, 40) });
+      console.debug('[DealScout] Readiness', {
+        attempt, strategy: _useFingerprint ? 'A-fp' : isSpaNav ? 'B-h1' : 'C-hard',
+        fpChanged: _fingerprintChanged, titleIsStale, hasContent, descMissing, imageMissing,
+      });
     }
     if (window.__dealScoutDiag && window.__dealScoutDiag.phase1Log) {
       window.__dealScoutDiag.phase1Log.push({
         a: attempt,
-        title: currentTitle.slice(0, 40),
+        fp: _fingerprintChanged ? 1 : 0,
+        title: currentTitle.slice(0, 30),
         stale: titleIsStale ? 1 : 0,
         content: hasContent ? 1 : 0,
         desc: descMissing ? 0 : 1,
-        img: !hasMainImage ? 0 : 1,
+        img: hasMainImage ? 1 : 0,
       });
     }
 
     if (notReady && attempt < 25) {
       await new Promise(r => setTimeout(r, 200));
-      // Bail if the user navigated away — both URL and nonce must still match.
       if (location.href !== snapUrl || window.__dealScoutNonce !== myNonce) return;
       return autoScore(attempt + 1);
     }
 
-    if (notReady && isSpaNav) {
-      // SPA nav: still not ready after 25 × 200 ms = 5 s — give up rather
-      // than scoring stale content.
-      console.debug('[DealScout] Readiness timeout (SPA nav) — giving up');
-      if (window.__dealScoutNonce === myNonce) window.__dealScoutRunning = false;
-      return;
+    if (notReady) {
+      if (_useFingerprint) {
+        // Strategy A timeout: fingerprint never changed in 5 s.
+        // The DOM is stuck on the old listing's content. A page reload is the
+        // guaranteed way to get fresh content — this is what the user discovered
+        // manually ("a page refresh fixes it"). We now automate that fallback.
+        console.debug('[DealScout] Fingerprint timeout — reloading page for fresh content');
+        if (window.__dealScoutDiag) {
+          window.__dealScoutDiag.phase1Blockers = 'fingerprint-timeout-reloading';
+          window.__dealScoutDiag.loadType += '+RELOADING';
+        }
+        // Short delay so the diag stamp writes before the reload fires.
+        setTimeout(() => location.reload(), 80);
+        return;
+      } else if (isSpaNav) {
+        // Strategy B timeout: h1 never changed (SPA nav).
+        console.debug('[DealScout] Readiness timeout (h1 SPA nav) — giving up');
+        if (window.__dealScoutNonce === myNonce) window.__dealScoutRunning = false;
+        return;
+      }
+      // Strategy C: hard load — fall through even if notReady. Claude extracts
+      // from raw text and doesn't require a structured title.
     }
-    // Hard page load: fall through to extraction even if notReady (e.g. h1 selector
-    // didn't match). Claude extracts from raw text — no structured title required.
-    // This matches v0.28.16 behaviour where hard loads always attempted extraction.
 
     // Record Phase 1 outcome for diagnostics
     if (window.__dealScoutDiag) {
       window.__dealScoutDiag.isSpaNav = isSpaNav;
+      window.__dealScoutDiag.phase1Strategy = _useFingerprint ? 'A-fingerprint' : isSpaNav ? 'B-h1' : 'C-hard';
+      window.__dealScoutDiag.fingerprintChanged = _fingerprintChanged;
       window.__dealScoutDiag.phase1Polls = attempt;
-      window.__dealScoutDiag.phase1Blockers = [
-        titleIsStale && 'titleStale', descMissing && 'descMissing',
-        imageMissing && 'imgMissing', !hasContent && 'noContent',
-      ].filter(Boolean).join(',') || 'none';
+      window.__dealScoutDiag.phase1Blockers = _useFingerprint
+        ? [!_fingerprintChanged && 'fpNoChange', !hasContent && 'noContent'].filter(Boolean).join(',') || 'none'
+        : [titleIsStale && 'titleStale', descMissing && 'descMissing',
+           imageMissing && 'imgMissing', !hasContent && 'noContent'].filter(Boolean).join(',') || 'none';
     }
 
     // ── Phase 2: short settle after image confirms listing is ready ─────────────
@@ -917,9 +950,11 @@
           w => (rawData.raw_text || '').toLowerCase().slice(0, 1500).includes(w)
         );
         if (_stillOld) {
-          console.debug('[DealScout] Bleed guard: exhausted 3 retries — DOM still stale, aborting score');
-          if (window.__dealScoutDiag) window.__dealScoutDiag.postExtractBleed += '-ABORTED';
-          if (window.__dealScoutNonce === myNonce) window.__dealScoutRunning = false;
+          // DOM never updated after 3 × 1.5 s retries. Same fallback as the
+          // fingerprint timeout: reload the page to guarantee fresh content.
+          console.debug('[DealScout] Bleed guard: exhausted retries — reloading for fresh content');
+          if (window.__dealScoutDiag) window.__dealScoutDiag.postExtractBleed += '-RELOADING';
+          setTimeout(() => location.reload(), 80);
           return;
         }
       }
