@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.45';
+  const VERSION  = '0.28.46';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -51,6 +51,31 @@
     'gaming', 'groups', 'home', 'news feed', 'search', 'sponsored',
     'menu', 'messages',
   ]);
+
+  // ── Navigation log (navLog) ──────────────────────────────────────────────────
+  // Capped ring-buffer of timestamped events persisted to sessionStorage so it
+  // survives page refreshes. Included in /diag POST for SPA debugging.
+  const _NAV_LOG_CAP = 20;
+  if (!window.__dealScoutNavLog) {
+    try {
+      const stored = sessionStorage.getItem('ds_navLog');
+      const parsed = stored ? JSON.parse(stored) : [];
+      window.__dealScoutNavLog = Array.isArray(parsed) ? parsed : [];
+    } catch (_e) { window.__dealScoutNavLog = []; }
+  }
+  function _dsNavLog(event, data) {
+    const entry = { t: new Date().toISOString(), e: event, ...data };
+    window.__dealScoutNavLog.push(entry);
+    if (window.__dealScoutNavLog.length > _NAV_LOG_CAP) {
+      window.__dealScoutNavLog.splice(0, window.__dealScoutNavLog.length - _NAV_LOG_CAP);
+    }
+  }
+  if (!window.__dealScoutNavLogUnloadBound) {
+    window.__dealScoutNavLogUnloadBound = true;
+    window.addEventListener('beforeunload', () => {
+      try { sessionStorage.setItem('ds_navLog', JSON.stringify(window.__dealScoutNavLog || [])); } catch (_e) {}
+    });
+  }
 
   // ── Navigation nonce ─────────────────────────────────────────────────────────
   // Stored on window so it persists across re-injections of fbm.js. Every time
@@ -89,12 +114,10 @@
       // (rather than a first page load). Used in autoScore() to apply settle
       // wait and Guard C even when isSpaNav=false.
       window.__dealScoutBgReinjected = true;
-      // Reset the diag so the next autoScore() starts fresh (not accumulating
-      // phase1Log entries from the previous run onto the same object).
+      _dsNavLog('bgReinjection', { url: location.href.slice(0, 120), isListing: true });
       window.__dealScoutDiag = null;
-      // Clear any previously-recovered prevTitle so it doesn't persist into
-      // the next scoring cycle.
       window.__dealScoutRecoveredPrevTitle = undefined;
+      window.__dealScoutPrevTitle = undefined;
       // Clear the snap URL/nonce so the new autoScore(0) captures fresh values
       // instead of inheriting the previous cycle's stale ones.
       window.__dealScoutSnapUrl        = undefined;
@@ -692,10 +715,13 @@
       const _currId = _listingIdFromUrl(location.href);
       if (_lastId && _currId && _lastId !== _currId && window.__dealScoutLastScoredTitle) {
         window.__dealScoutRecoveredPrevTitle = window.__dealScoutLastScoredTitle;
+        window.__dealScoutPrevTitle = window.__dealScoutLastScoredTitle;
         if (window.__dealScoutDiag) {
           window.__dealScoutDiag.recoveredPrevTitle = window.__dealScoutLastScoredTitle;
+          window.__dealScoutDiag.prevTitle = window.__dealScoutLastScoredTitle;
           window.__dealScoutDiag.loadType = (window.__dealScoutDiag.loadType || 'hard') + '+prevTitleRecovered';
         }
+        _dsNavLog('prevTitleRecovered', { from: _lastId, to: _currId, title: window.__dealScoutLastScoredTitle });
       }
     }
 
@@ -834,10 +860,12 @@
       // from raw text and doesn't require a structured title.
     }
 
-    // Record Phase 1 outcome for diagnostics
+    const _strategyLabel = _useFingerprint ? 'A-fingerprint' : isSpaNav ? 'B-h1' : 'C-hard';
+    _dsNavLog('autoScoreReady', { attempt, strategy: _strategyLabel, isSpaNav, url: snapUrl.slice(0, 120) });
+
     if (window.__dealScoutDiag) {
       window.__dealScoutDiag.isSpaNav = isSpaNav;
-      window.__dealScoutDiag.phase1Strategy = _useFingerprint ? 'A-fingerprint' : isSpaNav ? 'B-h1' : 'C-hard';
+      window.__dealScoutDiag.phase1Strategy = _strategyLabel;
       window.__dealScoutDiag.fingerprintChanged = _fingerprintChanged;
       window.__dealScoutDiag.phase1Polls = attempt;
       window.__dealScoutDiag.phase1Blockers = _useFingerprint
@@ -1218,7 +1246,8 @@
     showPanel();
     renderLoading({});
 
-    const _MAX_NET_RETRIES = 3;
+    const _MAX_NET_RETRIES = 5;
+    const _RETRY_DELAYS = [2000, 3000, 5000, 8000, 10000];
     let response;
     for (let _attempt = 0; _attempt < _MAX_NET_RETRIES; _attempt++) {
       try {
@@ -1233,8 +1262,11 @@
         if (abort.signal.aborted) throw netErr;
         const isNetworkError = netErr instanceof TypeError || /fetch|network|ECONNREFUSED/i.test(netErr.message);
         if (!isNetworkError || _attempt >= _MAX_NET_RETRIES - 1) throw netErr;
-        console.warn(`[DealScout] Network error (attempt ${_attempt + 1}/${_MAX_NET_RETRIES}), retrying in ${(_attempt + 1) * 2}s...`, netErr.message);
-        await new Promise(r => setTimeout(r, (_attempt + 1) * 2000));
+        const _delay = _RETRY_DELAYS[_attempt] || 10000;
+        console.warn(`[DealScout] Network error (attempt ${_attempt + 1}/${_MAX_NET_RETRIES}), retrying in ${_delay / 1000}s...`, netErr.message);
+        _dsNavLog('fetchRetry', { attempt: _attempt + 1, max: _MAX_NET_RETRIES, delay: _delay, err: (netErr.message || '').slice(0, 80) });
+        renderProgress(`Reconnecting (${_attempt + 1}/${_MAX_NET_RETRIES})…`);
+        await new Promise(r => setTimeout(r, _delay));
         if (abort.signal.aborted || window.__dealScoutNonce !== myNonce) throw netErr;
       }
     }
@@ -1524,6 +1556,7 @@
               .catch(() => {});
             // Auto-ship diag report to /diag — fire and forget, never blocks.
             if (window.__dealScoutDiag) {
+              window.__dealScoutDiag.navLog = (window.__dealScoutNavLog || []).slice(-10);
               fetch(`${API_BASE}/diag`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -2871,6 +2904,7 @@
       window.__dealScoutMismatchRetried = undefined;
 
       console.debug('[DealScout] Nav detected (old:', oldId, '→ new:', newId || 'unknown', ') prevTitle:', window.__dealScoutPrevTitle);
+      _dsNavLog('pushStateNav', { from: oldId, to: newId, prevTitle: window.__dealScoutPrevTitle || '' });
       // Initialize per-nav diagnostics so auto-POST to /diag always captures fresh data.
       window.__dealScoutDiag = {
         v: VERSION, nav: new Date().toLocaleTimeString(),
