@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.46';
+  const VERSION  = '0.28.47';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -713,6 +713,12 @@
     if (attempt === 0 && !window.__dealScoutPrevTitle) {
       const _lastId = window.__dealScoutLastScoredId || '';
       const _currId = _listingIdFromUrl(location.href);
+      _dsNavLog('recoveryCheck', {
+        hasPrevTitle: !!window.__dealScoutPrevTitle,
+        lastId: _lastId, currId: _currId,
+        lastTitle: (window.__dealScoutLastScoredTitle || '').slice(0, 40),
+        bgReinj: !!window.__dealScoutBgReinjected,
+      });
       if (_lastId && _currId && _lastId !== _currId && window.__dealScoutLastScoredTitle) {
         window.__dealScoutRecoveredPrevTitle = window.__dealScoutLastScoredTitle;
         window.__dealScoutPrevTitle = window.__dealScoutLastScoredTitle;
@@ -762,6 +768,17 @@
     const _currentFingerprint = _useFingerprint ? _fpEl.textContent.slice(0, 300) : '';
     const _fingerprintChanged = _useFingerprint &&
       _currentFingerprint !== window.__dealScoutBaselineFingerprint;
+
+    if (attempt === 0) {
+      _dsNavLog('phase1State', {
+        useFP: _useFingerprint, fpChanged: _fingerprintChanged,
+        prevTitleVal: (window.__dealScoutPrevTitle || '').slice(0, 40),
+        prevTitleType: typeof window.__dealScoutPrevTitle,
+        recovPrev: (window.__dealScoutRecoveredPrevTitle || '').slice(0, 40),
+        bgReinj: !!window.__dealScoutBgReinjected,
+        baseFPLen: typeof window.__dealScoutBaselineFingerprint === 'string' ? window.__dealScoutBaselineFingerprint.length : -1,
+      });
+    }
 
     // ── Supporting signals (used by Strategy B + C) ──────────────────────────
     const prevTitle = window.__dealScoutPrevTitle;
