@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.44';
+  const VERSION  = '0.28.45';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -1218,12 +1218,26 @@
     showPanel();
     renderLoading({});
 
-    const response = await fetch(`${API_BASE}/score/stream`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json', 'X-DS-Key': DS_API_KEY },
-      body:    JSON.stringify(rawData),
-      signal:  abort.signal,
-    });
+    const _MAX_NET_RETRIES = 3;
+    let response;
+    for (let _attempt = 0; _attempt < _MAX_NET_RETRIES; _attempt++) {
+      try {
+        response = await fetch(`${API_BASE}/score/stream`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json', 'X-DS-Key': DS_API_KEY },
+          body:    JSON.stringify(rawData),
+          signal:  abort.signal,
+        });
+        break;
+      } catch (netErr) {
+        if (abort.signal.aborted) throw netErr;
+        const isNetworkError = netErr instanceof TypeError || /fetch|network|ECONNREFUSED/i.test(netErr.message);
+        if (!isNetworkError || _attempt >= _MAX_NET_RETRIES - 1) throw netErr;
+        console.warn(`[DealScout] Network error (attempt ${_attempt + 1}/${_MAX_NET_RETRIES}), retrying in ${(_attempt + 1) * 2}s...`, netErr.message);
+        await new Promise(r => setTimeout(r, (_attempt + 1) * 2000));
+        if (abort.signal.aborted || window.__dealScoutNonce !== myNonce) throw netErr;
+      }
+    }
 
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
