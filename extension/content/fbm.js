@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.47';
+  const VERSION  = '0.28.48';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -84,6 +84,25 @@
   // again before rendering. If they differ, the user navigated away mid-flight
   // and we discard the result — even if location.href happens to look the same
   // (FBM sometimes calls replaceState after navigation, resetting the URL briefly).
+  // ── Restore last-scored state from sessionStorage ──────────────────────────
+  // FBM tears down the JS context on SPA navigation (React unmount/remount),
+  // wiping all window.__dealScout* properties. We persist the last scored
+  // listing's title and ID to sessionStorage so the recovery block in autoScore
+  // can still detect SPA nav even after a context teardown.
+  if (!window.__dealScoutLastScoredId) {
+    try {
+      const _ss = sessionStorage.getItem('ds_lastScored');
+      if (_ss) {
+        const _p = JSON.parse(_ss);
+        if (_p && _p.id && _p.title) {
+          window.__dealScoutLastScoredId = _p.id;
+          window.__dealScoutLastScoredTitle = _p.title;
+          window.__dealScoutRestoredFromSS = true;
+        }
+      }
+    } catch (_e) {}
+  }
+
   if (window.__dealScoutNonce === undefined) window.__dealScoutNonce = 0;
 
   // Mutex flag: true while an autoScore is running. Prevents multiple concurrent
@@ -718,6 +737,7 @@
         lastId: _lastId, currId: _currId,
         lastTitle: (window.__dealScoutLastScoredTitle || '').slice(0, 40),
         bgReinj: !!window.__dealScoutBgReinjected,
+        restoredSS: !!window.__dealScoutRestoredFromSS,
       });
       if (_lastId && _currId && _lastId !== _currId && window.__dealScoutLastScoredTitle) {
         window.__dealScoutRecoveredPrevTitle = window.__dealScoutLastScoredTitle;
@@ -760,8 +780,13 @@
     // ── Fingerprint baseline (attempt 0 only) ────────────────────────────────
     // Capture when we know the DOM currently shows a PREVIOUS listing's content.
     // This is the case whenever recoveredPrevTitle is set or isBgReinjected=true.
+    // EXCEPTION: If lastScored was restored from sessionStorage (context teardown),
+    // the DOM already shows the NEW listing's content — fingerprint polling would
+    // never see a change and trigger a pointless page reload. Skip fingerprint
+    // in that case and let isSpaNav + Strategy B handle it.
     const _fpEl = document.querySelector('[role="main"]') || document.body;
-    if (attempt === 0 && (window.__dealScoutRecoveredPrevTitle || window.__dealScoutBgReinjected)) {
+    const _skipFingerprint = !!window.__dealScoutRestoredFromSS && !window.__dealScoutBgReinjected;
+    if (attempt === 0 && !_skipFingerprint && (window.__dealScoutRecoveredPrevTitle || window.__dealScoutBgReinjected)) {
       window.__dealScoutBaselineFingerprint = _fpEl.textContent.slice(0, 300);
     }
     const _useFingerprint = typeof window.__dealScoutBaselineFingerprint === 'string';
@@ -772,6 +797,7 @@
     if (attempt === 0) {
       _dsNavLog('phase1State', {
         useFP: _useFingerprint, fpChanged: _fingerprintChanged,
+        skipFP: _skipFingerprint, restoredSS: !!window.__dealScoutRestoredFromSS,
         prevTitleVal: (window.__dealScoutPrevTitle || '').slice(0, 40),
         prevTitleType: typeof window.__dealScoutPrevTitle,
         recovPrev: (window.__dealScoutRecoveredPrevTitle || '').slice(0, 40),
@@ -817,21 +843,28 @@
     const isSpaNav = typeof prevTitle === 'string' && prevTitle !== '';
 
     // ── notReady: which strategy decides? ────────────────────────────────────
+    // Strategy D (context-teardown SPA): FBM tore down the JS context and
+    // re-created the page. The DOM already shows the NEW listing's content.
+    // Use C-style readiness (content + image) since fingerprint can't detect
+    // a change (baseline IS the new content) and h1 is never populated.
+    const _isContextTeardownNav = isSpaNav && _skipFingerprint;
     const notReady = _useFingerprint
       // Strategy A: wait for DOM content to change from the baseline
       ? (!_fingerprintChanged || !hasContent)
-      : (isSpaNav
-        // Strategy B: h1 title must change away from old listing
-        ? (titleIsStale || !hasContent || descMissing || imageMissing)
-        // Strategy C: hard load — image presence is the reliable hydration signal.
-        // h1 is never populated on FBM (title:"" in all diagnostics), and desc
-        // selectors frequently miss. Content + image are both present from attempt 0
-        // on hard loads; no need to wait 5 s burning all 25 polls.
-        : (!hasContent || imageMissing));
+      : (_isContextTeardownNav
+        // Strategy D: context-teardown SPA — DOM already has new content, just
+        // need content + image (same as C-hard but isSpaNav=true for bleed guard)
+        ? (!hasContent || imageMissing)
+        : (isSpaNav
+          // Strategy B: h1 title must change away from old listing
+          ? (titleIsStale || !hasContent || descMissing || imageMissing)
+          // Strategy C: hard load — image presence is the reliable hydration signal.
+          : (!hasContent || imageMissing)));
 
+    const _stratLabel = _useFingerprint ? 'A-fp' : _isContextTeardownNav ? 'D-teardown' : isSpaNav ? 'B-h1' : 'C-hard';
     if (attempt % 5 === 0 || (notReady && attempt > 0)) {
       console.debug('[DealScout] Readiness', {
-        attempt, strategy: _useFingerprint ? 'A-fp' : isSpaNav ? 'B-h1' : 'C-hard',
+        attempt, strategy: _stratLabel,
         fpChanged: _fingerprintChanged, titleIsStale, hasContent, descMissing, imageMissing,
       });
     }
@@ -877,7 +910,7 @@
       // from raw text and doesn't require a structured title.
     }
 
-    const _strategyLabel = _useFingerprint ? 'A-fingerprint' : isSpaNav ? 'B-h1' : 'C-hard';
+    const _strategyLabel = _useFingerprint ? 'A-fingerprint' : _isContextTeardownNav ? 'D-teardown' : isSpaNav ? 'B-h1' : 'C-hard';
     _dsNavLog('autoScoreReady', { attempt, strategy: _strategyLabel, isSpaNav, url: snapUrl.slice(0, 120) });
 
     if (window.__dealScoutDiag) {
@@ -1568,6 +1601,7 @@
             // relying on the pushState intercept that FBM doesn't always trigger.
             window.__dealScoutLastScoredTitle = result.title || '';
             window.__dealScoutLastScoredId = _listingIdFromUrl(snapUrl);
+            try { sessionStorage.setItem('ds_lastScored', JSON.stringify({ id: window.__dealScoutLastScoredId, title: window.__dealScoutLastScoredTitle })); } catch (_e) {}
             renderScore(result);
             chrome.runtime.sendMessage({ type: 'BADGE_UPDATE', score: result.score })
               .catch(() => {});
