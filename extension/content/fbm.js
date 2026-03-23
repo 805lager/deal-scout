@@ -697,7 +697,7 @@
       return;
     }
 
-    const _maxBleedRetries = 3;
+    const _maxBleedRetries = 5;
     let rawData = null;
 
     for (let attempt = 0; attempt <= _maxBleedRetries; attempt++) {
@@ -716,9 +716,10 @@
 
       if (bleedDetected && attempt < _maxBleedRetries) {
         _diagRetries++;
-        console.debug(`[DealScout] Bleed detected (h1="${extractedH1.slice(0,40)}" matches prev DOM h1, ID missing from raw_text) — retry ${attempt + 1}/${_maxBleedRetries}`);
+        const retryDelay = attempt < 2 ? 500 : 1000;
+        console.debug(`[DealScout] Bleed detected (h1="${extractedH1.slice(0,40)}" matches prev DOM h1, ID missing from raw_text) — retry ${attempt + 1}/${_maxBleedRetries} (${retryDelay}ms)`);
         _dsDebugPost('bleed-retry', { urlId: listingId, attempt: attempt + 1, h1: extractedH1.slice(0, 50), prevH1: prevH1.slice(0, 50), idInRaw: idInRawText });
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise(r => setTimeout(r, retryDelay));
         if (window.__dealScoutNonce !== myNonce || location.href !== snapUrl) {
           window.__dealScoutRunning = false;
           return;
@@ -984,16 +985,37 @@
 
   function renderError(msg) {
     const panel = getPanel();
-    panel.innerHTML = `
+    panel.innerHTML = '';
+
+    const wrap = document.createElement('div');
+    wrap.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
         <span style="font-weight:700;font-size:15px;color:#7c8cf8">&#x1F50D; Deal Scout</span>
       </div>
       <div style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);border-radius:8px;padding:12px;color:#fca5a5">
         <div style="font-weight:600;margin-bottom:4px">&#x26A0;&#xFE0F; Scoring failed</div>
         <div style="font-size:12px">${escHtml(msg)}</div>
-        <div style="font-size:11px;margin-top:8px;color:#9ca3af">Check API is running at ${API_BASE}</div>
       </div>
     `;
+    panel.appendChild(wrap);
+
+    const btn = document.createElement('button');
+    btn.textContent = 'RESCORE';
+    btn.style.cssText = 'display:block;width:100%;margin-top:10px;padding:10px;background:#7c8cf8;color:#fff;border:none;border-radius:8px;font-weight:700;font-size:14px;cursor:pointer;letter-spacing:0.5px';
+    btn.addEventListener('click', () => {
+      window.__dealScoutNonce = (window.__dealScoutNonce || 0) + 1;
+      window.__dealScoutRunning = false;
+      window.__dealScoutLastScoredId = '';
+      window.__dealScoutLastScoredTitle = '';
+      window.__dealScoutLastSeenH1 = '';
+      window.__dealScoutLastSeenImg = '';
+      _persistLastSeen();
+      try { chrome.runtime.sendMessage({ type: 'CLEAR_SCORE_CACHE' }).catch(() => {}); } catch (_e) {}
+      renderLoading({});
+      clearTimeout(window.__dealScoutRescanTimer);
+      window.__dealScoutRescanTimer = setTimeout(autoScore, 200);
+    });
+    panel.appendChild(btn);
   }
 
   // ── Main Score Renderer ───────────────────────────────────────────────────────
