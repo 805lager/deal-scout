@@ -171,7 +171,21 @@
 
   const _currentUrlId = _listingIdFromUrl(location.href);
   if (_currentUrlId && _dsScoringGuardActive(_currentUrlId)) {
-    _dsDebugPost('scoring-dedup-skip', { urlId: _currentUrlId });
+    let _guardState = null;
+    try { _guardState = JSON.parse(sessionStorage.getItem('ds_scoring')); } catch (_e) {}
+    const _guardAge = _guardState ? Date.now() - _guardState.ts : null;
+    const _guardTTLRemain = _guardState ? Math.max(0, 45000 - (Date.now() - _guardState.ts)) : 0;
+    _dsDebugPost('scoring-dedup-skip', { urlId: _currentUrlId, guard: _guardState, guardAgeMs: _guardAge, retryInMs: _guardTTLRemain + 2000 });
+    if (_guardTTLRemain > 0 && _guardTTLRemain < 45000) {
+      setTimeout(() => {
+        if (_dsScoringGuardActive(_currentUrlId)) return;
+        if (_listingIdFromUrl(location.href) !== _currentUrlId) return;
+        const _lastScored = window.__dealScoutLastScoredId || '';
+        if (_lastScored === _currentUrlId) return;
+        _dsDebugPost('scoring-dedup-retry', { urlId: _currentUrlId });
+        autoScore();
+      }, _guardTTLRemain + 2000);
+    }
     return;
   }
 
@@ -743,7 +757,9 @@
       window.__dealScoutRunning = true;
       const _autoScoreUrlId = _listingIdFromUrl(location.href);
       if (_autoScoreUrlId) _dsScoringGuardSet(_autoScoreUrlId);
-      _dsDebugPost('scoring-start', { urlId: _autoScoreUrlId });
+      let _prevGuard = null;
+      try { const _pg = sessionStorage.getItem('ds_scoring'); if (_pg) _prevGuard = JSON.parse(_pg); } catch (_e) {}
+      _dsDebugPost('scoring-start', { urlId: _autoScoreUrlId, guard: _prevGuard });
 
       // ── Diagnostics bootstrap ─────────────────────────────────────────────
       // For SPA navs via pushState, _onFbmNav already initialized window.__dealScoutDiag.
