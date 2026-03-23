@@ -88,10 +88,10 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 ## Extension Version
 
-Current: **v0.29.7** — Overlay/dialog DOM extraction + MutationObserver settling + content-title consistency check
+Current: **v0.29.8** — Speed optimizations (1s settle, parallel API refinement) + overlay extraction + content-title consistency check
 
 Key mechanisms in `extension/content/fbm.js`:
-- **MutationObserver settling**: Waits for `[role="main"]` DOM mutations to stop for 2s (max 15s) before extracting content. Replaces fixed-delay approach.
+- **MutationObserver settling**: Waits for DOM mutations to stop for 1s (max 8s) before extracting content. Observes document.body to catch overlay changes.
 - **Content-title consistency check**: After extraction, verifies H1 title words appear in raw_text. Rejects stale body content (up to 8 retries).
 - **Fingerprint guard**: First 300 chars of normalized raw_text; catches same-content-different-listing.
 - **Terminal stale abort**: If all retries exhaust with stale fingerprint or title mismatch, aborts with RESCORE prompt instead of scoring stale content.

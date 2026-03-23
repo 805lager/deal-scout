@@ -910,39 +910,63 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                 from scoring.product_evaluator import _unknown_evaluation
                 product_eval = _unknown_evaluation(product_info.display_name)
 
-            # eBay refinement
+            # eBay refinement + product eval refinement (concurrent when both needed)
             extracted_q  = (product_info.search_query or "").strip().lower()
             raw_q        = raw_title_query.lower()
             _ebay_mocked = getattr(prelim_market, "data_source", "") == "ebay_mock"
             need_refine  = extracted_q and extracted_q != raw_q and len(extracted_q) > 4 and not _ebay_mocked
+            need_eval_refine = bool(product_info.brand)
 
-            try:
+            if need_refine and need_eval_refine:
+                _refine_market_task = get_market_value(
+                    listing_title     = product_info.search_query,
+                    listing_condition = listing.condition,
+                    is_vehicle        = listing.is_vehicle,
+                    listing_price     = listing.price,
+                )
+                _refine_eval_task = evaluate_product(
+                    brand        = product_info.brand,
+                    model        = product_info.model,
+                    category     = product_info.category,
+                    display_name = product_info.display_name,
+                )
+                _ref_results = await asyncio.gather(
+                    _refine_market_task, _refine_eval_task, return_exceptions=True,
+                )
+                if isinstance(_ref_results[0], Exception):
+                    log.warning(f"[Stream] eBay refinement failed: {_ref_results[0]}")
+                    market_value = prelim_market
+                else:
+                    market_value = _ref_results[0]
+                if isinstance(_ref_results[1], Exception):
+                    log.warning(f"[Stream] Product eval refinement failed: {_ref_results[1]}")
+                else:
+                    product_eval = _ref_results[1]
+            else:
                 if need_refine:
-                    market_value = await get_market_value(
-                        listing_title     = product_info.search_query,
-                        listing_condition = listing.condition,
-                        is_vehicle        = listing.is_vehicle,
-                        listing_price     = listing.price,
-                    )
+                    try:
+                        market_value = await get_market_value(
+                            listing_title     = product_info.search_query,
+                            listing_condition = listing.condition,
+                            is_vehicle        = listing.is_vehicle,
+                            listing_price     = listing.price,
+                        )
+                    except Exception as _ref_err:
+                        log.warning(f"[Stream] eBay refinement failed: {_ref_err}")
+                        market_value = prelim_market
                 else:
                     market_value = prelim_market
-            except Exception as _ref_err:
-                log.warning(f"[Stream] eBay refinement failed: {_ref_err}")
-                market_value = prelim_market
 
-            # FIX: Always re-run product evaluation with extracted brand/model.
-            # Previously gated on need_refine — never ran when eBay was mocked,
-            # causing reliabilityTier to always be "unknown".
-            if product_info.brand:
-                try:
-                    product_eval = await evaluate_product(
-                        brand        = product_info.brand,
-                        model        = product_info.model,
-                        category     = product_info.category,
-                        display_name = product_info.display_name,
-                    )
-                except Exception as _eval_err:
-                    log.warning(f"[Stream] Product eval refinement failed: {_eval_err}")
+                if need_eval_refine:
+                    try:
+                        product_eval = await evaluate_product(
+                            brand        = product_info.brand,
+                            model        = product_info.model,
+                            category     = product_info.category,
+                            display_name = product_info.display_name,
+                        )
+                    except Exception as _eval_err:
+                        log.warning(f"[Stream] Product eval refinement failed: {_eval_err}")
 
             # ── Step 3: Deal scoring + security (concurrent) ─────────────────
             yield _sse({"type": "progress", "label": "AI deal analysis in progress…"})
