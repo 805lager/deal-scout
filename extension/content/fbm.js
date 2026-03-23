@@ -1,6 +1,6 @@
 /**
  * fbm.js — Deal Scout Content Script for Facebook Marketplace
- * v0.29.4
+ * v0.29.5
  *
  * INJECTED INTO: facebook.com/marketplace/*
  * PURPOSE: Extracts listing data, sends to background.js for scoring,
@@ -24,7 +24,7 @@
 (function () {
   "use strict";
 
-  const VERSION  = '0.29.4';
+  const VERSION  = '0.29.5';
   const PANEL_ID  = "deal-scout-panel";
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
   const DS_API_KEY = "ds_live_098caae54340d797cb216856d0cffe50";
@@ -113,6 +113,12 @@
           window.__dealScoutLastScoredTitle = _p.title;
         }
       }
+    } catch (_e) {}
+  }
+  if (window.__dealScoutPrevTitle === undefined) {
+    try {
+      const _ssPt = sessionStorage.getItem('ds_prevTitle');
+      if (_ssPt) window.__dealScoutPrevTitle = _ssPt;
     } catch (_e) {}
   }
 
@@ -560,7 +566,8 @@
 
   function _rawFingerprint(text) {
     if (!text) return '';
-    return text.replace(/\s+/g, ' ').trim().slice(0, 200) + '|' + text.length;
+    const norm = text.replace(/\s+/g, ' ').trim().toLowerCase();
+    return norm.slice(0, 150) + '|' + Math.floor(norm.length / 50);
   }
 
   if (!window.__dealScoutLastRawFingerprint) {
@@ -573,6 +580,13 @@
 
   function _persistState() {
     try { sessionStorage.setItem('ds_lastRawFp', window.__dealScoutLastRawFingerprint || ''); } catch (_e) {}
+    try {
+      if (typeof window.__dealScoutPrevTitle === 'string') {
+        sessionStorage.setItem('ds_prevTitle', window.__dealScoutPrevTitle);
+      } else {
+        sessionStorage.removeItem('ds_prevTitle');
+      }
+    } catch (_e) {}
   }
 
   // ── Auto-score ─────────────────────────────────────────────────────────────────
@@ -659,13 +673,14 @@
     const _waitMs = attempt * 300;
     _dsDebugPost('title-settled', { urlId: listingId, attempt, waitMs: _waitMs, title: currentTitle.slice(0, 50), prevTitle: (prevTitle || '').slice(0, 50), timedOut: notReady });
 
-    await new Promise(r => setTimeout(r, 300));
+    await new Promise(r => setTimeout(r, 1500));
     if (window.__dealScoutNonce !== myNonce || location.href !== snapUrl) {
       window.__dealScoutRunning = false;
       return;
     }
 
     window.__dealScoutPrevTitle = undefined;
+    try { sessionStorage.removeItem('ds_prevTitle'); } catch (_e) {}
 
     const _maxFpRetries = 5;
     const _fpRetryDelays = [500, 800, 1000, 1500, 2000];
@@ -1891,6 +1906,7 @@
 
     if (isListingPage() || (newHref && /\/marketplace\/(?:[^/]+\/)?item\/\d+/.test(newHref))) {
       window.__dealScoutPrevTitle = _getCurrentH1Title();
+      try { sessionStorage.setItem('ds_prevTitle', window.__dealScoutPrevTitle || ''); } catch (_e) {}
 
       if (window.__dealScoutAbort) {
         try { window.__dealScoutAbort.abort(); } catch (_e) {}
