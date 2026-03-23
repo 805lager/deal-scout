@@ -731,12 +731,12 @@
 
       let bleedDetected = !idInRawText && prevH1 && extractedH1 && extractedH1 === prevH1;
 
-      if (bleedDetected && window.__dealScoutLastRawLen) {
+      if (bleedDetected && window.__dealScoutLastRawLen && listingId && listingId !== window.__dealScoutLastScoredId) {
         const lenDiff = Math.abs(rawData.raw_text.length - window.__dealScoutLastRawLen);
         const lenRatio = lenDiff / Math.max(rawData.raw_text.length, window.__dealScoutLastRawLen, 1);
         if (lenRatio > 0.3) {
-          console.debug(`[DealScout] Bleed override: raw_text length changed ${lenRatio.toFixed(2)*100}% — treating as new listing`);
-          _dsDebugPost('bleed-override-len', { urlId: listingId, lenRatio: lenRatio.toFixed(2), currLen: rawData.raw_text.length, prevLen: window.__dealScoutLastRawLen });
+          console.debug(`[DealScout] Bleed override: URL listing ID changed AND raw_text length changed ${(lenRatio * 100).toFixed(0)}% — treating as new listing`);
+          _dsDebugPost('bleed-override-len', { urlId: listingId, prevScoredId: window.__dealScoutLastScoredId, lenRatio: lenRatio.toFixed(2), currLen: rawData.raw_text.length, prevLen: window.__dealScoutLastRawLen });
           bleedDetected = false;
         }
       }
