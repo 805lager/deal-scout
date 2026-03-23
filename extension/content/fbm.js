@@ -660,8 +660,9 @@
         window.__dealScoutRunning = false;
         return;
       }
-      console.error('[DealScout] Scoring failed:', err.message);
-      renderError(err.message || 'Scoring failed');
+      const errMsg = typeof err.message === 'string' ? err.message : String(err.message || 'Scoring failed');
+      console.error('[DealScout] Scoring failed:', errMsg);
+      renderError(errMsg);
     } finally {
       window.__dealScoutRunning = false;
     }

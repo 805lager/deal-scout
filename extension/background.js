@@ -184,7 +184,7 @@ async function handleScoreListing(listing, tabId, listingId) {
 
 async function callScoringAPI(listing) {
   const API_BASE = await getApiBase();
-  const response = await fetch(`${API_BASE}/score`, {
+  const response = await fetch(`${API_BASE}/score/stream`, {
     method:  "POST",
     headers: { "Content-Type": "application/json", "X-DS-Key": DS_API_KEY },
     body:    JSON.stringify(listing),
@@ -192,10 +192,32 @@ async function callScoringAPI(listing) {
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
-    throw new Error(error.detail || `API error ${response.status}`);
+    let detail = error.detail;
+    if (Array.isArray(detail)) {
+      detail = detail.map(d => d.msg || d.message || JSON.stringify(d)).join('; ');
+    }
+    throw new Error(detail || `API error ${response.status}`);
   }
 
-  return response.json();
+  const text = await response.text();
+  const lines = text.split('\n');
+  let scoreData = null;
+  let lastError = null;
+
+  for (const line of lines) {
+    if (!line.startsWith('data: ')) continue;
+    try {
+      const parsed = JSON.parse(line.slice(6));
+      if (parsed.type === 'score' && parsed.data) {
+        scoreData = parsed.data;
+      } else if (parsed.type === 'error') {
+        lastError = parsed.message || 'Scoring failed';
+      }
+    } catch (_e) {}
+  }
+
+  if (scoreData) return scoreData;
+  throw new Error(lastError || 'No score returned from API');
 }
 
 
