@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.52';
+  const VERSION  = '0.28.53';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -164,19 +164,39 @@
       const raw = sessionStorage.getItem('ds_scoring');
       if (!raw) return false;
       const g = JSON.parse(raw);
-      if (g && g.id === listingId && (Date.now() - g.ts) < 45000) return true;
+      if (g && g.id === listingId && (Date.now() - g.ts) < 120000) return true;
     } catch (_e) {}
     return false;
   }
 
   const _currentUrlId = _listingIdFromUrl(location.href);
+
+  if (_currentUrlId) {
+    try {
+      const _cachedRaw = sessionStorage.getItem('ds_cachedScore');
+      if (_cachedRaw) {
+        const _cached = JSON.parse(_cachedRaw);
+        if (_cached && _cached.id === _currentUrlId && _cached.result && (Date.now() - _cached.ts) < 300000) {
+          const _cacheAge = Date.now() - _cached.ts;
+          _dsDebugPost('score-cache-hit', { urlId: _currentUrlId, cacheAgeMs: _cacheAge, score: _cached.result.score });
+          window.__dealScoutLastScoredId = _currentUrlId;
+          window.__dealScoutLastScoredTitle = _cached.result.title || '';
+          try { sessionStorage.setItem('ds_lastScored', JSON.stringify({ id: _currentUrlId, title: _cached.result.title || '' })); } catch (_e2) {}
+          renderScore(_cached.result);
+          chrome.runtime.sendMessage({ type: 'BADGE_UPDATE', score: _cached.result.score }).catch(() => {});
+          return;
+        }
+      }
+    } catch (_e) {}
+  }
+
   if (_currentUrlId && _dsScoringGuardActive(_currentUrlId)) {
     let _guardState = null;
     try { _guardState = JSON.parse(sessionStorage.getItem('ds_scoring')); } catch (_e) {}
     const _guardAge = _guardState ? Date.now() - _guardState.ts : null;
-    const _guardTTLRemain = _guardState ? Math.max(0, 45000 - (Date.now() - _guardState.ts)) : 0;
+    const _guardTTLRemain = _guardState ? Math.max(0, 120000 - (Date.now() - _guardState.ts)) : 0;
     _dsDebugPost('scoring-dedup-skip', { urlId: _currentUrlId, guard: _guardState, guardAgeMs: _guardAge, retryInMs: _guardTTLRemain + 2000 });
-    if (_guardTTLRemain > 0 && _guardTTLRemain < 45000) {
+    if (_guardTTLRemain > 0 && _guardTTLRemain < 120000) {
       setTimeout(() => {
         if (_dsScoringGuardActive(_currentUrlId)) return;
         if (_listingIdFromUrl(location.href) !== _currentUrlId) return;
@@ -759,7 +779,9 @@
       if (_autoScoreUrlId) _dsScoringGuardSet(_autoScoreUrlId);
       let _prevGuard = null;
       try { const _pg = sessionStorage.getItem('ds_scoring'); if (_pg) _prevGuard = JSON.parse(_pg); } catch (_e) {}
-      _dsDebugPost('scoring-start', { urlId: _autoScoreUrlId, guard: _prevGuard });
+      let _cacheState = null;
+      try { const _cs = sessionStorage.getItem('ds_cachedScore'); if (_cs) _cacheState = JSON.parse(_cs); } catch (_e) {}
+      _dsDebugPost('scoring-start', { urlId: _autoScoreUrlId, guard: _prevGuard, cache: _cacheState ? { id: _cacheState.id, ageMs: Date.now() - _cacheState.ts, score: _cacheState.result?.score } : null });
 
       // ── Diagnostics bootstrap ─────────────────────────────────────────────
       // For SPA navs via pushState, _onFbmNav already initialized window.__dealScoutDiag.
@@ -1705,6 +1727,7 @@
             window.__dealScoutLastScoredTitle = result.title || '';
             window.__dealScoutLastScoredId = _listingIdFromUrl(snapUrl);
             try { sessionStorage.setItem('ds_lastScored', JSON.stringify({ id: window.__dealScoutLastScoredId, title: window.__dealScoutLastScoredTitle })); } catch (_e) {}
+            try { sessionStorage.setItem('ds_cachedScore', JSON.stringify({ id: window.__dealScoutLastScoredId, result, ts: Date.now() })); } catch (_e) {}
             _dsScoringGuardClear();
             _dsDebugPost('score-complete', { scoredId: window.__dealScoutLastScoredId, score: result.score, title: (result.title || '').slice(0, 60) });
             renderScore(result);
