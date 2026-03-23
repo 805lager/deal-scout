@@ -873,9 +873,10 @@
       if (_useFingerprint) {
         // Strategy A timeout: fingerprint never changed in 5 s.
         // Only reload if BOTH IDs are present and equal (genuinely stuck DOM
-        // showing the same listing). If URL ID differs → new listing, never
-        // reload. If no lastScoredId → first session, let Strategy C handle it.
-        if (_urlId && _lastScoredId && _urlId === _lastScoredId) {
+        // showing the same listing) AND the fingerprint never changed across
+        // all 25 polls. If fingerprint DID change but content is short, just
+        // fall through — the DOM is updating, reloading would disrupt it.
+        if (_urlId && _lastScoredId && _urlId === _lastScoredId && !_fingerprintChanged) {
           console.debug('[DealScout] Fingerprint timeout — reloading page for fresh content');
           if (window.__dealScoutDiag) {
             window.__dealScoutDiag.phase1Blockers = 'fingerprint-timeout-reloading';
