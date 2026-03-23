@@ -88,7 +88,7 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 ## Extension Version
 
-Current: **v0.29.6** — MutationObserver-based DOM settling + content-title consistency check
+Current: **v0.29.7** — Overlay/dialog DOM extraction + MutationObserver settling + content-title consistency check
 
 Key mechanisms in `extension/content/fbm.js`:
 - **MutationObserver settling**: Waits for `[role="main"]` DOM mutations to stop for 2s (max 15s) before extracting content. Replaces fixed-delay approach.
