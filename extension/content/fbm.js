@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.49';
+  const VERSION  = '0.28.50';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -120,6 +120,11 @@
     // of this file). Don't overwrite it here — by now the DOM may already show
     // the new listing, which would make prevTitle useless.
     if (isListingPage()) {
+      const _currListingId = _listingIdFromUrl(location.href);
+      if (_currListingId && window.__dealScoutLastScoredId === _currListingId) {
+        _dsNavLog('bgReinjectionSkip', { reason: 'already-scored', id: _currListingId });
+        return;
+      }
       // Abort any in-flight stream and reset the mutex so the new autoScore
       // can start cleanly. Increment nonce first so the old autoScore's
       // finally block won't reclaim the mutex after we reset it.
@@ -129,19 +134,13 @@
         window.__dealScoutAbort = null;
       }
       window.__dealScoutRunning = false;
-      // Mark that this autoScore was triggered by a background.js re-injection
-      // (rather than a first page load). Used in autoScore() to apply settle
-      // wait and Guard C even when isSpaNav=false.
       window.__dealScoutBgReinjected = true;
       _dsNavLog('bgReinjection', { url: location.href.slice(0, 120), isListing: true });
       window.__dealScoutDiag = null;
       window.__dealScoutRecoveredPrevTitle = undefined;
       window.__dealScoutPrevTitle = undefined;
-      // Clear the snap URL/nonce so the new autoScore(0) captures fresh values
-      // instead of inheriting the previous cycle's stale ones.
       window.__dealScoutSnapUrl        = undefined;
       window.__dealScoutSnapNonce      = undefined;
-      // Clear the fingerprint so the new autoScore(0) captures a fresh baseline.
       window.__dealScoutBaselineFingerprint = undefined;
       renderNavigating();
       clearTimeout(window.__dealScoutRescanTimer);
