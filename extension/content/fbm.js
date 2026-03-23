@@ -82,12 +82,19 @@
   // the exact state at a key decision point. Events are stored server-side and
   // survive context teardowns + page reloads. Only fires when ds_debug is true
   // in chrome.storage.local. Zero overhead in normal use.
-  if (window.__dealScoutDebugEnabled === undefined) window.__dealScoutDebugEnabled = false;
+  if (window.__dealScoutDebugEnabled === undefined) {
+    window.__dealScoutDebugEnabled = false;
+    try {
+      const _cached = sessionStorage.getItem('ds_debug');
+      if (_cached === '1') window.__dealScoutDebugEnabled = true;
+    } catch (_e) {}
+  }
   if (!window.__dealScoutDebugChecked) {
     window.__dealScoutDebugChecked = true;
     try {
       chrome.storage.local.get('ds_debug', (r) => {
         window.__dealScoutDebugEnabled = !!(r && r.ds_debug);
+        try { sessionStorage.setItem('ds_debug', window.__dealScoutDebugEnabled ? '1' : '0'); } catch (_e2) {}
       });
     } catch (_e) {}
   }
