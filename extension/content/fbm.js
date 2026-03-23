@@ -464,8 +464,9 @@
   // ── Raw Data Extraction ───────────────────────────────────────────────────────
 
   function extractRaw() {
-    const { el: container, source: containerSource } = _getListingContainer();
+    const { el: container, source: containerSource, diag: containerDiag } = _getListingContainer();
     window.__dealScoutLastContainerSource = containerSource;
+    window.__dealScoutLastContainerDiag = containerDiag;
 
     const _raw_all = Array.from(container.querySelectorAll('img[src*="scontent"]'));
     if (_raw_all.length === 0 && container !== document.body) {
@@ -544,38 +545,77 @@
 
   function _getListingContainer() {
     const currentId = _listingIdFromUrl(location.href);
+    const diag = {
+      hasRoleDialog: false,
+      hasAriaModal: false,
+      hasFullscreenOverlay: false,
+      hasCloseBtn: false,
+      overlayTextSnippet: '',
+      overlayListingIds: [],
+      pageListingId: currentId,
+    };
 
-    const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"]'));
-    for (let i = dialogs.length - 1; i >= 0; i--) {
-      const d = dialogs[i];
+    const roleDialogs = Array.from(document.querySelectorAll('[role="dialog"]'));
+    const ariaModals = Array.from(document.querySelectorAll('[aria-modal="true"]'));
+    diag.hasRoleDialog = roleDialogs.length > 0;
+    diag.hasAriaModal = ariaModals.length > 0;
+
+    const allDialogs = [...new Set([...roleDialogs, ...ariaModals])];
+    for (let i = allDialogs.length - 1; i >= 0; i--) {
+      const d = allDialogs[i];
+      const dText = (d.innerText || '').slice(0, 200);
+      diag.overlayTextSnippet = dText;
+
       const links = d.querySelectorAll('a[href*="/marketplace/item/"]');
+      const linkIds = [];
       for (const link of links) {
-        if (currentId && link.href && link.href.includes(currentId)) {
-          return { el: d, source: 'dialog-link-match' };
-        }
+        const linkId = _listingIdFromUrl(link.href);
+        if (linkId) linkIds.push(linkId);
       }
+      diag.overlayListingIds = linkIds.slice(0, 5);
+
+      if (currentId && linkIds.includes(currentId)) {
+        return { el: d, source: 'dialog-link-match', diag };
+      }
+
       const h1 = d.querySelector('h1');
-      if (h1 && h1.textContent.trim().length > 3) {
-        return { el: d, source: 'dialog-h1' };
+      const hasListingContent = h1 && h1.textContent.trim().length > 3 &&
+        d.querySelector('img[src*="scontent"]') && (d.innerText || '').length > 100;
+      if (hasListingContent) {
+        return { el: d, source: 'dialog-h1-content', diag };
       }
-      if (d.querySelector('img[src*="scontent"]') && (d.innerText || '').length > 100) {
-        return { el: d, source: 'dialog-content' };
+    }
+
+    const fullscreenDivs = document.querySelectorAll('div[style*="position: fixed"], div[style*="position:fixed"]');
+    for (const div of fullscreenDivs) {
+      if (div === document.body) continue;
+      const rect = div.getBoundingClientRect();
+      if (rect.width >= window.innerWidth * 0.8 && rect.height >= window.innerHeight * 0.8) {
+        const h1 = div.querySelector('h1');
+        if (h1 && h1.textContent.trim().length > 3 && div.querySelector('img[src*="scontent"]')) {
+          diag.hasFullscreenOverlay = true;
+          diag.overlayTextSnippet = (div.innerText || '').slice(0, 200);
+          return { el: div, source: 'fullscreen-overlay', diag };
+        }
       }
     }
 
     const closeButtons = document.querySelectorAll('[aria-label="Close"], [aria-label="close"]');
+    diag.hasCloseBtn = closeButtons.length > 0;
     for (const btn of closeButtons) {
-      const overlay = btn.closest('div[class]');
-      if (overlay && overlay !== document.body) {
+      let overlay = btn.parentElement;
+      for (let depth = 0; depth < 8 && overlay && overlay !== document.body; depth++) {
         const h1 = overlay.querySelector('h1');
-        if (h1 && h1.textContent.trim().length > 3 && overlay.querySelector('img[src*="scontent"]')) {
-          return { el: overlay, source: 'close-btn-overlay' };
+        if (h1 && h1.textContent.trim().length > 3 && overlay.querySelector('img[src*="scontent"]') && (overlay.innerText || '').length > 200) {
+          diag.overlayTextSnippet = (overlay.innerText || '').slice(0, 200);
+          return { el: overlay, source: 'close-btn-overlay', diag };
         }
+        overlay = overlay.parentElement;
       }
     }
 
     const mainEl = document.querySelector('[role="main"]') || document.querySelector('main') || document.body;
-    return { el: mainEl, source: 'main' };
+    return { el: mainEl, source: 'main', diag };
   }
 
   function _getCurrentH1Title() {
@@ -886,6 +926,7 @@
       _dsDebugPost('score-complete', { scoredId: listingId, score: result.score, title: (result.title || '').slice(0, 60) });
       renderScore(result);
 
+      const _cDiag = window.__dealScoutLastContainerDiag || {};
       _postDiag({
         listingId,
         cacheHit: false,
@@ -899,6 +940,13 @@
         currentTitle: currentTitle.slice(0, 80),
         containerSource: rawData._containerSource || window.__dealScoutLastContainerSource || 'unknown',
         dialogDetected: (rawData._containerSource || '') !== 'main',
+        hasRoleDialog: !!_cDiag.hasRoleDialog,
+        hasAriaModal: !!_cDiag.hasAriaModal,
+        hasFullscreenOverlay: !!_cDiag.hasFullscreenOverlay,
+        hasCloseBtn: !!_cDiag.hasCloseBtn,
+        overlayTextSnippet: (_cDiag.overlayTextSnippet || '').slice(0, 200),
+        overlayListingIds: (_cDiag.overlayListingIds || []).slice(0, 5),
+        pageListingId: _cDiag.pageListingId || listingId,
         titleWaitMs: _titleWaitMs,
         mutationSettleMs: _mutationSettleMs,
         fpRetries: _fpRetries,
