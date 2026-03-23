@@ -724,7 +724,8 @@
     window.__dealScoutLastRawFingerprint = _rawFingerprint(rawData.raw_text);
     _persistState();
 
-    _dsDebugPost('extraction-done', { urlId: listingId, rawLen: rawData.raw_text.length, h1: _getCurrentH1Title().slice(0, 50), fpRetries: _fpRetries, titleWaitAttempts: attempt });
+    const _fpMatched = _fpRetries > 0;
+    _dsDebugPost('extraction-done', { urlId: listingId, rawLen: rawData.raw_text.length, h1: _getCurrentH1Title().slice(0, 50), fpRetries: _fpRetries, fpMatched: _fpMatched, titleWaitAttempts: attempt });
 
     const abort = new AbortController();
     window.__dealScoutAbort = abort;
@@ -769,6 +770,7 @@
         dataSource: result.data_source,
         titleWaitMs: attempt * 300,
         fpRetries: _fpRetries,
+        fpMatched: _fpMatched,
         totalMs: Date.now() - _diagStart,
       });
 
