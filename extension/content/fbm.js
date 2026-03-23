@@ -1,6 +1,6 @@
 /**
  * fbm.js — Deal Scout Content Script for Facebook Marketplace
- * v0.29.0
+ * v0.29.1
  *
  * INJECTED INTO: facebook.com/marketplace/*
  * PURPOSE: Extracts listing data, sends to background.js for scoring,
@@ -24,7 +24,7 @@
 (function () {
   "use strict";
 
-  const VERSION  = '0.29.0';
+  const VERSION  = '0.29.1';
   const PANEL_ID  = "deal-scout-panel";
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
   const DS_API_KEY = "ds_live_098caae54340d797cb216856d0cffe50";
@@ -168,6 +168,9 @@
       window.__dealScoutNonce = (window.__dealScoutNonce || 0) + 1;
       window.__dealScoutRunning = false;
       window.__dealScoutLastScoredId = '';
+      window.__dealScoutLastScoredTitle = '';
+      window.__dealScoutLastSeenH1 = '';
+      window.__dealScoutLastSeenImg = '';
       removePanel();
       try {
         chrome.runtime.sendMessage({ type: 'CLEAR_SCORE_CACHE' }).catch(() => {});
@@ -523,6 +526,37 @@
     };
   }
 
+  // ── DOM Transition Helpers ─────────────────────────────────────────────────────
+
+  function _getCurrentH1Title() {
+    for (const el of document.querySelectorAll('h1[dir="auto"]')) {
+      const t = el.textContent.trim();
+      if (t && !_GENERIC_TITLES.has(t.toLowerCase())) return t;
+    }
+    for (const el of document.querySelectorAll('h1')) {
+      const t = el.textContent.trim();
+      if (t && !_GENERIC_TITLES.has(t.toLowerCase())) return t;
+    }
+    return '';
+  }
+
+  function _getMainImageUrl() {
+    const imgs = document.querySelectorAll('img[src*="scontent"]');
+    for (const img of imgs) {
+      if (img.closest('a[href*="/marketplace/item/"]')) continue;
+      if (img.closest('aside')) continue;
+      if (img.closest('[role="listitem"] a')) continue;
+      const w = img.clientWidth || img.offsetWidth || 0;
+      if (w >= 200 && img.getBoundingClientRect().top + window.scrollY < 900) {
+        return img.src || '';
+      }
+    }
+    return '';
+  }
+
+  if (!window.__dealScoutLastSeenH1) window.__dealScoutLastSeenH1 = '';
+  if (!window.__dealScoutLastSeenImg) window.__dealScoutLastSeenImg = '';
+
   // ── Auto-score ─────────────────────────────────────────────────────────────────
 
   async function autoScore() {
@@ -537,7 +571,13 @@
     const myNonce = window.__dealScoutNonce;
     const snapUrl = location.href;
     const listingId = _listingIdFromUrl(snapUrl);
+    const _diagStart = Date.now();
+    let _diagTransitionMs = 0;
+    let _diagRetries = 0;
+    let _diagCacheHit = false;
+    let _diagTransitionTimedOut = false;
 
+    _dsNavLog('autoScore', { listingId, nonce: myNonce });
     _dsDebugPost('scoring-start', { urlId: listingId });
 
     try {
@@ -562,8 +602,11 @@
         _dsDebugPost('bg-cache-hit', { urlId: listingId, score: cached.result.score });
         window.__dealScoutLastScoredId = listingId;
         window.__dealScoutLastScoredTitle = cached.result.title || '';
+        window.__dealScoutLastSeenH1 = _getCurrentH1Title();
+        window.__dealScoutLastSeenImg = _getMainImageUrl();
         try { sessionStorage.setItem('ds_lastScored', JSON.stringify({ id: listingId, title: cached.result.title || '' })); } catch (_e) {}
         renderScore(cached.result);
+        _postDiag({ listingId, cacheHit: true, score: cached.result.score, title: cached.result.title, transitionMs: 0, retries: 0 });
         window.__dealScoutRunning = false;
         return;
       }
@@ -576,9 +619,17 @@
     showPanel();
     renderLoading({});
 
+    const prevH1  = window.__dealScoutLastSeenH1 || '';
+    const prevImg = window.__dealScoutLastSeenImg || '';
+    const hasPrevData = !!(prevH1 || prevImg);
+
+    const _isCardImg = (img) =>
+      !!img.closest('a[href*="/marketplace/item/"]') ||
+      !!img.closest('aside') ||
+      !!img.closest('[role="listitem"] a');
+
     const hasMainImage = () => Array.from(document.querySelectorAll('img[src*="scontent"]')).some(img => {
-      const isCard = !!img.closest('a[href*="/marketplace/item/"]') || !!img.closest('aside');
-      if (isCard) return false;
+      if (_isCardImg(img)) return false;
       const w = img.clientWidth || img.offsetWidth || 0;
       return w >= 200 && img.getBoundingClientRect().top + window.scrollY < 900;
     });
@@ -586,39 +637,92 @@
     const mainEl = document.querySelector('[role="main"]') || document.body;
     const hasContent = () => (mainEl.innerText || '').length > 100;
 
+    const domChanged = () => {
+      if (!hasPrevData) return true;
+      const currH1  = _getCurrentH1Title();
+      const currImg = _getMainImageUrl();
+      if (prevH1 && currH1 && currH1 !== prevH1) return true;
+      if (prevImg && currImg && currImg !== prevImg) return true;
+      return false;
+    };
+
+    const _transStart = Date.now();
     let settled = false;
-    for (let i = 0; i < 25; i++) {
-      if (hasContent() && hasMainImage()) { settled = true; break; }
+    _dsDebugPost('transition-wait', { urlId: listingId, prevH1: prevH1.slice(0, 50), prevImg: prevImg.slice(0, 60) });
+
+    for (let i = 0; i < 30; i++) {
+      if (hasContent() && hasMainImage() && domChanged()) { settled = true; break; }
       await new Promise(r => setTimeout(r, 200));
       if (window.__dealScoutNonce !== myNonce || location.href !== snapUrl) {
         window.__dealScoutRunning = false;
         return;
       }
     }
+    _diagTransitionMs = Date.now() - _transStart;
 
-    if (!settled && !hasContent()) {
-      console.debug('[DealScout] Insufficient page content — skipping');
-      renderError('Could not read listing — try RESCORE');
-      window.__dealScoutRunning = false;
-      return;
+    if (!settled) {
+      if (hasContent() && hasMainImage()) {
+        _diagTransitionTimedOut = true;
+        console.debug('[DealScout] DOM transition timeout — proceeding with current content (risky)');
+        _dsDebugPost('transition-timeout', { urlId: listingId, transitionMs: _diagTransitionMs });
+      } else {
+        console.debug('[DealScout] Insufficient page content — skipping');
+        renderError('Could not read listing — try RESCORE');
+        window.__dealScoutRunning = false;
+        return;
+      }
     }
 
-    await new Promise(r => setTimeout(r, 500));
+    await new Promise(r => setTimeout(r, 400));
     if (window.__dealScoutNonce !== myNonce || location.href !== snapUrl) {
       window.__dealScoutRunning = false;
       return;
     }
 
-    const rawData = extractRaw();
+    const _maxBleedRetries = 3;
+    let rawData = null;
 
-    if (!rawData.raw_text || rawData.raw_text.length < 100) {
-      console.debug('[DealScout] Insufficient page content after extraction — skipping');
-      renderError('Could not read listing — try RESCORE');
-      window.__dealScoutRunning = false;
-      return;
+    for (let attempt = 0; attempt <= _maxBleedRetries; attempt++) {
+      rawData = extractRaw();
+
+      if (!rawData.raw_text || rawData.raw_text.length < 100) {
+        console.debug('[DealScout] Insufficient page content after extraction — skipping');
+        renderError('Could not read listing — try RESCORE');
+        window.__dealScoutRunning = false;
+        return;
+      }
+
+      const extractedH1 = _getCurrentH1Title();
+      const bleedDetected = hasPrevData && prevH1 && extractedH1 && extractedH1 === prevH1
+        && listingId && window.__dealScoutLastScoredId
+        && listingId !== window.__dealScoutLastScoredId;
+
+      if (bleedDetected && attempt < _maxBleedRetries) {
+        _diagRetries++;
+        console.debug(`[DealScout] Bleed detected (h1="${extractedH1.slice(0,40)}" matches prev) — retry ${attempt + 1}/${_maxBleedRetries}`);
+        _dsDebugPost('bleed-retry', { urlId: listingId, attempt: attempt + 1, h1: extractedH1.slice(0, 50), prevH1: prevH1.slice(0, 50) });
+        await new Promise(r => setTimeout(r, 600));
+        if (window.__dealScoutNonce !== myNonce || location.href !== snapUrl) {
+          window.__dealScoutRunning = false;
+          return;
+        }
+        continue;
+      }
+
+      if (bleedDetected) {
+        console.debug('[DealScout] Bleed persists after retries — aborting to prevent stale score');
+        _dsDebugPost('bleed-persist', { urlId: listingId, h1: extractedH1.slice(0, 50) });
+        renderError('Listing still loading — tap RESCORE');
+        window.__dealScoutRunning = false;
+        return;
+      }
+      break;
     }
 
-    _dsDebugPost('extracting', { urlId: listingId, rawLen: rawData.raw_text.length });
+    window.__dealScoutLastSeenH1 = _getCurrentH1Title();
+    window.__dealScoutLastSeenImg = _getMainImageUrl();
+
+    _dsDebugPost('extraction-done', { urlId: listingId, rawLen: rawData.raw_text.length, h1: window.__dealScoutLastSeenH1.slice(0, 50), retries: _diagRetries });
 
     try {
       const result = await new Promise((resolve, reject) => {
@@ -641,19 +745,27 @@
 
       window.__dealScoutLastScoredId = listingId;
       window.__dealScoutLastScoredTitle = result.title || '';
+      window.__dealScoutLastSeenH1 = _getCurrentH1Title();
+      window.__dealScoutLastSeenImg = _getMainImageUrl();
       try { sessionStorage.setItem('ds_lastScored', JSON.stringify({ id: listingId, title: result.title || '' })); } catch (_e) {}
 
       _dsDebugPost('score-complete', { scoredId: listingId, score: result.score, title: (result.title || '').slice(0, 60) });
       renderScore(result);
 
-      if (window.__dealScoutDiag) {
-        window.__dealScoutDiag.navLog = (window.__dealScoutNavLog || []).slice(-10);
-        fetch(`${API_BASE}/diag`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(window.__dealScoutDiag),
-        }).catch(() => {});
-      }
+      _postDiag({
+        listingId,
+        cacheHit: false,
+        score: result.score,
+        title: result.title,
+        verdict: result.verdict,
+        price: result.price,
+        condition: result.condition,
+        dataSource: result.data_source,
+        transitionMs: _diagTransitionMs,
+        transitionTimedOut: _diagTransitionTimedOut,
+        retries: _diagRetries,
+        totalMs: Date.now() - _diagStart,
+      });
 
     } catch (err) {
       if (window.__dealScoutNonce !== myNonce || location.href !== snapUrl) {
@@ -666,6 +778,21 @@
     } finally {
       window.__dealScoutRunning = false;
     }
+  }
+
+  function _postDiag(data) {
+    const diag = {
+      v: VERSION,
+      nav: new Date().toLocaleTimeString(),
+      ...data,
+      navLog: (window.__dealScoutNavLog || []).slice(-10),
+    };
+    fetch(`${API_BASE}/diag`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(diag),
+      keepalive: true,
+    }).catch(() => {});
   }
 
   // ── Background Communication ──────────────────────────────────────────────────
@@ -1729,11 +1856,14 @@
     }
 
     if (isListingPage() || (newHref && /\/marketplace\/(?:[^/]+\/)?item\/\d+/.test(newHref))) {
+      window.__dealScoutLastSeenH1 = _getCurrentH1Title();
+      window.__dealScoutLastSeenImg = _getMainImageUrl();
+
       window.__dealScoutNonce = (window.__dealScoutNonce || 0) + 1;
       window.__dealScoutRunning = false;
 
-      _dsNavLog('pushStateNav', { from: oldId, to: newId });
-      _dsDebugPost('pushstate-nav', { from: oldId, to: newId });
+      _dsNavLog('pushStateNav', { from: oldId, to: newId, snapH1: (window.__dealScoutLastSeenH1 || '').slice(0, 50) });
+      _dsDebugPost('pushstate-nav', { from: oldId, to: newId, snapH1: (window.__dealScoutLastSeenH1 || '').slice(0, 50) });
 
       const panel = document.getElementById(PANEL_ID);
       if (panel) renderNavigating();
