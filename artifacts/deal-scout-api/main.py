@@ -2192,6 +2192,13 @@ def _diag_summary_row(r: dict) -> dict:
         "bleed":         r.get("postExtractBleed"),
         "guardC":        r.get("guardC"),
         "retries":       r.get("retries"),
+        # v0.29.6 MutationObserver diagnostics
+        "mutationSettleMs": r.get("mutationSettleMs"),
+        "titleCheckRetries": r.get("titleCheckRetries"),
+        "contentTitleMatch": r.get("contentTitleMatch"),
+        "h1AtExtract":   r.get("h1AtExtract"),
+        "rawSnippet":    r.get("rawSnippet"),
+        "titleWaitMs":   r.get("titleWaitMs"),
     }
 
 
@@ -2309,6 +2316,98 @@ async def clear_diag():
         return {"ok": True, "cleared": n}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+from fastapi.responses import HTMLResponse
+
+@app.get("/fbm-test", response_class=HTMLResponse)
+async def fbm_test_page():
+    return """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>FBM SPA Simulator</title>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; background: #f0f2f5; }
+[role="main"] { max-width: 900px; margin: 0 auto; padding: 20px; }
+.nav { background: #1877f2; padding: 10px 20px; color: white; display: flex; gap: 10px; }
+.nav button { background: white; color: #1877f2; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; }
+.nav button:hover { background: #e4e6eb; }
+.listing-img { width: 400px; height: 300px; background: #ddd; display: flex; align-items: center; justify-content: center; border-radius: 8px; margin: 10px 0; font-size: 48px; }
+.price { font-size: 28px; font-weight: 700; color: #1c1e21; }
+.details { margin-top: 16px; padding: 16px; background: white; border-radius: 8px; }
+.status { padding: 10px 20px; background: #fff3cd; font-family: monospace; font-size: 12px; }
+img[src*="scontent"] { width: 400px; height: 300px; object-fit: cover; border-radius: 8px; }
+</style></head>
+<body>
+<div class="status" id="status">Ready — click a listing button to simulate SPA navigation</div>
+<div class="nav">
+  <span style="font-weight:700;margin-right:10px;">FBM Test</span>
+  <button onclick="navTo(0)">Listing 1: Telescope</button>
+  <button onclick="navTo(1)">Listing 2: Arcade Cabinet</button>
+  <button onclick="navTo(2)">Listing 3: Copper Kettle</button>
+  <span style="margin-left:auto;font-size:12px;">Delay: <input id="delay" type="number" value="3000" style="width:60px">ms</span>
+</div>
+<div role="main" id="main-content">
+  <p>Click a listing above to simulate Facebook Marketplace SPA navigation.</p>
+  <p>The H1 title will update instantly, but the body content will update after the configured delay — simulating Facebook's React reconciliation lag.</p>
+</div>
+<script>
+const listings = [
+  {
+    id: '111111111111111',
+    title: '25" f/5 Obsession Telescope',
+    price: '$8,000',
+    condition: 'Good',
+    img: 'https://upload.wikimedia.org/wikipedia/commons/thumb/4/4f/Roque_de_los_Muchachos_Observatory_2.jpg/320px-Roque_de_los_Muchachos_Observatory_2.jpg',
+    desc: 'Selling my 25 inch f/5 Obsession Dobsonian telescope. This is a premium instrument for serious deep-sky observers. Mirror is in excellent condition with 96% reflectivity. Includes Servocad digital setting circles, Telrad finder, 2-inch Paracorr coma corrector, and custom shroud. Truss tubes are carbon fiber. Located in San Diego, local pickup only due to size. This scope regularly sells for $10,000+ new. Serious inquiries only please.'
+  },
+  {
+    id: '222222222222222',
+    title: 'Star Wars Arcade1up Cabinet',
+    price: '$485',
+    condition: 'Like New',
+    img: 'https://upload.wikimedia.org/wikipedia/commons/thumb/6/6c/Star_Wars_-_arcadeflyer.png/220px-Star_Wars_-_arcadeflyer.png',
+    desc: 'Star Wars Arcade1Up cabinet in like new condition. Barely used, bought 6 months ago. Includes the original riser and light-up marquee. Has Star Wars, Empire Strikes Back, and Return of the Jedi games. WiFi enabled for online leaderboards. Custom vinyl side panels in perfect condition. Retails for $599 new at Best Buy. Cash only, no trades.'
+  },
+  {
+    id: '333333333333333',
+    title: 'Vintage Copper Tea Kettle',
+    price: '$45',
+    condition: 'Good',
+    img: 'https://upload.wikimedia.org/wikipedia/commons/thumb/3/33/Copper_Kettle.jpg/256px-Copper_Kettle.jpg',
+    desc: 'Beautiful vintage copper tea kettle, likely from the 1960s or 1970s. Has a lovely patina and the copper is in great shape — no dents or major scratches. The handle is solid brass and the lid fits snugly. Holds about 2 quarts. Would make a great addition to a farmhouse kitchen or copper collection. I have several other copper pieces available if interested.'
+  }
+];
+let currentIdx = -1;
+function navTo(idx) {
+  if (idx === currentIdx) return;
+  const delay = parseInt(document.getElementById('delay').value) || 3000;
+  const listing = listings[idx];
+  const main = document.getElementById('main-content');
+  const status = document.getElementById('status');
+  const oldTitle = currentIdx >= 0 ? listings[currentIdx].title : '(none)';
+  // Step 1: Update URL immediately (simulates pushState)
+  history.pushState({}, '', '/marketplace/item/' + listing.id + '/?ref=product_details');
+  // Step 2: Update H1 immediately (Facebook does this fast)
+  status.textContent = `NAV: "${oldTitle}" → "${listing.title}" | H1 updated instantly, body updates in ${delay}ms...`;
+  const h1 = main.querySelector('h1[dir="auto"]');
+  if (h1) {
+    h1.textContent = listing.title;
+  } else {
+    main.innerHTML = '<h1 dir="auto">' + listing.title + '</h1><div class="details" id="body-content"><p>Loading listing details...</p></div>';
+  }
+  // Step 3: Update body content AFTER delay (simulates React reconciliation lag)
+  setTimeout(() => {
+    const bodyEl = document.getElementById('body-content') || main;
+    bodyEl.innerHTML = '<img src="' + listing.img + '" alt="' + listing.title + '">' +
+      '<div class="price">' + listing.price + '</div>' +
+      '<p><strong>Condition:</strong> ' + listing.condition + '</p>' +
+      '<p>' + listing.desc + '</p>' +
+      '<p><strong>Listed:</strong> 2 days ago</p>' +
+      '<p><strong>Location:</strong> San Diego, CA</p>';
+    status.textContent = `READY: "${listing.title}" fully loaded (body updated after ${delay}ms delay)`;
+  }, delay);
+  currentIdx = idx;
+}
+</script></body></html>"""
 
 
 if __name__ == "__main__":

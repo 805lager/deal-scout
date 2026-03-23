@@ -1,6 +1,6 @@
 /**
  * fbm.js — Deal Scout Content Script for Facebook Marketplace
- * v0.29.5
+ * v0.29.6
  *
  * INJECTED INTO: facebook.com/marketplace/*
  * PURPOSE: Extracts listing data, sends to background.js for scoring,
@@ -24,7 +24,7 @@
 (function () {
   "use strict";
 
-  const VERSION  = '0.29.5';
+  const VERSION  = '0.29.6';
   const PANEL_ID  = "deal-scout-panel";
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
   const DS_API_KEY = "ds_live_098caae54340d797cb216856d0cffe50";
@@ -567,7 +567,7 @@
   function _rawFingerprint(text) {
     if (!text) return '';
     const norm = text.replace(/\s+/g, ' ').trim().toLowerCase();
-    return norm.slice(0, 150) + '|' + Math.floor(norm.length / 50);
+    return norm.slice(0, 300);
   }
 
   if (!window.__dealScoutLastRawFingerprint) {
@@ -670,77 +670,129 @@
       return autoScore(attempt + 1);
     }
 
-    const _waitMs = attempt * 300;
-    _dsDebugPost('title-settled', { urlId: listingId, attempt, waitMs: _waitMs, title: currentTitle.slice(0, 50), prevTitle: (prevTitle || '').slice(0, 50), timedOut: notReady });
+    const _titleWaitMs = attempt * 300;
+    const _titleAfterWait = _getCurrentH1Title();
+    _dsDebugPost('title-settled', { urlId: listingId, attempt, waitMs: _titleWaitMs, title: _titleAfterWait.slice(0, 80), prevTitle: (prevTitle || '').slice(0, 80), timedOut: notReady });
 
-    await new Promise(r => setTimeout(r, 1500));
+    const _mutStart = Date.now();
+    const _MUTATION_QUIET_MS = 2000;
+    const _MUTATION_MAX_MS = 15000;
+    let _mutationSettleMs = 0;
+    try {
+      await new Promise((resolve) => {
+        let resolved = false;
+        const done = () => { if (resolved) return; resolved = true; obs.disconnect(); clearTimeout(quietTimer); clearTimeout(maxTimer); resolve(); };
+        let quietTimer = null;
+        const targetEl = document.querySelector('[role="main"]') || document.body;
+        const obs = new MutationObserver(() => {
+          clearTimeout(quietTimer);
+          if (Date.now() - _mutStart > _MUTATION_MAX_MS) { done(); return; }
+          quietTimer = setTimeout(done, _MUTATION_QUIET_MS);
+        });
+        obs.observe(targetEl, { childList: true, subtree: true, characterData: true });
+        quietTimer = setTimeout(done, _MUTATION_QUIET_MS);
+        const maxTimer = setTimeout(done, _MUTATION_MAX_MS);
+      });
+      _mutationSettleMs = Date.now() - _mutStart;
+    } catch (_e) {
+      await new Promise(r => setTimeout(r, 3000));
+      _mutationSettleMs = 3000;
+    }
+
     if (window.__dealScoutNonce !== myNonce || location.href !== snapUrl) {
       window.__dealScoutRunning = false;
       return;
     }
 
+    _dsDebugPost('mutation-settled', { urlId: listingId, mutationSettleMs: _mutationSettleMs });
+
     window.__dealScoutPrevTitle = undefined;
     try { sessionStorage.removeItem('ds_prevTitle'); } catch (_e) {}
 
-    const _maxFpRetries = 5;
-    const _fpRetryDelays = [500, 800, 1000, 1500, 2000];
+    const _maxContentRetries = 8;
+    const _contentRetryDelays = [500, 800, 1000, 1500, 2000, 2000, 2000, 2000];
     let rawData = null;
     let _fpRetries = 0;
+    let _titleCheckRetries = 0;
+    let _contentTitleMatch = false;
 
-    for (let fpAttempt = 0; fpAttempt <= _maxFpRetries; fpAttempt++) {
-      rawData = extractRaw();
-
-      if (!rawData.raw_text || rawData.raw_text.length < 100) {
-        if (fpAttempt < _maxFpRetries) {
-          const delay = _fpRetryDelays[fpAttempt] || 1000;
-          console.debug(`[DealScout] Insufficient content (${(rawData.raw_text || '').length} chars) — retry ${fpAttempt + 1}/${_maxFpRetries} (${delay}ms)`);
-          _dsDebugPost('content-retry', { urlId: listingId, attempt: fpAttempt + 1, rawLen: (rawData.raw_text || '').length });
-          await new Promise(r => setTimeout(r, delay));
-          if (window.__dealScoutNonce !== myNonce || location.href !== snapUrl) {
-            window.__dealScoutRunning = false;
-            return;
-          }
-          continue;
-        }
-        console.debug('[DealScout] Insufficient page content after all retries — skipping');
-        _dsDebugPost('content-exhausted', { urlId: listingId });
-        renderError('Could not read listing — try RESCORE');
+    for (let cAttempt = 0; cAttempt < _maxContentRetries; cAttempt++) {
+      if (window.__dealScoutNonce !== myNonce || location.href !== snapUrl) {
         window.__dealScoutRunning = false;
         return;
+      }
+
+      rawData = extractRaw();
+      const h1Now = _getCurrentH1Title();
+
+      if (!rawData.raw_text || rawData.raw_text.length < 100) {
+        console.debug(`[DealScout] Insufficient content (${(rawData.raw_text || '').length} chars) — retry ${cAttempt + 1}/${_maxContentRetries}`);
+        _dsDebugPost('content-retry', { urlId: listingId, attempt: cAttempt + 1, rawLen: (rawData.raw_text || '').length, reason: 'insufficient' });
+        await new Promise(r => setTimeout(r, _contentRetryDelays[cAttempt] || 2000));
+        continue;
       }
 
       const fp = _rawFingerprint(rawData.raw_text);
       const prevFp = window.__dealScoutLastRawFingerprint || '';
       const fpMatch = prevFp && fp === prevFp && listingId && listingId !== window.__dealScoutLastScoredId;
 
-      if (fpMatch && fpAttempt < _maxFpRetries) {
+      if (fpMatch) {
         _fpRetries++;
-        const delay = _fpRetryDelays[fpAttempt] || 1000;
-        console.debug(`[DealScout] Stale content (fingerprint matches previous listing) — retry ${fpAttempt + 1}/${_maxFpRetries} (${delay}ms)`);
-        _dsDebugPost('fp-stale-retry', { urlId: listingId, attempt: fpAttempt + 1, prevScoredId: window.__dealScoutLastScoredId });
-        await new Promise(r => setTimeout(r, delay));
-        if (window.__dealScoutNonce !== myNonce || location.href !== snapUrl) {
-          window.__dealScoutRunning = false;
-          return;
-        }
+        console.debug(`[DealScout] Stale content (fingerprint match) — retry ${cAttempt + 1}/${_maxContentRetries}`);
+        _dsDebugPost('fp-stale-retry', { urlId: listingId, attempt: cAttempt + 1, prevScoredId: window.__dealScoutLastScoredId });
+        await new Promise(r => setTimeout(r, _contentRetryDelays[cAttempt] || 2000));
         continue;
       }
 
-      if (fpMatch) {
-        console.debug('[DealScout] Stale content persists after retries — aborting');
-        _dsDebugPost('fp-stale-persist', { urlId: listingId });
-        renderError('Listing still loading — tap RESCORE');
-        window.__dealScoutRunning = false;
-        return;
+      if (h1Now && h1Now.length > 3 && !_GENERIC_TITLES.has(h1Now.toLowerCase())) {
+        const h1Lower = h1Now.toLowerCase();
+        const rawLower = rawData.raw_text.toLowerCase();
+        const h1Words = h1Lower.split(/\s+/).filter(w => w.length > 2);
+        const matchCount = h1Words.filter(w => rawLower.includes(w)).length;
+        _contentTitleMatch = h1Words.length === 0 || (matchCount / h1Words.length) >= 0.5;
+
+        if (!_contentTitleMatch) {
+          _titleCheckRetries++;
+          console.debug(`[DealScout] Content-title mismatch: H1="${h1Now.slice(0,40)}" not found in raw_text — retry ${cAttempt + 1}/${_maxContentRetries}`);
+          _dsDebugPost('content-title-mismatch', { urlId: listingId, attempt: cAttempt + 1, h1: h1Now.slice(0, 80), rawSnippet: rawData.raw_text.slice(0, 80) });
+          await new Promise(r => setTimeout(r, _contentRetryDelays[cAttempt] || 2000));
+          continue;
+        }
+      } else {
+        _contentTitleMatch = true;
       }
+
       break;
+    }
+
+    if (window.__dealScoutNonce !== myNonce || location.href !== snapUrl) {
+      window.__dealScoutRunning = false;
+      return;
+    }
+
+    if (!rawData || !rawData.raw_text || rawData.raw_text.length < 100) {
+      console.debug('[DealScout] Insufficient page content after all retries — skipping');
+      _dsDebugPost('content-exhausted', { urlId: listingId });
+      renderError('Could not read listing — try RESCORE');
+      window.__dealScoutRunning = false;
+      return;
+    }
+
+    const _fpStillStale = _fpRetries > 0 && _rawFingerprint(rawData.raw_text) === (window.__dealScoutLastRawFingerprint || '') && listingId !== window.__dealScoutLastScoredId;
+    if (_fpStillStale || (!_contentTitleMatch && _titleCheckRetries > 0)) {
+      console.debug('[DealScout] Content still stale after all retries — aborting', { fpStale: _fpStillStale, titleMatch: _contentTitleMatch });
+      _dsDebugPost('stale-abort', { urlId: listingId, fpStale: _fpStillStale, titleMatch: _contentTitleMatch, fpRetries: _fpRetries, titleCheckRetries: _titleCheckRetries });
+      renderError('Listing still loading — tap RESCORE');
+      window.__dealScoutRunning = false;
+      return;
     }
 
     window.__dealScoutLastRawFingerprint = _rawFingerprint(rawData.raw_text);
     _persistState();
 
     const _fpMatched = _fpRetries > 0;
-    _dsDebugPost('extraction-done', { urlId: listingId, rawLen: rawData.raw_text.length, h1: _getCurrentH1Title().slice(0, 50), fpRetries: _fpRetries, fpMatched: _fpMatched, titleWaitAttempts: attempt });
+    const _h1AtExtract = _getCurrentH1Title();
+    _dsDebugPost('extraction-done', { urlId: listingId, rawLen: rawData.raw_text.length, h1: _h1AtExtract.slice(0, 80), rawSnippet: rawData.raw_text.slice(0, 80), fpRetries: _fpRetries, fpMatched: _fpMatched, titleCheckRetries: _titleCheckRetries, contentTitleMatch: _contentTitleMatch, mutationSettleMs: _mutationSettleMs, titleWaitMs: _titleWaitMs });
 
     const abort = new AbortController();
     window.__dealScoutAbort = abort;
@@ -783,9 +835,14 @@
         price: result.price,
         condition: result.condition,
         dataSource: result.data_source,
-        titleWaitMs: attempt * 300,
+        titleWaitMs: _titleWaitMs,
+        mutationSettleMs: _mutationSettleMs,
         fpRetries: _fpRetries,
         fpMatched: _fpMatched,
+        titleCheckRetries: _titleCheckRetries,
+        contentTitleMatch: _contentTitleMatch,
+        h1AtExtract: _h1AtExtract.slice(0, 80),
+        rawSnippet: (rawData && rawData.raw_text ? rawData.raw_text.slice(0, 80) : ''),
         totalMs: Date.now() - _diagStart,
       });
 

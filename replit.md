@@ -86,6 +86,19 @@ Get your free eBay key at: https://developer.ebay.com/my/keys
 
 The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the prefix) via `http-proxy-middleware` in `artifacts/api-server/src/app.ts`. The extension's external URL routes through the api-server, not directly to the Python app. **If the api-server is stopped, the extension gets 502 errors.**
 
+## Extension Version
+
+Current: **v0.29.6** — MutationObserver-based DOM settling + content-title consistency check
+
+Key mechanisms in `extension/content/fbm.js`:
+- **MutationObserver settling**: Waits for `[role="main"]` DOM mutations to stop for 2s (max 15s) before extracting content. Replaces fixed-delay approach.
+- **Content-title consistency check**: After extraction, verifies H1 title words appear in raw_text. Rejects stale body content (up to 8 retries).
+- **Fingerprint guard**: First 300 chars of normalized raw_text; catches same-content-different-listing.
+- **Terminal stale abort**: If all retries exhaust with stale fingerprint or title mismatch, aborts with RESCORE prompt instead of scoring stale content.
+
+### FBM SPA Simulator Test Page
+Available at `/api/ds/fbm-test` — simulates Facebook Marketplace SPA navigation with configurable body-content update delay.
+
 ## Extension Content Scripts
 
 All four content scripts use `chrome.runtime.sendMessage({type: 'SCORE_LISTING', listing})` to route through `background.js`, which calls the FastAPI `/score` endpoint. Each includes the `platform` field on the listing object so the data pipeline labels signals correctly.
