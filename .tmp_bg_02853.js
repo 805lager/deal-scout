@@ -1,5 +1,5 @@
 /**
- * background.js — Extension Service Worker (v0.29.0)
+ * background.js — Extension Service Worker
  *
  * WHY A SERVICE WORKER:
  *   Manifest V3 replaced background pages with service workers.
@@ -8,19 +8,17 @@
  *     - API calls to our FastAPI backend
  *     - Affiliate link generation
  *     - Badge updates (show deal score on extension icon)
- *     - Tab-level score caching (survives FBM context teardowns)
+ *     - Notification triggers (future: watchlist alerts)
  *
- * FLOW (v0.29.0 — background-first scoring):
- *   Content script extracts listing data → sends SCORE_LISTING here →
- *   we call the API → cache result per tab → send score back →
- *   content script renders the panel.
- *
- *   On FBM context teardown + re-injection, content script sends
- *   GET_CACHED_SCORE → we return the cached result instantly →
- *   content script renders without a new API call.
+ * FLOW:
+ *   Content script scrapes listing → sends message here →
+ *   we call the API → receive deal score →
+ *   send score back to content script → sidebar renders it
  */
 
 // ── Config ────────────────────────────────────────────────────────────────────
+// WHY ASYNC: background.js can't read chrome.storage.local synchronously.
+// Every caller that needs API_BASE must await getApiBase().
 const API_BASE_DEFAULT = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
 const DS_API_KEY = "ds_live_098caae54340d797cb216856d0cffe50";
 
@@ -33,97 +31,40 @@ async function getApiBase() {
   }
 }
 
+// Affiliate IDs — these live in the background script, never exposed to the page
+// WHY HERE: If these were in the content script, savvy users could extract them.
+// Keeping them server-side (or in background) is cleaner.
+// WHY HARDCODED HERE (not fetched from .env):
+// Browser extensions can't read server-side .env files.
+// These IDs are safe to be in the extension — they're not secret,
+// just unique identifiers. Your actual earnings are protected by
+// Amazon/eBay account login, not by keeping the tag private.
 const AFFILIATE = {
   ebay: {
-    campaignId: "5339144027",
+    campaignId: "5339144027",              // eBay Partner Network campaign ID
     toolId:     "10001",
     trackingId: "dealscout",
   },
   amazon: {
-    associateTag: "dealscout03f-20",
+    associateTag: "dealscout03f-20",        // Amazon Associate Tag
   },
 };
-
-
-// ── Tab-Level Score Cache ───────────────────────────────────────────────────
-// Map<tabId, { listingId: string, result: object }>
-// Each tab stores the most recently scored listing. Cleared on new listing
-// navigation or tab close. No TTL needed — cache is invalidated by new
-// SCORE_LISTING messages with a different listingId.
-const scoreCache = new Map();
-
-const pendingScores = new Map();
-
-chrome.tabs.onRemoved.addListener((tabId) => {
-  scoreCache.delete(tabId);
-  pendingScores.delete(tabId);
-  spaDebounceTimers.delete(tabId);
-  spaLastListingId.delete(tabId);
-});
 
 
 // ── Message Handler ───────────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  /**
+   * All messages from content scripts come through here.
+   * We use async/await inside but the listener must return true
+   * to keep the channel open for async responses — this is a
+   * Chrome extension quirk.
+   */
   if (message.type === "SCORE_LISTING") {
-    const tabId = sender.tab.id;
-    const listingId = message.listingId || '';
-
-    if (listingId) {
-      const cached = scoreCache.get(tabId);
-      if (cached && cached.listingId === listingId) {
-        sendResponse({ success: true, result: cached.result, cached: true });
-        return true;
-      }
-
-      const pending = pendingScores.get(tabId);
-      if (pending && pending.listingId === listingId) {
-        pending.promise
-          .then(result => sendResponse({ success: true, result }))
-          .catch(err  => sendResponse({ success: false, error: err.message }));
-        return true;
-      }
-    }
-
-    const scorePromise = handleScoreListing(message.listing, tabId, listingId);
-    if (listingId) {
-      pendingScores.set(tabId, { listingId, promise: scorePromise });
-    }
-    scorePromise
+    handleScoreListing(message.listing, sender.tab.id)
       .then(result => sendResponse({ success: true, result }))
-      .catch(err  => sendResponse({ success: false, error: err.message }))
-      .finally(() => {
-        const cur = pendingScores.get(tabId);
-        if (cur && cur.listingId === listingId) pendingScores.delete(tabId);
-      });
-    return true;
-  }
-
-  if (message.type === "GET_CACHED_SCORE") {
-    const tabId = sender.tab.id;
-    const listingId = message.listingId || '';
-    const cached = scoreCache.get(tabId);
-    if (cached && cached.listingId === listingId) {
-      sendResponse({ success: true, result: cached.result, cached: true });
-      return true;
-    }
-    const pending = pendingScores.get(tabId);
-    if (pending && pending.listingId === listingId) {
-      pending.promise
-        .then(result => sendResponse({ success: true, result, cached: true }))
-        .catch(err  => sendResponse({ success: false, error: err.message }));
-      return true;
-    }
-    sendResponse({ success: false, error: 'no cache' });
-    return true;
-  }
-
-  if (message.type === "CLEAR_SCORE_CACHE") {
-    const tabId = sender.tab.id;
-    scoreCache.delete(tabId);
-    pendingScores.delete(tabId);
-    sendResponse({ ok: true });
-    return true;
+      .catch(err  => sendResponse({ success: false, error: err.message }));
+    return true; // Keep message channel open for async response
   }
 
   if (message.type === "GET_AFFILIATE_LINKS") {
@@ -133,6 +74,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "BADGE_UPDATE") {
+    // Content script now calls the scoring API directly (for AbortController support).
+    // It sends this message after a successful score so the badge still updates.
     const color = message.score >= 7 ? "#22c55e"
                 : message.score >= 5 ? "#fbbf24" : "#ef4444";
     setBadge(sender.tab.id, String(message.score), color);
@@ -141,6 +84,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "AFFILIATE_CLICK") {
+    /**
+     * WHY BATCHED HERE (not fired immediately per click):
+     * Sending a fetch() per click is noisy and correlatable.
+     * Batching 5+ events together anonymizes individual sessions
+     * before any data leaves the device.
+     *
+     * The background script is the right place for this because:
+     *   - It persists across tabs/navigations
+     *   - Content scripts can't batch across page reloads
+     *   - No user-identifiable context is accessible here
+     */
     queueAnalyticsEvent({
       event:        "affiliate_click",
       program:      message.program      || "",
@@ -157,21 +111,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // ── Scoring Pipeline ──────────────────────────────────────────────────────────
 
-async function handleScoreListing(listing, tabId, listingId) {
+async function handleScoreListing(listing, tabId) {
+  /**
+   * Receives scraped listing data from a content script,
+   * calls our FastAPI backend, updates the extension badge,
+   * and returns the full deal score.
+   */
+
+  // Show loading state on badge
   setBadge(tabId, "...", "#6366f1");
 
   try {
     const score = await callScoringAPI(listing);
 
+    // Update badge with the deal score
     const badgeColor = score.score >= 7 ? "#22c55e" :
                        score.score >= 5 ? "#fbbf24" : "#ef4444";
     setBadge(tabId, String(score.score), badgeColor);
 
-    score.affiliateLinks = buildAffiliateLinks(listing.title || listing.raw_text?.slice(0, 60) || '', listing.price || 0);
-
-    if (listingId) {
-      scoreCache.set(tabId, { listingId, result: score });
-    }
+    // Inject affiliate links into the result
+    score.affiliateLinks = buildAffiliateLinks(listing.title, listing.price);
 
     return score;
 
@@ -183,6 +142,11 @@ async function handleScoreListing(listing, tabId, listingId) {
 
 
 async function callScoringAPI(listing) {
+  /**
+   * POST listing data to our FastAPI /score endpoint.
+   * This is the same endpoint the React UI uses — extension
+   * and web UI share the same backend.
+   */
   const API_BASE = await getApiBase();
   const response = await fetch(`${API_BASE}/score`, {
     method:  "POST",
@@ -202,6 +166,18 @@ async function callScoringAPI(listing) {
 // ── Affiliate Links ───────────────────────────────────────────────────────────
 
 function buildAffiliateLinks(query, price) {
+  /**
+   * Build affiliate URLs for eBay and Amazon.
+   *
+   * WHY AFFILIATE LINKS IN BACKGROUND:
+   *   The background script has access to the affiliate credentials.
+   *   Content scripts get the final URLs without ever seeing the IDs.
+   *   This protects your affiliate accounts from being hijacked.
+   *
+   * REVENUE MODEL:
+   *   - eBay: earn when user buys within 24hrs of clicking
+   *   - Amazon: earn when user buys within 24hrs (some categories 90 days)
+   */
   const encodedQuery = encodeURIComponent(query);
   const { campaignId, toolId, trackingId } = AFFILIATE.ebay;
   const { associateTag } = AFFILIATE.amazon;
@@ -229,6 +205,11 @@ function buildAffiliateLinks(query, price) {
 // ── Badge Helper ──────────────────────────────────────────────────────────────
 
 function setBadge(tabId, text, color) {
+  /**
+   * Shows the deal score on the extension icon badge.
+   * e.g. a "8" in green means great deal at a glance.
+   * WHY: Users can see the score without opening the sidebar.
+   */
   chrome.action.setBadgeText({        text,   tabId });
   chrome.action.setBadgeBackgroundColor({ color, tabId });
 }
@@ -236,7 +217,36 @@ function setBadge(tabId, text, color) {
 
 // ── SPA Navigation Handler ───────────────────────────────────────────────────
 
+/**
+ * WHY THIS IS NEEDED:
+ * FBM is a React SPA. Clicking a listing from search results changes the URL
+ * via history.pushState() — no full page reload happens. Chrome only injects
+ * content scripts on full page loads, so fbm.js never fires on SPA navigation.
+ *
+ * Fix: listen for history state changes on facebook.com and programmatically
+ * re-inject fbm.js when the URL becomes a listing page.
+ *
+ * WHY webNavigation over tabs.onUpdated:
+ * tabs.onUpdated fires for every DOM mutation and status change — too noisy.
+ * onHistoryStateUpdated fires exactly once per pushState/replaceState call,
+ * which is what FBM uses for in-app navigation.
+ */
+/**
+ * WHY DEBOUNCE:
+ * FBM calls history.pushState() 3-4 times per listing page load as it
+ * progressively hydrates the SPA (routing, prefetch, analytics, etc.).
+ * Without debouncing, fbm.js injects 4 times and fires 4 API calls.
+ * We wait 800ms after the LAST pushState before injecting — by that point
+ * FBM has settled and the DOM is ready for extraction.
+ *
+ * Per-tab map so navigating two tabs concurrently doesn't cross-cancel.
+ */
 const spaDebounceTimers = new Map();
+// Track the listing ID we last injected for per tab.
+// FBM fires onHistoryStateUpdated constantly (analytics, chat thread IDs,
+// scroll tokens) even while the user stays on the same listing. Without this
+// guard, we'd re-inject fbm.js every 800ms mid-score — calling renderNavigating()
+// and resetting the panel to "Loading next listing…" indefinitely.
 const spaLastListingId = new Map();
 
 function _bgListingId(href) {
@@ -251,12 +261,19 @@ chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
   const newId  = _bgListingId(details.url);
   const lastId = spaLastListingId.get(details.tabId) || '';
 
+  // KEY FIX: skip re-injection if we're still on the same listing.
+  // FBM fires many replaceState/pushState calls for internal state while the
+  // user stays on one listing — these must NOT restart the debounce timer and
+  // trigger another fbm.js injection while a scoring run is in progress.
   if (newId && newId === lastId) return;
 
+  // Cancel any pending inject for this tab and restart the timer.
   clearTimeout(spaDebounceTimers.get(details.tabId));
 
   spaDebounceTimers.set(details.tabId, setTimeout(() => {
     spaDebounceTimers.delete(details.tabId);
+    // Record what listing (or page type) we injected for so future state
+    // updates on the same listing don't trigger another injection.
     spaLastListingId.set(details.tabId, newId);
     chrome.scripting.executeScript({
       target: { tabId: details.tabId },
@@ -264,19 +281,28 @@ chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
     }).catch(err => {
       console.debug("[DealScout] Re-inject skipped:", err.message);
     });
-  }, 800));
+  }, 800)); // 800ms — long enough for FBM's initial burst of pushStates to settle
 }, {
   url: [{ hostContains: "facebook.com" }],
 });
 
+// On a full page navigation (hard load/reload), the manifest content_scripts
+// already inject fbm.js automatically — no need for executeScript.
+// Pre-populate spaLastListingId with the listing ID so that subsequent
+// onHistoryStateUpdated events for the SAME listing (FBM fires many while
+// the page settles) don't restart the debounce timer and re-inject mid-score.
 chrome.webNavigation.onCommitted.addListener((details) => {
   if (details.frameId !== 0) return;
   const newId = _bgListingId(details.url);
   if (newId) {
+    // Already on a listing page — mark it as "injected" so state updates
+    // for this listing don't trigger a redundant executeScript injection.
     spaLastListingId.set(details.tabId, newId);
   } else {
+    // Not a listing page — clear so the next listing navigation injects fresh.
     spaLastListingId.delete(details.tabId);
   }
+  // Also cancel any pending debounce for this tab on a full navigation.
   clearTimeout(spaDebounceTimers.get(details.tabId));
   spaDebounceTimers.delete(details.tabId);
 }, { url: [{ hostContains: "facebook.com" }] });
@@ -286,6 +312,8 @@ chrome.webNavigation.onCommitted.addListener((details) => {
 
 chrome.runtime.onInstalled.addListener(({ reason }) => {
   if (reason === "install" || reason === "update") {
+    // Clear any previously stored API URL so the hardcoded default always wins.
+    // Without this, an old saved URL in chrome.storage silently overrides the default.
     chrome.storage.local.remove("ds_api_base");
     console.log(`Deal Scout ${reason === "install" ? "installed" : "updated"} — API URL reset to default`);
   }
@@ -294,10 +322,23 @@ chrome.runtime.onInstalled.addListener(({ reason }) => {
 
 // ── Anonymous Analytics Batch Queue ─────────────────────────────────────────────
 
+/**
+ * WHY BATCH INSTEAD OF FIRE IMMEDIATELY:
+ *   Batching prevents per-click correlation. A single click from a single
+ *   session is indistinguishable from clicks aggregated across many users.
+ *   We send when 5+ events accumulate OR 60s has elapsed — whichever
+ *   comes first. At POC scale this is mostly a design statement, but it's
+ *   the right architecture for when you have real user volume.
+ *
+ * WHAT GETS SENT (and what does not):
+ *   SENT: event type, program name, category, price bucket, card type, score
+ *   NEVER SENT: user ID, IP address, listing URL, item title, location
+ */
+
 const _analyticsQueue = [];
 let   _flushTimer     = null;
 const FLUSH_BATCH_SIZE = 5;
-const FLUSH_MAX_WAIT   = 60_000;
+const FLUSH_MAX_WAIT   = 60_000; // 60s
 
 function queueAnalyticsEvent(evt) {
   _analyticsQueue.push(evt);
@@ -308,6 +349,7 @@ function queueAnalyticsEvent(evt) {
     return;
   }
 
+  // Start a max-wait timer if not already running
   if (!_flushTimer) {
     _flushTimer = setTimeout(_flushAnalytics, FLUSH_MAX_WAIT);
   }
@@ -317,9 +359,13 @@ async function _flushAnalytics() {
   if (_flushTimer) { clearTimeout(_flushTimer); _flushTimer = null; }
   if (!_analyticsQueue.length) return;
 
+  // Snapshot and clear the queue before the async send
+  // (prevents duplicate sends if another event arrives mid-fetch)
   const batch = _analyticsQueue.splice(0);
 
   try {
+    // Send each event — /event accepts one at a time (simple server)
+    // For production: add a /events bulk endpoint
     const API_BASE = await getApiBase();
     for (const evt of batch) {
       await fetch(`${API_BASE}/event`, {
@@ -330,6 +376,7 @@ async function _flushAnalytics() {
     }
     console.debug(`[DealScout] Flushed ${batch.length} analytics events`);
   } catch (err) {
+    // Non-critical — put events back in queue for next flush
     console.debug("[DealScout] Analytics flush failed (non-critical):", err.message);
     _analyticsQueue.unshift(...batch);
   }
