@@ -99,6 +99,10 @@ Key mechanisms in `extension/content/fbm.js`:
 ### FBM SPA Simulator Test Page
 Available at `/api/ds/fbm-test` — simulates Facebook Marketplace SPA navigation with configurable body-content update delay.
 
+## FBM Overlay/Dialog Extraction (v0.29.7)
+
+Facebook Marketplace renders listing detail pages as overlays/dialogs on top of previous listings during SPA navigation. The `_getListingContainer()` helper detects these overlays (checking `[role="dialog"]`, `[aria-modal="true"]`, close-button overlays) and directs all extraction functions (`extractRaw()`, `_getCurrentH1Title()`, `_getMainImageUrl()`) to read from the foreground listing instead of the background `[role="main"]`. Diag fields `containerSource` and `dialogDetected` track which DOM element was used for extraction.
+
 ## Extension Content Scripts
 
 All four content scripts use `chrome.runtime.sendMessage({type: 'SCORE_LISTING', listing})` to route through `background.js`, which calls the FastAPI `/score` endpoint. Each includes the `platform` field on the listing object so the data pipeline labels signals correctly.

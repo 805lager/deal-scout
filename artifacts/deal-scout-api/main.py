@@ -2192,9 +2192,11 @@ def _diag_summary_row(r: dict) -> dict:
         "bleed":         r.get("postExtractBleed"),
         "guardC":        r.get("guardC"),
         "retries":       r.get("retries"),
-        # v0.29.6 MutationObserver diagnostics
+        # v0.29.7 overlay/dialog diagnostics
         "prevTitle":     r.get("prevTitle"),
         "currentTitle":  r.get("currentTitle"),
+        "containerSource": r.get("containerSource"),
+        "dialogDetected": r.get("dialogDetected"),
         "mutationSettleMs": r.get("mutationSettleMs"),
         "titleCheckRetries": r.get("titleCheckRetries"),
         "contentTitleMatch": r.get("contentTitleMatch"),

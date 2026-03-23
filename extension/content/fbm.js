@@ -1,6 +1,6 @@
 /**
  * fbm.js — Deal Scout Content Script for Facebook Marketplace
- * v0.29.6
+ * v0.29.7
  *
  * INJECTED INTO: facebook.com/marketplace/*
  * PURPOSE: Extracts listing data, sends to background.js for scoring,
@@ -24,7 +24,7 @@
 (function () {
   "use strict";
 
-  const VERSION  = '0.29.6';
+  const VERSION  = '0.29.7';
   const PANEL_ID  = "deal-scout-panel";
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
   const DS_API_KEY = "ds_live_098caae54340d797cb216856d0cffe50";
@@ -464,7 +464,14 @@
   // ── Raw Data Extraction ───────────────────────────────────────────────────────
 
   function extractRaw() {
-    const _raw_all = Array.from(document.querySelectorAll('img[src*="scontent"]'));
+    const { el: container, source: containerSource } = _getListingContainer();
+    window.__dealScoutLastContainerSource = containerSource;
+
+    const _raw_all = Array.from(container.querySelectorAll('img[src*="scontent"]'));
+    if (_raw_all.length === 0 && container !== document.body) {
+      const fallback = Array.from(document.querySelectorAll('img[src*="scontent"]'));
+      _raw_all.push(...fallback);
+    }
     const _raw_absTop = img => img.getBoundingClientRect().top + window.scrollY;
     const _raw_isCard = img =>
       !!img.closest('a[href*="/marketplace/item/"]') ||
@@ -497,19 +504,15 @@
       _raw_pick(100, 1800).length ? _raw_pick(100, 1800) :
       _raw_all.map(i => i.src).filter(s => s).slice(0, 3);
 
-    const mainEl = document.querySelector('[role="main"]')
-                || document.querySelector('main')
-                || document.body;
-
     const _rh1 = (() => {
-      const allH1 = Array.from(mainEl.querySelectorAll('h1[dir="auto"]'));
+      const allH1 = Array.from(container.querySelectorAll('h1[dir="auto"]'));
       return allH1.find(el => {
         const t = el.textContent.trim().toLowerCase();
         return t && !_GENERIC_TITLES.has(t);
-      }) || allH1[0] || mainEl.querySelector('h1');
+      }) || allH1[0] || container.querySelector('h1');
     })();
     let _rpre = '', _rpost = '', _rpast = false, _rnode;
-    const _rtw = document.createTreeWalker(mainEl, NodeFilter.SHOW_TEXT, null);
+    const _rtw = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null);
     while ((_rnode = _rtw.nextNode())) {
       if (!_rpast) {
         if (_rh1 && _rh1.contains(_rnode)) { _rpast = true; _rpost += _rnode.textContent; }
@@ -521,7 +524,7 @@
     }
     const rawText = _rh1
       ? (_rpre.slice(-200) + _rpost).slice(0, 4000)
-      : (mainEl.innerText || '').slice(0, 4000);
+      : (container.innerText || '').slice(0, 4000);
 
     const _raw_photoCount = _raw_all.filter(img =>
       !_raw_isCard(img) && _raw_absTop(img) < 900
@@ -533,25 +536,70 @@
       photo_count: _raw_photoCount,
       platform:    'facebook_marketplace',
       listing_url: location.href,
+      _containerSource: containerSource,
     };
   }
 
   // ── DOM Helpers ──────────────────────────────────────────────────────────────
 
+  function _getListingContainer() {
+    const currentId = _listingIdFromUrl(location.href);
+
+    const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"]'));
+    for (let i = dialogs.length - 1; i >= 0; i--) {
+      const d = dialogs[i];
+      const links = d.querySelectorAll('a[href*="/marketplace/item/"]');
+      for (const link of links) {
+        if (currentId && link.href && link.href.includes(currentId)) {
+          return { el: d, source: 'dialog-link-match' };
+        }
+      }
+      const h1 = d.querySelector('h1');
+      if (h1 && h1.textContent.trim().length > 3) {
+        return { el: d, source: 'dialog-h1' };
+      }
+      if (d.querySelector('img[src*="scontent"]') && (d.innerText || '').length > 100) {
+        return { el: d, source: 'dialog-content' };
+      }
+    }
+
+    const closeButtons = document.querySelectorAll('[aria-label="Close"], [aria-label="close"]');
+    for (const btn of closeButtons) {
+      const overlay = btn.closest('div[class]');
+      if (overlay && overlay !== document.body) {
+        const h1 = overlay.querySelector('h1');
+        if (h1 && h1.textContent.trim().length > 3 && overlay.querySelector('img[src*="scontent"]')) {
+          return { el: overlay, source: 'close-btn-overlay' };
+        }
+      }
+    }
+
+    const mainEl = document.querySelector('[role="main"]') || document.querySelector('main') || document.body;
+    return { el: mainEl, source: 'main' };
+  }
+
   function _getCurrentH1Title() {
-    for (const el of document.querySelectorAll('h1[dir="auto"]')) {
+    const { el: container } = _getListingContainer();
+    for (const el of container.querySelectorAll('h1[dir="auto"]')) {
       const t = el.textContent.trim();
       if (t && !_GENERIC_TITLES.has(t.toLowerCase())) return t;
     }
-    for (const el of document.querySelectorAll('h1')) {
+    for (const el of container.querySelectorAll('h1')) {
       const t = el.textContent.trim();
       if (t && !_GENERIC_TITLES.has(t.toLowerCase())) return t;
+    }
+    if (container !== document.body) {
+      for (const el of document.querySelectorAll('h1[dir="auto"]')) {
+        const t = el.textContent.trim();
+        if (t && !_GENERIC_TITLES.has(t.toLowerCase())) return t;
+      }
     }
     return '';
   }
 
   function _getMainImageUrl() {
-    const imgs = document.querySelectorAll('img[src*="scontent"]');
+    const { el: container } = _getListingContainer();
+    const imgs = container.querySelectorAll('img[src*="scontent"]');
     for (const img of imgs) {
       if (img.closest('a[href*="/marketplace/item/"]')) continue;
       if (img.closest('aside')) continue;
@@ -559,6 +607,18 @@
       const w = img.clientWidth || img.offsetWidth || 0;
       if (w >= 200 && img.getBoundingClientRect().top + window.scrollY < 900) {
         return img.src || '';
+      }
+    }
+    if (container !== document.body) {
+      const allImgs = document.querySelectorAll('img[src*="scontent"]');
+      for (const img of allImgs) {
+        if (img.closest('a[href*="/marketplace/item/"]')) continue;
+        if (img.closest('aside')) continue;
+        if (img.closest('[role="listitem"] a')) continue;
+        const w = img.clientWidth || img.offsetWidth || 0;
+        if (w >= 200 && img.getBoundingClientRect().top + window.scrollY < 900) {
+          return img.src || '';
+        }
       }
     }
     return '';
@@ -656,8 +716,8 @@
                          (currentTitle === prevTitle || _GENERIC_TITLES.has(currentTitle.toLowerCase()));
     const titleMissing = !currentTitle || _GENERIC_TITLES.has(currentTitle.toLowerCase());
 
-    const mainEl = document.querySelector('[role="main"]') || document.body;
-    const hasContent = (mainEl.innerText || '').length > 100;
+    const { el: _readyEl } = _getListingContainer();
+    const hasContent = (_readyEl.innerText || '').length > 100;
 
     const notReady = titleIsStale || (titleMissing && typeof prevTitle === 'string') || !hasContent;
 
@@ -683,7 +743,7 @@
         let resolved = false;
         const done = () => { if (resolved) return; resolved = true; obs.disconnect(); clearTimeout(quietTimer); clearTimeout(maxTimer); resolve(); };
         let quietTimer = null;
-        const targetEl = document.querySelector('[role="main"]') || document.body;
+        const targetEl = document.body;
         const obs = new MutationObserver(() => {
           clearTimeout(quietTimer);
           if (Date.now() - _mutStart > _MUTATION_MAX_MS) { done(); return; }
@@ -837,6 +897,8 @@
         dataSource: result.data_source,
         prevTitle: (prevTitle || '').slice(0, 80),
         currentTitle: currentTitle.slice(0, 80),
+        containerSource: rawData._containerSource || window.__dealScoutLastContainerSource || 'unknown',
+        dialogDetected: (rawData._containerSource || '') !== 'main',
         titleWaitMs: _titleWaitMs,
         mutationSettleMs: _mutationSettleMs,
         fpRetries: _fpRetries,
