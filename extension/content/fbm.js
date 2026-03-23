@@ -24,7 +24,7 @@
 (function () {
   "use strict";
 
-  const VERSION  = '0.29.2';
+  const VERSION  = '0.29.3';
   const PANEL_ID  = "deal-scout-panel";
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
   const DS_API_KEY = "ds_live_098caae54340d797cb216856d0cffe50";
@@ -569,6 +569,7 @@
 
   if (!window.__dealScoutLastSeenH1) window.__dealScoutLastSeenH1 = '';
   if (!window.__dealScoutLastSeenImg) window.__dealScoutLastSeenImg = '';
+  if (!window.__dealScoutLastRawLen) window.__dealScoutLastRawLen = 0;
 
   function _persistLastSeen() {
     try { sessionStorage.setItem('ds_lastSeenH1', window.__dealScoutLastSeenH1 || ''); } catch (_e) {}
@@ -668,8 +669,8 @@
     let settled = false;
     _dsDebugPost('transition-wait', { urlId: listingId, prevH1: prevH1.slice(0, 50), prevImg: prevImg.slice(0, 60) });
 
-    for (let i = 0; i < 15; i++) {
-      if (hasContent() && hasMainImage() && domChanged()) { settled = true; break; }
+    for (let i = 0; i < 25; i++) {
+      if (hasContent() && domChanged()) { settled = true; break; }
       await new Promise(r => setTimeout(r, 200));
       if (window.__dealScoutNonce !== myNonce || location.href !== snapUrl) {
         window.__dealScoutRunning = false;
@@ -679,15 +680,14 @@
     _diagTransitionMs = Date.now() - _transStart;
 
     if (!settled) {
-      if (hasContent() && hasMainImage()) {
+      if (hasContent() || domChanged()) {
         _diagTransitionTimedOut = true;
-        console.debug('[DealScout] DOM transition timeout — proceeding with current content (risky)');
-        _dsDebugPost('transition-timeout', { urlId: listingId, transitionMs: _diagTransitionMs });
+        console.debug('[DealScout] DOM transition timeout — proceeding with partial content');
+        _dsDebugPost('transition-timeout', { urlId: listingId, transitionMs: _diagTransitionMs, hasContent: hasContent(), domChanged: domChanged() });
       } else {
-        console.debug('[DealScout] Insufficient page content — skipping');
-        renderError('Could not read listing — try RESCORE');
-        window.__dealScoutRunning = false;
-        return;
+        _diagTransitionTimedOut = true;
+        console.debug('[DealScout] DOM transition timeout — no content or change detected, will retry extraction');
+        _dsDebugPost('transition-timeout-empty', { urlId: listingId, transitionMs: _diagTransitionMs });
       }
     }
 
@@ -698,13 +698,29 @@
     }
 
     const _maxBleedRetries = 5;
+    const _contentRetryDelays = [500, 1000, 1000, 2000, 2000];
     let rawData = null;
+    let _contentRetries = 0;
 
     for (let attempt = 0; attempt <= _maxBleedRetries; attempt++) {
       rawData = extractRaw();
 
       if (!rawData.raw_text || rawData.raw_text.length < 100) {
-        console.debug('[DealScout] Insufficient page content after extraction — skipping');
+        if (_contentRetries < _contentRetryDelays.length) {
+          const delay = _contentRetryDelays[_contentRetries];
+          _contentRetries++;
+          console.debug(`[DealScout] Insufficient content (${(rawData.raw_text || '').length} chars) — content retry ${_contentRetries}/${_contentRetryDelays.length} (${delay}ms)`);
+          _dsDebugPost('content-retry', { urlId: listingId, attempt: _contentRetries, rawLen: (rawData.raw_text || '').length, delay });
+          await new Promise(r => setTimeout(r, delay));
+          if (window.__dealScoutNonce !== myNonce || location.href !== snapUrl) {
+            window.__dealScoutRunning = false;
+            return;
+          }
+          attempt--;
+          continue;
+        }
+        console.debug('[DealScout] Insufficient page content after all retries — skipping');
+        _dsDebugPost('content-exhausted', { urlId: listingId, rawLen: (rawData.raw_text || '').length, contentRetries: _contentRetries });
         renderError('Could not read listing — try RESCORE');
         window.__dealScoutRunning = false;
         return;
@@ -712,7 +728,18 @@
 
       const extractedH1 = _getCurrentH1Title();
       const idInRawText = listingId && rawData.raw_text.includes(listingId);
-      const bleedDetected = !idInRawText && prevH1 && extractedH1 && extractedH1 === prevH1;
+
+      let bleedDetected = !idInRawText && prevH1 && extractedH1 && extractedH1 === prevH1;
+
+      if (bleedDetected && window.__dealScoutLastRawLen) {
+        const lenDiff = Math.abs(rawData.raw_text.length - window.__dealScoutLastRawLen);
+        const lenRatio = lenDiff / Math.max(rawData.raw_text.length, window.__dealScoutLastRawLen, 1);
+        if (lenRatio > 0.3) {
+          console.debug(`[DealScout] Bleed override: raw_text length changed ${lenRatio.toFixed(2)*100}% — treating as new listing`);
+          _dsDebugPost('bleed-override-len', { urlId: listingId, lenRatio: lenRatio.toFixed(2), currLen: rawData.raw_text.length, prevLen: window.__dealScoutLastRawLen });
+          bleedDetected = false;
+        }
+      }
 
       if (bleedDetected && attempt < _maxBleedRetries) {
         _diagRetries++;
@@ -736,6 +763,8 @@
       }
       break;
     }
+
+    window.__dealScoutLastRawLen = rawData.raw_text.length;
 
     window.__dealScoutLastSeenH1 = _getCurrentH1Title();
     window.__dealScoutLastSeenImg = _getMainImageUrl();
@@ -784,6 +813,7 @@
         transitionMs: _diagTransitionMs,
         transitionTimedOut: _diagTransitionTimedOut,
         retries: _diagRetries,
+        contentRetries: _contentRetries,
         totalMs: Date.now() - _diagStart,
       });
 
