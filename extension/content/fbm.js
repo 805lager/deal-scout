@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.51';
+  const VERSION  = '0.28.52';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -153,6 +153,28 @@
 
   if (window.__dealScoutNonce === undefined) window.__dealScoutNonce = 0;
 
+  function _dsScoringGuardSet(listingId) {
+    try { sessionStorage.setItem('ds_scoring', JSON.stringify({ id: listingId, ts: Date.now() })); } catch (_e) {}
+  }
+  function _dsScoringGuardClear() {
+    try { sessionStorage.removeItem('ds_scoring'); } catch (_e) {}
+  }
+  function _dsScoringGuardActive(listingId) {
+    try {
+      const raw = sessionStorage.getItem('ds_scoring');
+      if (!raw) return false;
+      const g = JSON.parse(raw);
+      if (g && g.id === listingId && (Date.now() - g.ts) < 45000) return true;
+    } catch (_e) {}
+    return false;
+  }
+
+  const _currentUrlId = _listingIdFromUrl(location.href);
+  if (_currentUrlId && _dsScoringGuardActive(_currentUrlId)) {
+    _dsDebugPost('scoring-dedup-skip', { urlId: _currentUrlId });
+    return;
+  }
+
   // Mutex flag: true while an autoScore is running. Prevents multiple concurrent
   // autoScores caused by FBM firing 3-4 pushStates per navigation. Each pushState
   // re-injects fbm.js; only the first autoScore past the flag proceeds. Navigation
@@ -183,6 +205,7 @@
         window.__dealScoutAbort = null;
       }
       window.__dealScoutRunning = false;
+      _dsScoringGuardClear();
       window.__dealScoutBgReinjected = true;
       _dsNavLog('bgReinjection', { url: location.href.slice(0, 120), isListing: true });
       _dsDebugPost('inject-bg', { currListingId: _currListingId });
@@ -285,6 +308,7 @@
         window.__dealScoutAbort = null;
       }
       window.__dealScoutRunning = false;
+      _dsScoringGuardClear();
       removePanel();
       clearTimeout(window.__dealScoutRescanTimer);
       window.__dealScoutRescanTimer = setTimeout(autoScore, 400);
@@ -717,7 +741,9 @@
         return;
       }
       window.__dealScoutRunning = true;
-      _dsDebugPost('autoScore-start', {});
+      const _autoScoreUrlId = _listingIdFromUrl(location.href);
+      if (_autoScoreUrlId) _dsScoringGuardSet(_autoScoreUrlId);
+      _dsDebugPost('scoring-start', { urlId: _autoScoreUrlId });
 
       // ── Diagnostics bootstrap ─────────────────────────────────────────────
       // For SPA navs via pushState, _onFbmNav already initialized window.__dealScoutDiag.
@@ -961,7 +987,7 @@
           attempt, strategy: _stratLabel, reason: 'spa-giveup',
           hasContent, imageMissing: !!imageMissing, titleIsStale,
         });
-        if (window.__dealScoutNonce === myNonce) window.__dealScoutRunning = false;
+        if (window.__dealScoutNonce === myNonce) { window.__dealScoutRunning = false; _dsScoringGuardClear(); }
         return;
       }
       // Strategy C: hard load — fall through even if notReady.
@@ -1180,7 +1206,7 @@
 
     if (!rawData.raw_text || rawData.raw_text.length < 100) {
       console.debug('[DealScout] Insufficient page content — skipping');
-      if (window.__dealScoutNonce === myNonce) window.__dealScoutRunning = false;
+      if (window.__dealScoutNonce === myNonce) { window.__dealScoutRunning = false; _dsScoringGuardClear(); }
       return;
     }
 
@@ -1201,7 +1227,7 @@
           const freshData = { ...extractRaw(), _retried: true };
           if (!freshData.raw_text || freshData.raw_text.length < 100) {
             renderError('Could not read listing — please refresh the page');
-            if (window.__dealScoutNonce === myNonce) window.__dealScoutRunning = false;
+            if (window.__dealScoutNonce === myNonce) { window.__dealScoutRunning = false; _dsScoringGuardClear(); }
             return;
           }
           const abort2 = new AbortController();
@@ -1215,18 +1241,16 @@
               renderError(err2.message || 'Scoring failed');
             }
           } finally {
-            if (window.__dealScoutNonce === myNonce) window.__dealScoutRunning = false;
+            if (window.__dealScoutNonce === myNonce) { window.__dealScoutRunning = false; _dsScoringGuardClear(); }
           }
         }, 2000);
         return; // finally block below releases mutex; retry re-acquires it
       }
       renderError(err.message || 'Scoring failed');
     } finally {
-      // Only release the mutex if WE still own it.
-      // If _onFbmNav fired during our run, it already reset __dealScoutRunning = false
-      // and a newer autoScore may have set it back to true — don't evict that lock.
       if (window.__dealScoutNonce === myNonce) {
         window.__dealScoutRunning = false;
+        _dsScoringGuardClear();
       }
     }
   }
@@ -1665,6 +1689,7 @@
             window.__dealScoutLastScoredTitle = result.title || '';
             window.__dealScoutLastScoredId = _listingIdFromUrl(snapUrl);
             try { sessionStorage.setItem('ds_lastScored', JSON.stringify({ id: window.__dealScoutLastScoredId, title: window.__dealScoutLastScoredTitle })); } catch (_e) {}
+            _dsScoringGuardClear();
             _dsDebugPost('score-complete', { scoredId: window.__dealScoutLastScoredId, score: result.score, title: (result.title || '').slice(0, 60) });
             renderScore(result);
             chrome.runtime.sendMessage({ type: 'BADGE_UPDATE', score: result.score })
@@ -2988,6 +3013,7 @@
       // both flags. Clearing here means: at most one autoScore runs per listing
       // even when FBM fires multiple pushStates for a single navigation.
       window.__dealScoutRunning = false;
+      _dsScoringGuardClear();
 
       // Increment the navigation nonce FIRST — this immediately invalidates any
       // in-flight autoScore call, preventing a stale score from rendering on the
