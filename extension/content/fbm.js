@@ -1,6 +1,6 @@
 /**
  * fbm.js — Deal Scout Content Script for Facebook Marketplace
- * v0.29.1
+ * v0.29.2
  *
  * INJECTED INTO: facebook.com/marketplace/*
  * PURPOSE: Extracts listing data, sends to background.js for scoring,
@@ -24,7 +24,7 @@
 (function () {
   "use strict";
 
-  const VERSION  = '0.29.1';
+  const VERSION  = '0.29.2';
   const PANEL_ID  = "deal-scout-panel";
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
   const DS_API_KEY = "ds_live_098caae54340d797cb216856d0cffe50";
@@ -115,6 +115,18 @@
       }
     } catch (_e) {}
   }
+  if (!window.__dealScoutLastSeenH1) {
+    try {
+      const _ssH1 = sessionStorage.getItem('ds_lastSeenH1');
+      if (_ssH1) window.__dealScoutLastSeenH1 = _ssH1;
+    } catch (_e) {}
+  }
+  if (!window.__dealScoutLastSeenImg) {
+    try {
+      const _ssImg = sessionStorage.getItem('ds_lastSeenImg');
+      if (_ssImg) window.__dealScoutLastSeenImg = _ssImg;
+    } catch (_e) {}
+  }
 
   if (window.__dealScoutNonce === undefined) window.__dealScoutNonce = 0;
   if (window.__dealScoutRunning === undefined) window.__dealScoutRunning = false;
@@ -171,6 +183,7 @@
       window.__dealScoutLastScoredTitle = '';
       window.__dealScoutLastSeenH1 = '';
       window.__dealScoutLastSeenImg = '';
+      _persistLastSeen();
       removePanel();
       try {
         chrome.runtime.sendMessage({ type: 'CLEAR_SCORE_CACHE' }).catch(() => {});
@@ -557,6 +570,11 @@
   if (!window.__dealScoutLastSeenH1) window.__dealScoutLastSeenH1 = '';
   if (!window.__dealScoutLastSeenImg) window.__dealScoutLastSeenImg = '';
 
+  function _persistLastSeen() {
+    try { sessionStorage.setItem('ds_lastSeenH1', window.__dealScoutLastSeenH1 || ''); } catch (_e) {}
+    try { sessionStorage.setItem('ds_lastSeenImg', window.__dealScoutLastSeenImg || ''); } catch (_e) {}
+  }
+
   // ── Auto-score ─────────────────────────────────────────────────────────────────
 
   async function autoScore() {
@@ -603,6 +621,7 @@
         window.__dealScoutLastScoredTitle = cached.result.title || '';
         window.__dealScoutLastSeenH1 = _getCurrentH1Title();
         window.__dealScoutLastSeenImg = _getMainImageUrl();
+        _persistLastSeen();
         try { sessionStorage.setItem('ds_lastScored', JSON.stringify({ id: listingId, title: cached.result.title || '' })); } catch (_e) {}
         renderScore(cached.result);
         _postDiag({ listingId, cacheHit: true, score: cached.result.score, title: cached.result.title, transitionMs: 0, retries: 0 });
@@ -692,14 +711,13 @@
       }
 
       const extractedH1 = _getCurrentH1Title();
-      const lastTitle = window.__dealScoutLastScoredTitle || '';
       const idInRawText = listingId && rawData.raw_text.includes(listingId);
-      const bleedDetected = !idInRawText && lastTitle && extractedH1 && extractedH1 === lastTitle;
+      const bleedDetected = !idInRawText && prevH1 && extractedH1 && extractedH1 === prevH1;
 
       if (bleedDetected && attempt < _maxBleedRetries) {
         _diagRetries++;
-        console.debug(`[DealScout] Bleed detected (h1="${extractedH1.slice(0,40)}" matches lastScored, ID missing from raw_text) — retry ${attempt + 1}/${_maxBleedRetries}`);
-        _dsDebugPost('bleed-retry', { urlId: listingId, attempt: attempt + 1, h1: extractedH1.slice(0, 50), lastTitle: lastTitle.slice(0, 50), idInRaw: idInRawText });
+        console.debug(`[DealScout] Bleed detected (h1="${extractedH1.slice(0,40)}" matches prev DOM h1, ID missing from raw_text) — retry ${attempt + 1}/${_maxBleedRetries}`);
+        _dsDebugPost('bleed-retry', { urlId: listingId, attempt: attempt + 1, h1: extractedH1.slice(0, 50), prevH1: prevH1.slice(0, 50), idInRaw: idInRawText });
         await new Promise(r => setTimeout(r, 500));
         if (window.__dealScoutNonce !== myNonce || location.href !== snapUrl) {
           window.__dealScoutRunning = false;
@@ -710,7 +728,7 @@
 
       if (bleedDetected) {
         console.debug('[DealScout] Bleed persists after retries — aborting to prevent stale score');
-        _dsDebugPost('bleed-persist', { urlId: listingId, h1: extractedH1.slice(0, 50), lastTitle: lastTitle.slice(0, 50) });
+        _dsDebugPost('bleed-persist', { urlId: listingId, h1: extractedH1.slice(0, 50), prevH1: prevH1.slice(0, 50) });
         renderError('Listing still loading — tap RESCORE');
         window.__dealScoutRunning = false;
         return;
@@ -720,6 +738,7 @@
 
     window.__dealScoutLastSeenH1 = _getCurrentH1Title();
     window.__dealScoutLastSeenImg = _getMainImageUrl();
+    _persistLastSeen();
 
     _dsDebugPost('extraction-done', { urlId: listingId, rawLen: rawData.raw_text.length, h1: window.__dealScoutLastSeenH1.slice(0, 50), retries: _diagRetries });
 
@@ -746,6 +765,7 @@
       window.__dealScoutLastScoredTitle = result.title || '';
       window.__dealScoutLastSeenH1 = _getCurrentH1Title();
       window.__dealScoutLastSeenImg = _getMainImageUrl();
+      _persistLastSeen();
       try { sessionStorage.setItem('ds_lastScored', JSON.stringify({ id: listingId, title: result.title || '' })); } catch (_e) {}
 
       _dsDebugPost('score-complete', { scoredId: listingId, score: result.score, title: (result.title || '').slice(0, 60) });
@@ -1857,6 +1877,7 @@
     if (isListingPage() || (newHref && /\/marketplace\/(?:[^/]+\/)?item\/\d+/.test(newHref))) {
       window.__dealScoutLastSeenH1 = _getCurrentH1Title();
       window.__dealScoutLastSeenImg = _getMainImageUrl();
+      _persistLastSeen();
 
       window.__dealScoutNonce = (window.__dealScoutNonce || 0) + 1;
       window.__dealScoutRunning = false;
