@@ -574,7 +574,6 @@
     const _diagStart = Date.now();
     let _diagTransitionMs = 0;
     let _diagRetries = 0;
-    let _diagCacheHit = false;
     let _diagTransitionTimedOut = false;
 
     _dsNavLog('autoScore', { listingId, nonce: myNonce });
