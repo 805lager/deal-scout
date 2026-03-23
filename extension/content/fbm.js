@@ -650,7 +650,7 @@
     let settled = false;
     _dsDebugPost('transition-wait', { urlId: listingId, prevH1: prevH1.slice(0, 50), prevImg: prevImg.slice(0, 60) });
 
-    for (let i = 0; i < 30; i++) {
+    for (let i = 0; i < 15; i++) {
       if (hasContent() && hasMainImage() && domChanged()) { settled = true; break; }
       await new Promise(r => setTimeout(r, 200));
       if (window.__dealScoutNonce !== myNonce || location.href !== snapUrl) {
@@ -693,15 +693,15 @@
       }
 
       const extractedH1 = _getCurrentH1Title();
-      const bleedDetected = hasPrevData && prevH1 && extractedH1 && extractedH1 === prevH1
-        && listingId && window.__dealScoutLastScoredId
-        && listingId !== window.__dealScoutLastScoredId;
+      const lastTitle = window.__dealScoutLastScoredTitle || '';
+      const idInRawText = listingId && rawData.raw_text.includes(listingId);
+      const bleedDetected = !idInRawText && lastTitle && extractedH1 && extractedH1 === lastTitle;
 
       if (bleedDetected && attempt < _maxBleedRetries) {
         _diagRetries++;
-        console.debug(`[DealScout] Bleed detected (h1="${extractedH1.slice(0,40)}" matches prev) — retry ${attempt + 1}/${_maxBleedRetries}`);
-        _dsDebugPost('bleed-retry', { urlId: listingId, attempt: attempt + 1, h1: extractedH1.slice(0, 50), prevH1: prevH1.slice(0, 50) });
-        await new Promise(r => setTimeout(r, 600));
+        console.debug(`[DealScout] Bleed detected (h1="${extractedH1.slice(0,40)}" matches lastScored, ID missing from raw_text) — retry ${attempt + 1}/${_maxBleedRetries}`);
+        _dsDebugPost('bleed-retry', { urlId: listingId, attempt: attempt + 1, h1: extractedH1.slice(0, 50), lastTitle: lastTitle.slice(0, 50), idInRaw: idInRawText });
+        await new Promise(r => setTimeout(r, 500));
         if (window.__dealScoutNonce !== myNonce || location.href !== snapUrl) {
           window.__dealScoutRunning = false;
           return;
@@ -711,7 +711,7 @@
 
       if (bleedDetected) {
         console.debug('[DealScout] Bleed persists after retries — aborting to prevent stale score');
-        _dsDebugPost('bleed-persist', { urlId: listingId, h1: extractedH1.slice(0, 50) });
+        _dsDebugPost('bleed-persist', { urlId: listingId, h1: extractedH1.slice(0, 50), lastTitle: lastTitle.slice(0, 50) });
         renderError('Listing still loading — tap RESCORE');
         window.__dealScoutRunning = false;
         return;
