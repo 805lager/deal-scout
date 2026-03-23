@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.50';
+  const VERSION  = '0.28.51';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -77,6 +77,46 @@
     });
   }
 
+  // ── Real-time debug event stream ────────────────────────────────────────────
+  // Fire-and-forget POST to /nav-debug on the API server. Each event captures
+  // the exact state at a key decision point. Events are stored server-side and
+  // survive context teardowns + page reloads. Only fires when ds_debug is true
+  // in chrome.storage.local. Zero overhead in normal use.
+  if (window.__dealScoutDebugEnabled === undefined) window.__dealScoutDebugEnabled = false;
+  if (!window.__dealScoutDebugChecked) {
+    window.__dealScoutDebugChecked = true;
+    try {
+      chrome.storage.local.get('ds_debug', (r) => {
+        window.__dealScoutDebugEnabled = !!(r && r.ds_debug);
+      });
+    } catch (_e) {}
+  }
+  let _dsDebugSeq = 0;
+  function _dsDebugPost(event, data) {
+    if (!window.__dealScoutDebugEnabled) return;
+    const payload = {
+      ts: Date.now(),
+      seq: ++_dsDebugSeq,
+      v: VERSION,
+      event,
+      url: location.href.slice(0, 150),
+      urlId: _listingIdFromUrl(location.href),
+      lastScoredId: window.__dealScoutLastScoredId || '',
+      injected: !!window.__dealScoutInjected,
+      bgReinj: !!window.__dealScoutBgReinjected,
+      running: !!window.__dealScoutRunning,
+      nonce: window.__dealScoutNonce || 0,
+      ...data,
+    };
+    try {
+      fetch(`${API_BASE}/nav-debug`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }).catch(() => {});
+    } catch (_e) {}
+  }
+
   // ── Navigation nonce ─────────────────────────────────────────────────────────
   // Stored on window so it persists across re-injections of fbm.js. Every time
   // _onFbmNav fires (user clicks a new listing), the nonce increments.
@@ -123,6 +163,7 @@
       const _currListingId = _listingIdFromUrl(location.href);
       if (_currListingId && window.__dealScoutLastScoredId === _currListingId) {
         _dsNavLog('bgReinjectionSkip', { reason: 'already-scored', id: _currListingId });
+        _dsDebugPost('inject-bg-skip', { reason: 'already-scored', id: _currListingId });
         return;
       }
       // Abort any in-flight stream and reset the mutex so the new autoScore
@@ -136,6 +177,7 @@
       window.__dealScoutRunning = false;
       window.__dealScoutBgReinjected = true;
       _dsNavLog('bgReinjection', { url: location.href.slice(0, 120), isListing: true });
+      _dsDebugPost('inject-bg', { currListingId: _currListingId });
       window.__dealScoutDiag = null;
       window.__dealScoutRecoveredPrevTitle = undefined;
       window.__dealScoutPrevTitle = undefined;
@@ -150,6 +192,7 @@
   }
   window.__dealScoutInjected = true;
   window.__dealScoutBgReinjected = false; // first injection — not a bg re-inject
+  _dsDebugPost('inject-fresh', { restoredSS: !!window.__dealScoutRestoredFromSS });
 
   // Load stored API base override (set via popup Settings panel)
   try {
@@ -662,9 +705,11 @@
     if (attempt === 0) {
       if (window.__dealScoutRunning) {
         console.debug('[DealScout] autoScore skipped — already running');
+        _dsDebugPost('autoScore-mutex-skip', {});
         return;
       }
       window.__dealScoutRunning = true;
+      _dsDebugPost('autoScore-start', {});
 
       // ── Diagnostics bootstrap ─────────────────────────────────────────────
       // For SPA navs via pushState, _onFbmNav already initialized window.__dealScoutDiag.
@@ -783,14 +828,16 @@
       _currentFingerprint !== window.__dealScoutBaselineFingerprint;
 
     if (attempt === 0) {
-      _dsNavLog('phase1State', {
+      const _p1Data = {
         urlId: _urlId, lastScoredId: _lastScoredId, newByUrl: _isNewListingByUrl,
         useFP: _useFingerprint, fpChanged: _fingerprintChanged,
         restoredSS: !!window.__dealScoutRestoredFromSS,
         prevTitleVal: (window.__dealScoutPrevTitle || '').slice(0, 40),
         prevTitleType: typeof window.__dealScoutPrevTitle,
         bgReinj: !!window.__dealScoutBgReinjected,
-      });
+      };
+      _dsNavLog('phase1State', _p1Data);
+      _dsDebugPost('phase1-state', _p1Data);
     }
 
     // ── Supporting signals ───────────────────────────────────────────────────
@@ -849,6 +896,13 @@
         fpChanged: _fingerprintChanged, titleIsStale, hasContent, descMissing, imageMissing,
       });
     }
+    if (attempt % 5 === 0) {
+      _dsDebugPost('phase1-poll', {
+        attempt, strategy: _stratLabel, notReady,
+        fpChanged: _fingerprintChanged, hasContent, imageMissing: !!imageMissing,
+        isSpaNav, titleIsStale,
+      });
+    }
     if (window.__dealScoutDiag && window.__dealScoutDiag.phase1Log) {
       window.__dealScoutDiag.phase1Log.push({
         a: attempt,
@@ -877,6 +931,10 @@
         // fall through — the DOM is updating, reloading would disrupt it.
         if (_urlId && _lastScoredId && _urlId === _lastScoredId && !_fingerprintChanged) {
           console.debug('[DealScout] Fingerprint timeout — reloading page for fresh content');
+          _dsDebugPost('phase1-reload', {
+            attempt, strategy: _stratLabel, reason: 'fp-timeout-same-id',
+            fpChanged: _fingerprintChanged, hasContent, imageMissing: !!imageMissing,
+          });
           if (window.__dealScoutDiag) {
             window.__dealScoutDiag.phase1Blockers = 'fingerprint-timeout-reloading';
             window.__dealScoutDiag.loadType += '+RELOADING';
@@ -884,10 +942,17 @@
           setTimeout(() => location.reload(), 80);
           return;
         }
-        // Fingerprint timed out but not genuinely stuck — fall through to extraction
+        _dsDebugPost('phase1-timeout', {
+          attempt, strategy: _stratLabel, reason: 'fp-timeout-diff-id-fallthrough',
+          fpChanged: _fingerprintChanged, hasContent, imageMissing: !!imageMissing,
+        });
         console.debug('[DealScout] Fingerprint timeout, URL/ID mismatch — extracting anyway');
       } else if (isSpaNav) {
         console.debug('[DealScout] Readiness timeout (SPA nav) — giving up');
+        _dsDebugPost('phase1-timeout', {
+          attempt, strategy: _stratLabel, reason: 'spa-giveup',
+          hasContent, imageMissing: !!imageMissing, titleIsStale,
+        });
         if (window.__dealScoutNonce === myNonce) window.__dealScoutRunning = false;
         return;
       }
@@ -896,6 +961,7 @@
 
     const _strategyLabel = _isNewListingByUrl ? 'E-urlId' : _useFingerprint ? 'A-fingerprint' : isSpaNav ? 'B-h1' : 'C-hard';
     _dsNavLog('autoScoreReady', { attempt, strategy: _strategyLabel, isSpaNav, url: snapUrl.slice(0, 120) });
+    _dsDebugPost('phase1-ready', { attempt, strategy: _strategyLabel, isSpaNav });
 
     if (window.__dealScoutDiag) {
       window.__dealScoutDiag.isSpaNav = isSpaNav;
@@ -1591,6 +1657,7 @@
             window.__dealScoutLastScoredTitle = result.title || '';
             window.__dealScoutLastScoredId = _listingIdFromUrl(snapUrl);
             try { sessionStorage.setItem('ds_lastScored', JSON.stringify({ id: window.__dealScoutLastScoredId, title: window.__dealScoutLastScoredTitle })); } catch (_e) {}
+            _dsDebugPost('score-complete', { scoredId: window.__dealScoutLastScoredId, score: result.score, title: (result.title || '').slice(0, 60) });
             renderScore(result);
             chrome.runtime.sendMessage({ type: 'BADGE_UPDATE', score: result.score })
               .catch(() => {});
@@ -2945,6 +3012,7 @@
 
       console.debug('[DealScout] Nav detected (old:', oldId, '→ new:', newId || 'unknown', ') prevTitle:', window.__dealScoutPrevTitle);
       _dsNavLog('pushStateNav', { from: oldId, to: newId, prevTitle: window.__dealScoutPrevTitle || '' });
+      _dsDebugPost('pushstate-nav', { from: oldId, to: newId, prevTitle: (window.__dealScoutPrevTitle || '').slice(0, 40) });
       // Initialize per-nav diagnostics so auto-POST to /diag always captures fresh data.
       window.__dealScoutDiag = {
         v: VERSION, nav: new Date().toLocaleTimeString(),

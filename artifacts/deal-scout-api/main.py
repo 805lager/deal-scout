@@ -2195,6 +2195,55 @@ def _diag_summary_row(r: dict) -> dict:
     }
 
 
+@app.post("/nav-debug")
+async def collect_nav_debug(request: Request):
+    try:
+        import json as _json
+        from scoring.data_pipeline import _get_pool
+        payload = await request.json()
+        pool = await _get_pool()
+        await pool.execute(
+            "INSERT INTO nav_debug_events (payload) VALUES ($1::jsonb)",
+            _json.dumps(payload),
+        )
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/nav-debug")
+async def get_nav_debug():
+    try:
+        import json as _json
+        from scoring.data_pipeline import _get_pool
+        pool = await _get_pool()
+        rows = await pool.fetch(
+            "SELECT id, server_ts, payload FROM nav_debug_events ORDER BY server_ts DESC LIMIT 200"
+        )
+        events = []
+        for r in rows:
+            p = _json.loads(r["payload"])
+            p["_id"] = r["id"]
+            p["_server_ts"] = r["server_ts"].isoformat()
+            events.append(p)
+        events.reverse()
+        return {"count": len(events), "events": events}
+    except Exception as e:
+        return {"count": 0, "events": [], "error": str(e)}
+
+
+@app.delete("/nav-debug")
+async def clear_nav_debug():
+    try:
+        from scoring.data_pipeline import _get_pool
+        pool = await _get_pool()
+        result = await pool.execute("DELETE FROM nav_debug_events")
+        n = int(result.split()[-1]) if result else 0
+        return {"ok": True, "cleared": n}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @app.post("/diag")
 async def collect_diag(request: Request):
     try:
