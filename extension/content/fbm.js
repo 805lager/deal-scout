@@ -28,7 +28,7 @@
   // (TDZ). If a hoisted function (like autoScore) is scheduled via setTimeout in
   // the guard path and later references those vars → TDZ crash.
   // Fix: declare ALL vars used by hoisted functions BEFORE the guard.
-  const VERSION  = '0.28.48';
+  const VERSION  = '0.28.49';
   // Flat settle wait after the new listing's h1 appears (SPA nav).
   // FBM renders the new h1 before swapping the body content below it.
   // Waiting 1500 ms after title change ensures the body has settled on the new
@@ -753,60 +753,48 @@
 
     // ── Readiness check — Phase 1 ─────────────────────────────────────────────
     //
-    // STRATEGY A — Body fingerprint polling (primary, for all navigation types):
-    //   History: h1[dir="auto"] is NEVER populated on FBM listing pages for the
-    //   navigation patterns we encounter (all diagnostics: title="" for all 26
-    //   polls). h1-based detection has provided zero signal across dozens of test
-    //   navigations. The fix: stop polling for a signal that doesn't exist.
-    //
-    //   At attempt 0 (when we know there was a previous listing), we snapshot the
-    //   first 300 chars of [role="main"].textContent as a "baseline fingerprint".
-    //   We then poll until the fingerprint changes — direct evidence that React
-    //   has swapped the listing content. No h1 needed, no title-matching needed.
-    //
-    //   If the fingerprint never changes within 25 polls (5 s) → location.reload()
-    //   as a guaranteed fallback. A page reload always produces fresh DOM content.
-    //   This is the behavior the user observed: "a page refresh fixes the issue."
-    //
-    // STRATEGY B — h1 title polling (kept for true SPA nav via pushState):
-    //   When background.js's pushState intercept fires, it sets
-    //   window.__dealScoutPrevTitle before re-injecting. These navigations
-    //   reliably populate h1 and the existing title logic works. Kept as a
-    //   parallel path for forward compatibility.
-    //
-    // STRATEGY C — Hard load (no previous listing context, no fingerprint):
-    //   Wait for content + image + description to be present, then proceed.
+    // STRATEGY PRIORITY:
+    //   E (URL-ID) → primary: listing ID in URL differs from lastScoredId.
+    //     Instant, reliable, no DOM polling. Uses content+image readiness only.
+    //   A (fingerprint) → fallback: bg-reinjected, same URL ID or no lastScoredId.
+    //     Polls until DOM fingerprint changes. Reload only if URL ID matches
+    //     lastScoredId (genuinely stuck DOM, not a new listing).
+    //   B (h1 title) → legacy: pushState set prevTitle + h1 populated. Rare on FBM.
+    //   C (hard load) → first listing in session, no previous data.
 
-    // ── Fingerprint baseline (attempt 0 only) ────────────────────────────────
-    // Capture when we know the DOM currently shows a PREVIOUS listing's content.
-    // This is the case whenever recoveredPrevTitle is set or isBgReinjected=true.
-    // EXCEPTION: If lastScored was restored from sessionStorage (context teardown),
-    // the DOM already shows the NEW listing's content — fingerprint polling would
-    // never see a change and trigger a pointless page reload. Skip fingerprint
-    // in that case and let isSpaNav + Strategy B handle it.
+    // ── Strategy E: URL listing ID comparison ────────────────────────────────
+    // The listing ID is embedded in the URL path (/marketplace/item/1234567890/).
+    // If it differs from the last scored listing ID, this is definitively a new
+    // listing. No fingerprint polling or h1 matching needed — just wait for
+    // content + image to be present (DOM hydration).
+    const _urlId = _listingIdFromUrl(location.href);
+    const _lastScoredId = window.__dealScoutLastScoredId || '';
+    const _isNewListingByUrl = !!_urlId && !!_lastScoredId && _urlId !== _lastScoredId;
+
+    // ── Fingerprint baseline (fallback only, attempt 0) ─────────────────────
+    // Only capture when URL-ID detection didn't fire (same listing ID or no
+    // previous scored ID) AND we know the DOM shows a previous listing.
     const _fpEl = document.querySelector('[role="main"]') || document.body;
-    const _skipFingerprint = !!window.__dealScoutRestoredFromSS && !window.__dealScoutBgReinjected;
-    if (attempt === 0 && !_skipFingerprint && (window.__dealScoutRecoveredPrevTitle || window.__dealScoutBgReinjected)) {
+    if (attempt === 0 && !_isNewListingByUrl && (window.__dealScoutRecoveredPrevTitle || window.__dealScoutBgReinjected)) {
       window.__dealScoutBaselineFingerprint = _fpEl.textContent.slice(0, 300);
     }
-    const _useFingerprint = typeof window.__dealScoutBaselineFingerprint === 'string';
+    const _useFingerprint = !_isNewListingByUrl && typeof window.__dealScoutBaselineFingerprint === 'string';
     const _currentFingerprint = _useFingerprint ? _fpEl.textContent.slice(0, 300) : '';
     const _fingerprintChanged = _useFingerprint &&
       _currentFingerprint !== window.__dealScoutBaselineFingerprint;
 
     if (attempt === 0) {
       _dsNavLog('phase1State', {
+        urlId: _urlId, lastScoredId: _lastScoredId, newByUrl: _isNewListingByUrl,
         useFP: _useFingerprint, fpChanged: _fingerprintChanged,
-        skipFP: _skipFingerprint, restoredSS: !!window.__dealScoutRestoredFromSS,
+        restoredSS: !!window.__dealScoutRestoredFromSS,
         prevTitleVal: (window.__dealScoutPrevTitle || '').slice(0, 40),
         prevTitleType: typeof window.__dealScoutPrevTitle,
-        recovPrev: (window.__dealScoutRecoveredPrevTitle || '').slice(0, 40),
         bgReinj: !!window.__dealScoutBgReinjected,
-        baseFPLen: typeof window.__dealScoutBaselineFingerprint === 'string' ? window.__dealScoutBaselineFingerprint.length : -1,
       });
     }
 
-    // ── Supporting signals (used by Strategy B + C) ──────────────────────────
+    // ── Supporting signals ───────────────────────────────────────────────────
     const prevTitle = window.__dealScoutPrevTitle;
     const currentTitle = (() => {
       for (const el of document.querySelectorAll('h1[dir="auto"]')) {
@@ -840,28 +828,22 @@
                 || document.querySelector('[class*="xz9dl007"]');
     const descMissing = !descEl && attempt < 15;
 
-    const isSpaNav = typeof prevTitle === 'string' && prevTitle !== '';
+    const isSpaNav = _isNewListingByUrl || (typeof prevTitle === 'string' && prevTitle !== '');
 
     // ── notReady: which strategy decides? ────────────────────────────────────
-    // Strategy D (context-teardown SPA): FBM tore down the JS context and
-    // re-created the page. The DOM already shows the NEW listing's content.
-    // Use C-style readiness (content + image) since fingerprint can't detect
-    // a change (baseline IS the new content) and h1 is never populated.
-    const _isContextTeardownNav = isSpaNav && _skipFingerprint;
-    const notReady = _useFingerprint
-      // Strategy A: wait for DOM content to change from the baseline
-      ? (!_fingerprintChanged || !hasContent)
-      : (_isContextTeardownNav
-        // Strategy D: context-teardown SPA — DOM already has new content, just
-        // need content + image (same as C-hard but isSpaNav=true for bleed guard)
-        ? (!hasContent || imageMissing)
+    const notReady = _isNewListingByUrl
+      // Strategy E: URL ID confirms new listing — just need content + image
+      ? (!hasContent || imageMissing)
+      : (_useFingerprint
+        // Strategy A: wait for DOM content to change from the baseline
+        ? (!_fingerprintChanged || !hasContent)
         : (isSpaNav
           // Strategy B: h1 title must change away from old listing
           ? (titleIsStale || !hasContent || descMissing || imageMissing)
-          // Strategy C: hard load — image presence is the reliable hydration signal.
+          // Strategy C: hard load — content + image
           : (!hasContent || imageMissing)));
 
-    const _stratLabel = _useFingerprint ? 'A-fp' : _isContextTeardownNav ? 'D-teardown' : isSpaNav ? 'B-h1' : 'C-hard';
+    const _stratLabel = _isNewListingByUrl ? 'E-urlId' : _useFingerprint ? 'A-fp' : isSpaNav ? 'B-h1' : 'C-hard';
     if (attempt % 5 === 0 || (notReady && attempt > 0)) {
       console.debug('[DealScout] Readiness', {
         attempt, strategy: _stratLabel,
@@ -871,6 +853,7 @@
     if (window.__dealScoutDiag && window.__dealScoutDiag.phase1Log) {
       window.__dealScoutDiag.phase1Log.push({
         a: attempt,
+        s: _stratLabel,
         fp: _fingerprintChanged ? 1 : 0,
         title: currentTitle.slice(0, 30),
         stale: titleIsStale ? 1 : 0,
@@ -889,43 +872,49 @@
     if (notReady) {
       if (_useFingerprint) {
         // Strategy A timeout: fingerprint never changed in 5 s.
-        // The DOM is stuck on the old listing's content. A page reload is the
-        // guaranteed way to get fresh content — this is what the user discovered
-        // manually ("a page refresh fixes it"). We now automate that fallback.
-        console.debug('[DealScout] Fingerprint timeout — reloading page for fresh content');
-        if (window.__dealScoutDiag) {
-          window.__dealScoutDiag.phase1Blockers = 'fingerprint-timeout-reloading';
-          window.__dealScoutDiag.loadType += '+RELOADING';
+        // Only reload if BOTH IDs are present and equal (genuinely stuck DOM
+        // showing the same listing). If URL ID differs → new listing, never
+        // reload. If no lastScoredId → first session, let Strategy C handle it.
+        if (_urlId && _lastScoredId && _urlId === _lastScoredId) {
+          console.debug('[DealScout] Fingerprint timeout — reloading page for fresh content');
+          if (window.__dealScoutDiag) {
+            window.__dealScoutDiag.phase1Blockers = 'fingerprint-timeout-reloading';
+            window.__dealScoutDiag.loadType += '+RELOADING';
+          }
+          setTimeout(() => location.reload(), 80);
+          return;
         }
-        // Short delay so the diag stamp writes before the reload fires.
-        setTimeout(() => location.reload(), 80);
-        return;
+        // Fingerprint timed out but not genuinely stuck — fall through to extraction
+        console.debug('[DealScout] Fingerprint timeout, URL/ID mismatch — extracting anyway');
       } else if (isSpaNav) {
-        // Strategy B timeout: h1 never changed (SPA nav).
-        console.debug('[DealScout] Readiness timeout (h1 SPA nav) — giving up');
+        console.debug('[DealScout] Readiness timeout (SPA nav) — giving up');
         if (window.__dealScoutNonce === myNonce) window.__dealScoutRunning = false;
         return;
       }
-      // Strategy C: hard load — fall through even if notReady. Claude extracts
-      // from raw text and doesn't require a structured title.
+      // Strategy C: hard load — fall through even if notReady.
     }
 
-    const _strategyLabel = _useFingerprint ? 'A-fingerprint' : _isContextTeardownNav ? 'D-teardown' : isSpaNav ? 'B-h1' : 'C-hard';
+    const _strategyLabel = _isNewListingByUrl ? 'E-urlId' : _useFingerprint ? 'A-fingerprint' : isSpaNav ? 'B-h1' : 'C-hard';
     _dsNavLog('autoScoreReady', { attempt, strategy: _strategyLabel, isSpaNav, url: snapUrl.slice(0, 120) });
 
     if (window.__dealScoutDiag) {
       window.__dealScoutDiag.isSpaNav = isSpaNav;
       window.__dealScoutDiag.phase1Strategy = _strategyLabel;
+      window.__dealScoutDiag.urlListingId = _urlId;
+      window.__dealScoutDiag.newListingByUrl = _isNewListingByUrl;
       window.__dealScoutDiag.fingerprintChanged = _fingerprintChanged;
       window.__dealScoutDiag.phase1Polls = attempt;
-      window.__dealScoutDiag.phase1Blockers = _useFingerprint
+      window.__dealScoutDiag.phase1Blockers = _isNewListingByUrl
+        // Strategy E: URL-ID confirmed new listing — content + image only
+        ? [imageMissing && 'imgMissing', !hasContent && 'noContent'].filter(Boolean).join(',') || 'none'
+        : _useFingerprint
         // Strategy A: only fingerprint change + content matter
         ? [!_fingerprintChanged && 'fpNoChange', !hasContent && 'noContent'].filter(Boolean).join(',') || 'none'
         : isSpaNav
         // Strategy B: h1 title + desc + image + content
         ? [titleIsStale && 'titleStale', descMissing && 'descMissing',
            imageMissing && 'imgMissing', !hasContent && 'noContent'].filter(Boolean).join(',') || 'none'
-        // Strategy C: only image + content (desc/h1 checks removed as they provide no signal)
+        // Strategy C: only image + content
         : [imageMissing && 'imgMissing', !hasContent && 'noContent'].filter(Boolean).join(',') || 'none';
     }
 
