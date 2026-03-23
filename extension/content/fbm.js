@@ -188,6 +188,7 @@
         }
       }
     } catch (_e) {}
+    _dsDebugPost('score-cache-miss', { urlId: _currentUrlId });
   }
 
   if (_currentUrlId && _dsScoringGuardActive(_currentUrlId)) {
@@ -195,7 +196,9 @@
     try { _guardState = JSON.parse(sessionStorage.getItem('ds_scoring')); } catch (_e) {}
     const _guardAge = _guardState ? Date.now() - _guardState.ts : null;
     const _guardTTLRemain = _guardState ? Math.max(0, 120000 - (Date.now() - _guardState.ts)) : 0;
-    _dsDebugPost('scoring-dedup-skip', { urlId: _currentUrlId, guard: _guardState, guardAgeMs: _guardAge, retryInMs: _guardTTLRemain + 2000 });
+    let _cacheInfo = null;
+    try { const _ci = sessionStorage.getItem('ds_cachedScore'); if (_ci) { const _p = JSON.parse(_ci); _cacheInfo = { id: _p.id, ageMs: Date.now() - _p.ts, score: _p.result?.score }; } } catch (_e) {}
+    _dsDebugPost('scoring-dedup-skip', { urlId: _currentUrlId, guard: _guardState, guardAgeMs: _guardAge, retryInMs: _guardTTLRemain + 2000, cache: _cacheInfo });
     if (_guardTTLRemain > 0 && _guardTTLRemain < 120000) {
       setTimeout(() => {
         if (_dsScoringGuardActive(_currentUrlId)) return;
