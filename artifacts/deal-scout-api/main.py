@@ -2193,6 +2193,8 @@ def _diag_summary_row(r: dict) -> dict:
         "guardC":        r.get("guardC"),
         "retries":       r.get("retries"),
         # v0.29.6 MutationObserver diagnostics
+        "prevTitle":     r.get("prevTitle"),
+        "currentTitle":  r.get("currentTitle"),
         "mutationSettleMs": r.get("mutationSettleMs"),
         "titleCheckRetries": r.get("titleCheckRetries"),
         "contentTitleMatch": r.get("contentTitleMatch"),

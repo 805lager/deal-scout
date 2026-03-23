@@ -835,6 +835,8 @@
         price: result.price,
         condition: result.condition,
         dataSource: result.data_source,
+        prevTitle: (prevTitle || '').slice(0, 80),
+        currentTitle: currentTitle.slice(0, 80),
         titleWaitMs: _titleWaitMs,
         mutationSettleMs: _mutationSettleMs,
         fpRetries: _fpRetries,
