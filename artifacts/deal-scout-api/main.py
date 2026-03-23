@@ -2195,11 +2195,30 @@ def _diag_summary_row(r: dict) -> dict:
     }
 
 
+_nav_debug_table_ensured = False
+
+async def _ensure_nav_debug_table():
+    global _nav_debug_table_ensured
+    if _nav_debug_table_ensured:
+        return
+    from scoring.data_pipeline import _get_pool
+    pool = await _get_pool()
+    await pool.execute("""
+        CREATE TABLE IF NOT EXISTS nav_debug_events (
+            id serial PRIMARY KEY,
+            server_ts timestamptz DEFAULT now(),
+            payload jsonb NOT NULL
+        )
+    """)
+    _nav_debug_table_ensured = True
+
+
 @app.post("/nav-debug")
 async def collect_nav_debug(request: Request):
     try:
         import json as _json
         from scoring.data_pipeline import _get_pool
+        await _ensure_nav_debug_table()
         payload = await request.json()
         pool = await _get_pool()
         await pool.execute(
@@ -2216,6 +2235,7 @@ async def get_nav_debug():
     try:
         import json as _json
         from scoring.data_pipeline import _get_pool
+        await _ensure_nav_debug_table()
         pool = await _get_pool()
         rows = await pool.fetch(
             "SELECT id, server_ts, payload FROM nav_debug_events ORDER BY server_ts DESC LIMIT 200"
@@ -2227,15 +2247,16 @@ async def get_nav_debug():
             p["_server_ts"] = r["server_ts"].isoformat()
             events.append(p)
         events.reverse()
-        return {"count": len(events), "events": events}
+        return events
     except Exception as e:
-        return {"count": 0, "events": [], "error": str(e)}
+        return []
 
 
 @app.delete("/nav-debug")
 async def clear_nav_debug():
     try:
         from scoring.data_pipeline import _get_pool
+        await _ensure_nav_debug_table()
         pool = await _get_pool()
         result = await pool.execute("DELETE FROM nav_debug_events")
         n = int(result.split()[-1]) if result else 0
