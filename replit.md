@@ -88,7 +88,7 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 ## Extension Version
 
-Current: **v0.29.8** — Speed optimizations (1s settle, parallel API refinement) + overlay extraction + content-title consistency check
+Current: **v0.29.9** — Enhanced security check (warnings + positives + checks list) + CarGurus affiliate for vehicles + speed optimizations
 
 Key mechanisms in `extension/content/fbm.js`:
 - **MutationObserver settling**: Waits for DOM mutations to stop for 1s (max 8s) before extracting content. Observes document.body to catch overlay changes.

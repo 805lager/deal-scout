@@ -85,11 +85,14 @@ class SecurityScore:
     risk_level:     str
     flags:          list
     recommendation: str
+    warnings:       list = field(default_factory=list)
+    positives:      list = field(default_factory=list)
     layer1_flags:   list = field(default_factory=list)
     ai_flags:       list = field(default_factory=list)
     item_risks:     list = field(default_factory=list)
     confidence:     str  = "medium"
     model_used:     str  = ""
+    checks_run:     list = field(default_factory=list)
 
 
 # ── Layer 1: Rule-Based Pattern Detection ─────────────────────────────────────
@@ -304,10 +307,20 @@ Return this exact JSON structure:
   "score": <integer 1-10, where 10=very safe, 1=definite scam>,
   "risk_level": "<low|medium|high|critical>",
   "flags": ["<specific flag 1>", "<specific flag 2>"],
+  "positives": ["<positive signal 1>", "<positive signal 2>"],
   "item_risks": ["<item-specific risk 1>"],
   "recommendation": "<safe to proceed|proceed with caution|likely scam>",
   "confidence": "<high|medium|low>"
 }}
+
+For "positives", identify trust signals such as:
+- Detailed description with specifics (model numbers, measurements, history)
+- Reasonable pricing relative to condition
+- Seller provides many clear photos
+- In-person pickup available
+- Legitimate reason for selling mentioned
+- Good seller rating/history
+Return 1-4 positives. If nothing positive stands out, return an empty list.
 
 Scoring guide:
 - 9-10: No red flags, legitimate-looking listing
@@ -507,48 +520,82 @@ async def score_security(
 
     # Merge flags — deduplicate
     ai_flags   = ai_result.get("flags", []) or []
+    ai_positives = ai_result.get("positives", []) or []
     item_risks = ai_result.get("item_risks", []) or []
     l1_messages = [f["flag"] for f in l1_flags]
 
-    # Semantic dedup: if an AI flag covers the same topic as a Layer 1 flag,
-    # drop the AI version to avoid showing two nearly-identical entries.
-    # WHY: Layer 1 flags Venmo ("Requests suspicious payment method"), then
-    # Claude AI adds "Suspicious payment method: Venmo only (non-reversible)"
-    # — both appear in the sidebar as separate bullet points, which looks
-    # broken and reduces user trust in the flagging system.
-    # Strategy: if key words from a Layer 1 flag appear in an AI flag, skip the AI flag.
     def _is_covered_by_l1(ai_flag: str) -> bool:
         ai_low = ai_flag.lower()
         for l1 in l1_messages:
-            # Extract first 4 meaningful words of the L1 flag as fingerprint
             keywords = [w for w in l1.lower().split() if len(w) > 3][:4]
             if sum(1 for kw in keywords if kw in ai_low) >= 2:
                 return True
         return False
 
     deduped_ai_flags = [f for f in ai_flags if not _is_covered_by_l1(f)]
-    all_flags = list(dict.fromkeys(l1_messages + deduped_ai_flags))  # preserves order, deduplicates
+    all_flags = list(dict.fromkeys(l1_messages + deduped_ai_flags))
 
-    # WHY always derive from final_score, not AI:
-    # The AI scores a snapshot before Layer 1 weighting. After merging,
-    # final_score may shift — e.g. AI says 6/medium/"proceed with caution"
-    # but L1 is clean, so final merges to 8. Without this fix the UI shows
-    # "LOW RISK 8/10" + "Proceed With Caution" — a confusing contradiction.
-    # (Bug B-S3)
     risk_level     = _score_to_risk(final_score)
     recommendation = _score_to_recommendation(final_score)
     confidence = ai_result.get("confidence", "medium") if ai_result else "low"
 
+    warnings = all_flags[:5] + item_risks[:2]
+
+    positives = list(ai_positives)[:4]
+
+    seller_trust_dict = (getattr(listing, "seller_trust", None) or {})
+    seller_joined   = seller_trust_dict.get("joined_date") or seller_trust_dict.get("member_since")
+    highly_rated    = seller_trust_dict.get("highly_rated", False)
+    raw_rating      = seller_trust_dict.get("rating")
+    try:
+        parsed_rating = float(raw_rating) if raw_rating else 0.0
+    except (ValueError, TypeError):
+        parsed_rating = 0.0
+    try:
+        raw_count = int(seller_trust_dict.get("rating_count", 0) or 0)
+    except (ValueError, TypeError):
+        raw_count = 0
+
+    if highly_rated or (parsed_rating >= 4.5 and raw_count >= 3):
+        rating_str = f"{parsed_rating:.0f}/5" if parsed_rating > 0 else "Highly rated"
+        positives.insert(0, f"Seller rated {rating_str} ({raw_count} reviews)")
+    elif seller_joined:
+        positives.append(f"Seller profile since {seller_joined}")
+
+    photo_count = (getattr(listing, "photo_count", 0) or 0) or len(getattr(listing, "image_urls", None) or [])
+    if photo_count >= 4:
+        positives.append(f"{photo_count} photos provided")
+
+    if market_value:
+        est = getattr(market_value, "estimated_value", 0) or 0
+        if est > 0 and listing.price > 0:
+            ratio = listing.price / est
+            if 0.5 <= ratio <= 1.15:
+                positives.append("Price is within normal market range")
+
+    positives = list(dict.fromkeys(positives))[:4]
+
+    checks_run = ["Pattern scan (payment, contact, urgency)"]
+    if category in ITEM_RISK_PATTERNS:
+        checks_run.append(f"Category-specific risks ({category})")
+    if market_value:
+        checks_run.append("Price vs market anomaly check")
+    if ai_result:
+        checks_run.append("AI scam language analysis")
+
     result = SecurityScore(
         score          = final_score,
         risk_level     = risk_level,
-        flags          = all_flags[:6],       # cap at 6 to keep sidebar readable
+        flags          = all_flags[:6],
         recommendation = recommendation,
+        warnings       = warnings,
+        positives      = positives,
         layer1_flags   = l1_messages,
         ai_flags       = ai_flags,
         item_risks     = item_risks[:3],
         confidence     = confidence,
         model_used     = "claude-haiku-4-5" if ai_result else "layer1-only",
+        checks_run     = checks_run,
     )
 
     _cache[cache_key] = {"data": result, "ts": now}

@@ -1,6 +1,6 @@
 /**
  * fbm.js — Deal Scout Content Script for Facebook Marketplace
- * v0.29.8
+ * v0.29.9
  *
  * INJECTED INTO: facebook.com/marketplace/*
  * PURPOSE: Extracts listing data, sends to background.js for scoring,
@@ -24,7 +24,7 @@
 (function () {
   "use strict";
 
-  const VERSION  = '0.29.8';
+  const VERSION  = '0.29.9';
   const PANEL_ID  = "deal-scout-panel";
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
   const DS_API_KEY = "ds_live_098caae54340d797cb216856d0cffe50";
@@ -1780,7 +1780,7 @@
     const hdr = document.createElement('div');
     hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:6px';
     hdr.innerHTML = `
-      <span style="font-weight:600;font-size:11px;letter-spacing:0.5px;text-transform:uppercase;color:#9ca3af">\uD83D\uDD12 Security Check</span>
+      <span style="font-weight:600;font-size:11px;letter-spacing:0.5px;text-transform:uppercase;color:#9ca3af">\uD83D\uDD12 Security Check <span style="color:${riskColor};font-weight:700">${sec.score || ''}/10</span></span>
       <span style="font-size:11px;font-weight:600;color:${riskColor};background:${riskColor}22;border-radius:6px;padding:2px 7px">${sec.risk_level} risk</span>
     `;
     section.appendChild(hdr);
@@ -1792,22 +1792,39 @@
       section.appendChild(rec);
     }
 
-    if (sec.warnings && sec.warnings.length) {
-      sec.warnings.slice(0, 3).forEach(w => {
+    const warnings = sec.warnings || sec.flags || [];
+    if (warnings.length) {
+      warnings.slice(0, 4).forEach(w => {
         const el = document.createElement('div');
-        el.style.cssText = 'font-size:11px;color:#fde68a;margin-bottom:3px';
+        el.style.cssText = 'font-size:11px;color:#fde68a;margin-bottom:3px;padding-left:2px';
         el.textContent = '\u26A0 ' + w;
         section.appendChild(el);
       });
     }
 
     if (sec.positives && sec.positives.length) {
-      sec.positives.slice(0, 3).forEach(p => {
+      sec.positives.slice(0, 4).forEach(p => {
         const el = document.createElement('div');
-        el.style.cssText = 'font-size:11px;color:#86efac;margin-bottom:3px';
+        el.style.cssText = 'font-size:11px;color:#86efac;margin-bottom:3px;padding-left:2px';
         el.textContent = '\u2705 ' + p;
         section.appendChild(el);
       });
+    }
+
+    if (sec.checks_run && sec.checks_run.length) {
+      const checksDiv = document.createElement('div');
+      checksDiv.style.cssText = 'margin-top:6px;padding-top:5px;border-top:1px solid rgba(255,255,255,0.06)';
+      const checksLabel = document.createElement('div');
+      checksLabel.style.cssText = 'font-size:10px;color:#6b7280;margin-bottom:2px;text-transform:uppercase;letter-spacing:0.3px';
+      checksLabel.textContent = 'Checks performed';
+      checksDiv.appendChild(checksLabel);
+      sec.checks_run.forEach(c => {
+        const el = document.createElement('div');
+        el.style.cssText = 'font-size:10px;color:#9ca3af;margin-bottom:1px';
+        el.textContent = '\u2022 ' + c;
+        checksDiv.appendChild(el);
+      });
+      section.appendChild(checksDiv);
     }
 
     container.appendChild(section);

@@ -290,10 +290,10 @@ AFFILIATE_PROGRAMS = {
     "cargurus": {
         "name":         "CarGurus",
         "tag":          os.getenv("CARGURUS_AFFILIATE_TAG", ""),
-        "base_url":     "https://www.cargurus.com/Cars/new/nl",
+        "base_url":     "https://www.cargurus.com/Cars/inventorylisting/viewDetailsFilterViewInventoryListing.action",
         "link_format":  "search",
         "network":      "cj",
-        "commission":   0.0,     # CPA: $7-25 per lead
+        "commission":   0.0,
         "cpa_value":    15.0,
         "categories":   ["vehicles", "cars", "trucks"],
         "badge_label":  "CarGurus",
@@ -301,7 +301,7 @@ AFFILIATE_PROGRAMS = {
         "icon":         "🔍",
         "trusted":      True,
         "status":       "search",
-        "notes":        "Largest US car search site by traffic. CPA via CJ. Pairs well with Autotrader.",
+        "notes":        "Largest US car search site by traffic. CPA via CJ.",
     },
 
     "carmax": {
@@ -1068,9 +1068,9 @@ CATEGORY_PROGRAMS = {
     # WHY no amazon for vehicles: Amazon cannot sell used cars.
     # Showing "2011 BMW 328i — New at Amazon" destroys user trust in the
     # affiliate section and makes the whole product look low-quality.
-    "vehicles":             ["autotrader", "ebay"],
-    "cars":                 ["autotrader", "ebay"],
-    "trucks":               ["autotrader", "ebay"],
+    "vehicles":             ["autotrader", "cargurus", "ebay"],
+    "cars":                 ["autotrader", "cargurus", "ebay"],
+    "trucks":               ["autotrader", "cargurus", "ebay"],
     "baby":                 ["target", "amazon", "walmart"],
     "kids":                 ["target", "amazon", "walmart"],
     "toys":                 ["target", "amazon", "walmart"],
@@ -1176,6 +1176,8 @@ def _build_search_link(program_key: str, query: str, tag: str) -> str:
         "target":      f"?searchTerm={encoded}",
         "rei":         f"?q={encoded}",
         "autotrader":  f"/all-cars?makeCodeList=&searchRadius=50&zip=92101&query={encoded}",
+        "cargurus":    f"?sourceContext=carGurusHomePageModel&entitySelectingHelper.selectedEntity=&zip=92101&distance=50&searchChanged=true&sortDir=ASC&sortType=DEAL_SCORE&inventorySearchWidgetType=AUTO&keywordSearch={encoded}",
+        "carmax":      f"?search={encoded}&year=&mileage=&price=",
         "sweetwater":  f"?s={encoded}",
         "dicks":       f"/{encoded}",
         "chewy":       f"?query={encoded}",
