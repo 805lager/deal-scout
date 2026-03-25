@@ -576,9 +576,7 @@ def _determine_tier(
     """
     has_rating = rating is not None and review_count >= 10
     has_reddit = len(reddit_posts) >= 3
-
-    if not has_rating and not has_reddit:
-        return "unknown"
+    has_any_reddit = len(reddit_posts) >= 1
 
     issue_count = len(issues)
 
@@ -592,13 +590,23 @@ def _determine_tier(
         else:
             return "poor"
 
-    # Reddit-only path (no Google rating)
-    if issue_count == 0:
-        return "good"
-    elif issue_count == 1:
-        return "mixed"
-    else:
-        return "poor"
+    if has_reddit:
+        if issue_count == 0:
+            return "good"
+        elif issue_count == 1:
+            return "mixed"
+        else:
+            return "poor"
+
+    if has_any_reddit or issue_count > 0:
+        if issue_count == 0:
+            return "good"
+        elif issue_count <= 2:
+            return "mixed"
+        else:
+            return "poor"
+
+    return "unknown"
 
 
 def _determine_confidence(

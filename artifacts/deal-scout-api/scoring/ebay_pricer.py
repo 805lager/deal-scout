@@ -706,21 +706,23 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         )
 
     # ── Step 1: Try Claude AI pricing first ─────────────────────────────────────
-    # Claude analyzes the query to return actual USED market prices.
-    # Falls back to eBay comps if Claude call fails or returns unreliable data.
-    # Claude client is in scoring/gemini_pricer.py (historical naming).
     ai_pricing_stats = await _try_claude_ai_pricing(query, condition=listing_condition, listing_price=listing_price)
-    # Capture Gemini metadata before it goes out of scope — MarketValue will carry it
-    # to the API response and eventually to the sidebar for display.
     _ai_item_id = ai_pricing_stats.get("item_id", "") if ai_pricing_stats else ""
     _ai_notes   = ai_pricing_stats.get("notes",   "") if ai_pricing_stats else ""
 
+    # ── Step 1b: If Claude failed, try Google Shopping as middle tier ─────────
+    _google_stats = None
+    if not ai_pricing_stats:
+        try:
+            from scoring.google_pricer import get_google_shopping_prices, prices_to_market_stats
+            goog_prices = await get_google_shopping_prices(query, max_results=12, min_price=listing_price)
+            _google_stats = prices_to_market_stats(goog_prices)
+            if _google_stats:
+                log.info(f"[GoogleFallback] '{query}' → avg=${_google_stats['avg']:.0f} ({_google_stats['count']} prices)")
+        except Exception as e:
+            log.warning(f"[GoogleFallback] Failed for '{query}': {e}")
+
     # ── Step 2: Always fetch eBay + Craigslist in parallel ───────────────────
-    # WHY ALWAYS: Even when Gemini succeeds, we want eBay listing cards for
-    # the "Like Products" sidebar section. Running them in parallel means
-    # zero extra latency. eBay is now ONLY used for affiliate cards + price fallback.
-    # Craigslist runs concurrently via _safe_craigslist — it's purely informational
-    # and will never crash or delay the pipeline (timeout + exception guard inside).
     sold_raw, active_raw, new_raw, _cl_result = await asyncio.gather(
         search_ebay(query, "findCompletedItems", max_results=20),
         search_ebay(query, "findItemsAdvanced",  max_results=20),
@@ -747,12 +749,10 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
 
     # ── Step 3: Build market stats from whichever source won ──────────────────
     if ai_pricing_stats:
-        # Gemini is primary — it returns USED market prices, not retail
         sold_avg        = ai_pricing_stats["avg"]
         sold_low        = ai_pricing_stats["low"]
         sold_high       = ai_pricing_stats["high"]
         sold_count      = ai_pricing_stats["count"]
-        # Use eBay active data for the asking-price column if we have it
         if active_items and not ebay_is_mock:
             active_prices = [p.price for p in active_items]
             active_avg    = statistics.mean(active_prices)
@@ -763,9 +763,6 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
             active_low   = ai_pricing_stats["low"]
             active_count = 0
 
-        # Gemini knows new retail too — only use eBay new-condition items if they are
-        # real (not mock). Mock items have inflated placeholder prices that will
-        # override the accurate value Claude already provided.
         new_price       = (
             min(p.price for p in new_items)
             if (new_items and not ebay_is_mock)
@@ -773,7 +770,39 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         )
         estimated_value = ai_pricing_stats["avg"]
         confidence      = ai_pricing_stats["confidence"]
-        data_source     = ai_pricing_stats["data_source"]  # "claude_knowledge" | "claude_knowledge"
+        data_source     = ai_pricing_stats["data_source"]
+
+    elif _google_stats and not ebay_is_mock:
+        sold_avg        = _google_stats["avg"]
+        sold_low        = _google_stats["low"]
+        sold_high       = _google_stats["high"]
+        sold_count      = _google_stats["count"]
+        if active_items:
+            active_prices = [p.price for p in active_items]
+            active_avg    = statistics.mean(active_prices)
+            active_low    = min(active_prices)
+            active_count  = len(active_items)
+        else:
+            active_avg   = round(_google_stats["avg"] * 1.05, 2)
+            active_low   = _google_stats["low"]
+            active_count = 0
+        new_price       = min(p.price for p in new_items) if new_items else 0.0
+        estimated_value = _google_stats["avg"]
+        confidence      = "medium" if _google_stats["count"] >= 5 else "low"
+        data_source     = "google_shopping"
+
+    elif _google_stats and ebay_is_mock:
+        sold_avg        = _google_stats["avg"]
+        sold_low        = _google_stats["low"]
+        sold_high       = _google_stats["high"]
+        sold_count      = _google_stats["count"]
+        active_avg      = round(_google_stats["avg"] * 1.05, 2)
+        active_low      = _google_stats["low"]
+        active_count    = 0
+        new_price       = 0.0
+        estimated_value = _google_stats["avg"]
+        confidence      = "medium" if _google_stats["count"] >= 5 else "low"
+        data_source     = "google_shopping"
 
     else:
         # eBay fallback — use its data directly

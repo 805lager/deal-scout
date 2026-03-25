@@ -2481,6 +2481,7 @@ def _build_scorecard(
         "price_comparison": {
             "data_source":         market_value.data_source,
             "market_confidence":   market_value.confidence,
+            "reliability_tier":    product_eval.reliability_tier if hasattr(product_eval, 'reliability_tier') else (product_eval.get('reliability_tier', 'unknown') if isinstance(product_eval, dict) else 'unknown'),
             "estimated_value":     market_value.estimated_value,
             "new_price":           market_value.new_price,
             "sold_avg":            market_value.sold_avg,

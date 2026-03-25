@@ -381,6 +381,62 @@ def _clean_title(title: str) -> str:
     return " ".join(words[:8])
 
 
+_KNOWN_BRANDS = [
+    "north face", "hot wheels", "le creuset", "kitchenaid",
+    "playstation", "sennheiser", "taylormade", "cannondale",
+    "husqvarna", "frigidaire", "patagonia", "columbia",
+    "nintendo", "microsoft", "samsung", "fujifilm", "celestron",
+    "cuisinart", "craftsman", "specialized", "whirlpool",
+    "vitamix", "breville", "nespresso", "uppababy",
+    "energizer", "logitech", "callaway", "titleist",
+    "bushnell", "jackery",
+    "apple", "sony", "dell", "lenovo", "asus", "acer", "toshiba",
+    "canon", "nikon", "gopro", "garmin", "fitbit",
+    "dyson", "keurig",
+    "dewalt", "makita", "milwaukee", "bosch", "ryobi",
+    "stihl", "honda", "yamaha", "kawasaki", "suzuki",
+    "toyota", "ford", "chevrolet", "chevy", "jeep", "dodge",
+    "iphone", "ipad", "macbook", "airpods", "kindle", "roku", "sonos",
+    "bose", "beats", "razer",
+    "trek", "schwinn",
+    "yeti", "stanley", "coleman", "weber", "traeger",
+    "ikea",
+    "orion", "meade", "vortex",
+    "fender", "gibson", "roland",
+    "nike", "adidas", "puma",
+    "coach", "gucci", "chanel", "hermes",
+    "maytag", "kenmore",
+    "anker",
+    "graco", "chicco", "britax", "bugaboo",
+    "lego", "nerf", "barbie",
+    "bmw",
+]
+
+_BRAND_PATTERN_CACHE = None
+
+def _get_brand_patterns():
+    global _BRAND_PATTERN_CACHE
+    if _BRAND_PATTERN_CACHE is None:
+        _BRAND_PATTERN_CACHE = [
+            (brand, re.compile(r'\b' + re.escape(brand) + r'\b', re.IGNORECASE))
+            for brand in _KNOWN_BRANDS
+        ]
+    return _BRAND_PATTERN_CACHE
+
+def _heuristic_brand(title: str) -> str:
+    for brand, pattern in _get_brand_patterns():
+        m = pattern.search(title)
+        if m:
+            return m.group(0)
+
+    words = title.split()
+    for word in words[:4]:
+        cleaned = re.sub(r"[^\w]", "", word)
+        if len(cleaned) >= 3 and cleaned[0].isupper() and cleaned[1:].islower() and cleaned.lower() not in _NOISE_WORDS:
+            return cleaned
+    return ""
+
+
 def _fallback_extraction(title: str) -> ProductInfo:
     """
     Returns a low-confidence ProductInfo from title-cleaning alone.
@@ -388,8 +444,9 @@ def _fallback_extraction(title: str) -> ProductInfo:
     Scores still work — just less accurate on vague titles.
     """
     query = _clean_title(title)
+    brand = _heuristic_brand(title)
     return ProductInfo(
-        brand             = "",
+        brand             = brand,
         model             = "",
         category          = "",
         search_query      = query,
