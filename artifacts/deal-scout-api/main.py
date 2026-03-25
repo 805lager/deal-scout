@@ -2571,7 +2571,8 @@ async def get_score_log():
         )
         scorecards = []
         for r in rows:
-            p = _json.loads(r["payload"])
+            raw = r["payload"]
+            p = _json.loads(raw) if isinstance(raw, str) else raw
             p["_id"] = r["id"]
             p["_server_ts"] = r["server_ts"].isoformat()
             scorecards.append(p)
