@@ -710,6 +710,7 @@ async def score_listing(listing: ListingRequest, request: Request):
 
     # ── Step 6b: Save full scorecard to score_log (non-blocking) ────────────
     try:
+        _ext_ver = request.headers.get("x-ds-ext-version") or request.headers.get("x-extension-version")
         _scorecard = _build_scorecard(
             listing=listing, deal_score=deal_score, market_value=market_value,
             security=security, product_info=product_info, product_eval=product_eval,
@@ -717,6 +718,7 @@ async def score_listing(listing: ListingRequest, request: Request):
             buy_new=buy_new, buy_new_msg=buy_new_msg,
             sold_items_sample=sold_items_sample, active_items_sample=active_items_sample,
             scoring_start_ts=_scoring_start_ts,
+            extension_version=_ext_ver,
         )
         asyncio.create_task(_save_score_log(_scorecard))
     except Exception:
@@ -1196,6 +1198,7 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
 
             # Save full scorecard to score_log (fire and forget)
             try:
+                _stream_ext_ver = request.headers.get("x-ds-ext-version") or request.headers.get("x-extension-version")
                 _scorecard = _build_scorecard(
                     listing=listing, deal_score=deal_score, market_value=market_value,
                     security=security, product_info=product_info, product_eval=product_eval,
@@ -1203,6 +1206,7 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                     buy_new=buy_new, buy_new_msg=buy_new_msg,
                     sold_items_sample=sold_items_sample, active_items_sample=active_items_sample,
                     scoring_start_ts=_stream_scoring_start,
+                    extension_version=_stream_ext_ver,
                 )
                 asyncio.create_task(_save_score_log(_scorecard))
             except Exception:
@@ -2415,6 +2419,7 @@ def _build_scorecard(
     sold_items_sample: list,
     active_items_sample: list,
     scoring_start_ts: float = 0.0,
+    extension_version: str | None = None,
 ) -> dict:
     from dataclasses import asdict as _dc_asdict
     _sec = _dc_asdict(security) if hasattr(security, '__dataclass_fields__') else (security if isinstance(security, dict) else {})
@@ -2508,7 +2513,7 @@ def _build_scorecard(
         "metadata": {
             "server_ts": datetime.utcnow().isoformat(),
             "backend_version": BACKEND_VERSION,
-            "extension_version": None,
+            "extension_version": extension_version,
             "total_ms": round((_time.time() - scoring_start_ts) * 1000) if scoring_start_ts > 0 else None,
         },
     }
