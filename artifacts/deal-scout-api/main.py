@@ -330,7 +330,7 @@ async def score_listing(listing: ListingRequest, request: Request):
     _cached = _cache_get(_ck)
     if _cached:
         log.info(f"[Cache] HIT for '{listing.title}' @ ${listing.price} — returning cached score")
-        return _cached
+        return _cached  # intentionally not logged to score_log — only fresh scores are auditable
 
     # Guard: reject obviously bad titles that indicate a broken extraction
     _generic_titles = {"marketplace", "facebook marketplace", "facebook", "craigslist", "offerup", ""}
@@ -866,7 +866,7 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
             if _cached:
                 log.info(f"[Stream Cache] HIT for '{title}'")
                 yield _sse({"type": "score", "data": _cached})
-                return
+                return  # intentionally not logged to score_log — only fresh scores are auditable
 
             # Guard: reject generic titles
             _generic = {"marketplace", "facebook marketplace", "facebook",
