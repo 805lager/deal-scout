@@ -43,6 +43,8 @@ artifacts/deal-scout-api/
 - `GET /test-ebay` — tests eBay API connection
 - `GET /v1/market-data` — anonymized aggregate market signals (B2B data product)
 - `GET /admin/dashboard` — data pipeline summary stats
+- `GET /score-log` — comprehensive scoring history (last 500 scorecards); each entry has listing info, deal score, security check, affiliate cards, price comparison, product evaluation, product info — for post-browse audit of every feature
+- `DELETE /score-log` — clears scoring history
 - `GET /docs` — FastAPI auto-generated API docs
 
 ## Revenue Streams

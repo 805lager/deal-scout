@@ -707,6 +707,19 @@ async def score_listing(listing: ListingRequest, request: Request):
     except Exception as _db_err:
         log.warning(f"[deal_scores] save failed (non-fatal): {_db_err}")
 
+    # ── Step 6b: Save full scorecard to score_log (non-blocking) ────────────
+    try:
+        _scorecard = _build_scorecard(
+            listing=listing, deal_score=deal_score, market_value=market_value,
+            security=security, product_info=product_info, product_eval=product_eval,
+            affiliate_dicts=affiliate_dicts, category_detected=category_detected,
+            buy_new=buy_new, buy_new_msg=buy_new_msg,
+            sold_items_sample=sold_items_sample, active_items_sample=active_items_sample,
+        )
+        asyncio.create_task(_save_score_log(_scorecard))
+    except Exception:
+        pass
+
     # ── Step 7: Record anonymized market signal (non-blocking) ────────────────
     # Fires as a background task — API response is returned immediately.
     # Any DB error is swallowed inside record_signal; it never affects the user.
@@ -1177,6 +1190,19 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
 
             # ── Send the final score ──────────────────────────────────────────
             yield _sse({"type": "score", "data": response_dict})
+
+            # Save full scorecard to score_log (fire and forget)
+            try:
+                _scorecard = _build_scorecard(
+                    listing=listing, deal_score=deal_score, market_value=market_value,
+                    security=security, product_info=product_info, product_eval=product_eval,
+                    affiliate_dicts=affiliate_dicts, category_detected=category_detected,
+                    buy_new=buy_new, buy_new_msg=buy_new_msg,
+                    sold_items_sample=sold_items_sample, active_items_sample=active_items_sample,
+                )
+                asyncio.create_task(_save_score_log(_scorecard))
+            except Exception:
+                pass
 
             # Background analytics (fire and forget)
             try:
@@ -2347,6 +2373,201 @@ async def clear_diag():
         from scoring.data_pipeline import _get_pool
         pool = await _get_pool()
         result = await pool.execute("DELETE FROM diag_reports")
+        n = int(result.split()[-1]) if result else 0
+        return {"ok": True, "cleared": n}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+_score_log_table_ensured = False
+
+async def _ensure_score_log_table():
+    global _score_log_table_ensured
+    if _score_log_table_ensured:
+        return
+    from scoring.data_pipeline import _get_pool
+    pool = await _get_pool()
+    await pool.execute("""
+        CREATE TABLE IF NOT EXISTS score_log (
+            id serial PRIMARY KEY,
+            server_ts timestamptz DEFAULT now(),
+            payload jsonb NOT NULL
+        )
+    """)
+    _score_log_table_ensured = True
+
+
+def _build_scorecard(
+    listing,
+    deal_score,
+    market_value,
+    security,
+    product_info,
+    product_eval,
+    affiliate_dicts: list,
+    category_detected: str,
+    buy_new: bool,
+    buy_new_msg: str,
+    sold_items_sample: list,
+    active_items_sample: list,
+) -> dict:
+    from dataclasses import asdict as _dc_asdict
+    _sec = _dc_asdict(security) if hasattr(security, '__dataclass_fields__') else (security if isinstance(security, dict) else {})
+    _pi  = _dc_asdict(product_info) if hasattr(product_info, '__dataclass_fields__') else (product_info if isinstance(product_info, dict) else {})
+    _pe  = _dc_asdict(product_eval) if hasattr(product_eval, '__dataclass_fields__') else (product_eval if isinstance(product_eval, dict) else {})
+
+    return {
+        "listing": {
+            "title":              listing.title,
+            "price":              listing.price,
+            "condition":          listing.condition,
+            "platform":           listing.platform or "unknown",
+            "listing_url":        listing.listing_url or "",
+            "location":           listing.location or "",
+            "photo_count":        listing.photo_count,
+            "is_vehicle":         listing.is_vehicle,
+            "is_multi_item":      listing.is_multi_item,
+            "seller_trust":       listing.seller_trust or {},
+            "seller_name":        listing.seller_name or "",
+            "original_price":     listing.original_price,
+            "shipping_cost":      listing.shipping_cost,
+            "vehicle_details":    listing.vehicle_details or {},
+            "image_urls":         listing.image_urls or [],
+            "raw_price_text":     listing.raw_price_text or "",
+            "description_snippet": (listing.description or "")[:300],
+        },
+        "deal_score": {
+            "score":               deal_score.score,
+            "verdict":             deal_score.verdict,
+            "should_buy":          deal_score.should_buy,
+            "summary":             deal_score.summary,
+            "value_assessment":    deal_score.value_assessment,
+            "condition_notes":     deal_score.condition_notes,
+            "green_flags":         deal_score.green_flags or [],
+            "red_flags":           deal_score.red_flags or [],
+            "recommended_offer":   deal_score.recommended_offer,
+            "negotiation_message": deal_score.negotiation_message,
+            "ai_confidence":       deal_score.confidence,
+            "model_used":          deal_score.model_used,
+            "image_analyzed":      deal_score.image_analyzed,
+            "affiliate_category":  deal_score.affiliate_category,
+            "bundle_items":        deal_score.bundle_items or [],
+        },
+        "price_comparison": {
+            "data_source":         market_value.data_source,
+            "market_confidence":   market_value.confidence,
+            "estimated_value":     market_value.estimated_value,
+            "new_price":           market_value.new_price,
+            "sold_avg":            market_value.sold_avg,
+            "sold_low":            market_value.sold_low,
+            "sold_high":           market_value.sold_high,
+            "sold_count":          market_value.sold_count,
+            "active_avg":          market_value.active_avg,
+            "active_low":          market_value.active_low,
+            "active_count":        market_value.active_count if hasattr(market_value, 'active_count') else 0,
+            "query_used":          market_value.query_used,
+            "ai_item_id":          market_value.ai_item_id,
+            "ai_notes":            market_value.ai_notes,
+            "craigslist_avg":      market_value.craigslist_avg,
+            "craigslist_low":      market_value.craigslist_low,
+            "craigslist_high":     market_value.craigslist_high,
+            "craigslist_count":    market_value.craigslist_count,
+            "buy_new_trigger":     buy_new,
+            "buy_new_message":     buy_new_msg,
+            "sold_items_sample":   sold_items_sample[:4],
+            "active_items_sample": active_items_sample[:4],
+        },
+        "security": _sec,
+        "affiliate_cards": affiliate_dicts,
+        "affiliate_category": category_detected,
+        "product_info": _pi,
+        "product_evaluation": _pe,
+    }
+
+
+async def _save_score_log(scorecard: dict):
+    try:
+        import json as _json
+        from scoring.data_pipeline import _get_pool
+        await _ensure_score_log_table()
+        pool = await _get_pool()
+        await pool.execute(
+            "INSERT INTO score_log (payload) VALUES ($1::jsonb)",
+            _json.dumps(scorecard, default=str),
+        )
+        count = await pool.fetchval("SELECT COUNT(*) FROM score_log")
+        if count > 500:
+            await pool.execute(
+                "DELETE FROM score_log WHERE id IN (SELECT id FROM score_log ORDER BY server_ts ASC LIMIT $1)",
+                count - 500,
+            )
+    except Exception as e:
+        log.warning(f"[score_log] save failed (non-fatal): {e}")
+
+
+def _score_log_summary(r: dict) -> dict:
+    listing = r.get("listing", {})
+    ds = r.get("deal_score", {})
+    pc = r.get("price_comparison", {})
+    sec = r.get("security", {})
+    aff = r.get("affiliate_cards", [])
+    pe = r.get("product_evaluation", {})
+    pi = r.get("product_info", {})
+    return {
+        "title":           listing.get("title"),
+        "price":           listing.get("price"),
+        "platform":        listing.get("platform"),
+        "condition":       listing.get("condition"),
+        "score":           ds.get("score"),
+        "verdict":         ds.get("verdict"),
+        "should_buy":      ds.get("should_buy"),
+        "ai_confidence":   ds.get("ai_confidence"),
+        "security_score":  sec.get("score"),
+        "security_risk":   sec.get("risk_level"),
+        "security_warnings_count": len(sec.get("warnings", [])),
+        "data_source":     pc.get("data_source"),
+        "market_confidence": pc.get("market_confidence"),
+        "estimated_value": pc.get("estimated_value"),
+        "sold_avg":        pc.get("sold_avg"),
+        "new_price":       pc.get("new_price"),
+        "affiliate_count": len(aff),
+        "affiliate_programs": [c.get("program_key", "") for c in aff],
+        "reliability_tier": pe.get("reliability_tier"),
+        "brand":           pi.get("brand"),
+        "model":           pi.get("model"),
+        "category":        pi.get("category"),
+    }
+
+
+@app.get("/score-log")
+async def get_score_log():
+    try:
+        import json as _json
+        from scoring.data_pipeline import _get_pool
+        await _ensure_score_log_table()
+        pool = await _get_pool()
+        rows = await pool.fetch(
+            "SELECT id, server_ts, payload FROM score_log ORDER BY server_ts DESC LIMIT 500"
+        )
+        scorecards = []
+        for r in rows:
+            p = _json.loads(r["payload"])
+            p["_id"] = r["id"]
+            p["_server_ts"] = r["server_ts"].isoformat()
+            scorecards.append(p)
+        summary = [_score_log_summary(s) for s in scorecards]
+        return {"count": len(scorecards), "summary": summary, "scorecards": scorecards}
+    except Exception as e:
+        return {"count": 0, "summary": [], "scorecards": [], "error": str(e)}
+
+
+@app.delete("/score-log")
+async def clear_score_log():
+    try:
+        from scoring.data_pipeline import _get_pool
+        await _ensure_score_log_table()
+        pool = await _get_pool()
+        result = await pool.execute("DELETE FROM score_log")
         n = int(result.split()[-1]) if result else 0
         return {"ok": True, "cleared": n}
     except Exception as e:
