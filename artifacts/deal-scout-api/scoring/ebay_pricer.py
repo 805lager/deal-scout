@@ -626,16 +626,18 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
     """
     Main entry point. Given a listing title, return a full MarketValue estimate.
 
-    FLOW (v0.5.0 — Google first):
-      1. Try Google Shopping → fast, no quota
-      2. If Google < 3 results → try eBay (sold + active + new-only in parallel)
-      3. If eBay rate-limited → eBay mock data
-      4. If both available → use Google for pricing, eBay items for sidebar cards
+    FLOW (v0.26.6 — Claude first, multi-source rotation):
+      1. Try Claude AI pricing (fastest, highest confidence)
+      1b. If Claude fails → try Google Shopping scraper
+      2. Always fetch eBay (sold + active + new) in parallel for sidebar cards
+      3. Pick pricing from first successful source:
+         Claude → Google Shopping → eBay live → eBay mock
+      4. If all live sources fail → mock data, then correction_range override
 
-    WHY BOTH IN STEP 4:
-      Google gives us better price signal (broader market).
-      eBay gives us clickable affiliate cards for "Like Products" sidebar section.
-      Running eBay in parallel means we get both with no extra latency.
+    WHY CLAUDE FIRST:
+      Claude returns structured pricing in ~1s with high accuracy for
+      well-known products. Google Shopping and eBay provide fallback
+      breadth when Claude lacks knowledge of niche/uncommon items.
     """
     query       = build_search_query(listing_title)
     campaign_id = os.getenv("EBAY_CAMPAIGN_ID", "")
