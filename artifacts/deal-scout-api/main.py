@@ -323,6 +323,7 @@ async def score_listing(listing: ListingRequest, request: Request):
     _check_rate_limit(client_ip)
 
     log.info(f"Scoring request: '{listing.title}' @ ${listing.price}")
+    _scoring_start_ts = _time.time()
 
     # ── Cache check ────────────────────────────────────────────────────────────
     _ck = _cache_key(listing.title, listing.price)
@@ -715,6 +716,7 @@ async def score_listing(listing: ListingRequest, request: Request):
             affiliate_dicts=affiliate_dicts, category_detected=category_detected,
             buy_new=buy_new, buy_new_msg=buy_new_msg,
             sold_items_sample=sold_items_sample, active_items_sample=active_items_sample,
+            scoring_start_ts=_scoring_start_ts,
         )
         asyncio.create_task(_save_score_log(_scorecard))
     except Exception:
@@ -817,6 +819,7 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
         return f"data: {_json.dumps(obj)}\n\n"
 
     async def event_stream():
+        _stream_scoring_start = _time.time()
         try:
             # ── Step 1: Claude Haiku extracts structured listing data ─────────
             extracted = await extract_listing_from_text(
@@ -1199,6 +1202,7 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                     affiliate_dicts=affiliate_dicts, category_detected=category_detected,
                     buy_new=buy_new, buy_new_msg=buy_new_msg,
                     sold_items_sample=sold_items_sample, active_items_sample=active_items_sample,
+                    scoring_start_ts=_stream_scoring_start,
                 )
                 asyncio.create_task(_save_score_log(_scorecard))
             except Exception:
@@ -2410,6 +2414,7 @@ def _build_scorecard(
     buy_new_msg: str,
     sold_items_sample: list,
     active_items_sample: list,
+    scoring_start_ts: float = 0.0,
 ) -> dict:
     from dataclasses import asdict as _dc_asdict
     _sec = _dc_asdict(security) if hasattr(security, '__dataclass_fields__') else (security if isinstance(security, dict) else {})
@@ -2494,7 +2499,7 @@ def _build_scorecard(
         },
         "security": _sec,
         "affiliate_cards": [
-            {**card, "category_detected": category_detected}
+            {**card, "category_detected": category_detected, "affiliate_category": deal_score.affiliate_category or ""}
             for card in affiliate_dicts
         ],
         "affiliate_category": category_detected,
@@ -2504,7 +2509,7 @@ def _build_scorecard(
             "server_ts": datetime.utcnow().isoformat(),
             "backend_version": BACKEND_VERSION,
             "extension_version": None,
-            "total_ms": None,
+            "total_ms": round((_time.time() - scoring_start_ts) * 1000) if scoring_start_ts > 0 else None,
         },
     }
 
