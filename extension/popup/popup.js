@@ -1,4 +1,5 @@
 const API_BASE_DEFAULT = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
+const EXT_VERSION = chrome.runtime.getManifest().version;
 
 async function getApiBase() {
   try {
@@ -21,7 +22,7 @@ async function checkAPIHealth() {
   const statusTxt = document.getElementById("status-text");
   const API_BASE  = await getApiBase();
   try {
-    const resp = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(4000) });
+    const resp = await fetch(`${API_BASE}/health`, { headers: { "X-DS-Ext-Version": EXT_VERSION }, signal: AbortSignal.timeout(4000) });
     if (resp.ok) {
       const data = await resp.json();
       statusEl.className = "active";
@@ -64,7 +65,7 @@ function extractOfferUp() {
 }
 
 // ── Inline panel renderer injected into the page ──────────────────────────────
-function renderDealPanel(r, panelId, apiBase) {
+function renderDealPanel(r, panelId, apiBase, extVersion) {
   const existing = document.getElementById(panelId);
   if (existing) existing.remove();
   const score = r.score || 0;
@@ -116,8 +117,8 @@ function renderDealPanel(r, panelId, apiBase) {
       <div style="display:flex;flex-direction:column;align-items:center;gap:6px">
         <div style="font-size:11px;color:#9ca3af">Was this score accurate?</div>
         <div id="${panelId}-thumbs" style="display:flex;gap:8px">
-          <button onclick="(function(){fetch('${apiBase}/thumbs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({score_id:${r.score_id},thumbs:1}),signal:AbortSignal.timeout(5000)}).catch(()=>{});document.getElementById('${panelId}-thumbs').innerHTML='<span style=\\'font-size:12px;color:#6ee7b7\\'>✓ Thanks for the feedback!</span>'})()" style="display:flex;align-items:center;gap:5px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:5px 12px;cursor:pointer;font-size:14px;color:#d1d5db">👍 <span style="font-size:11px">Yes, accurate</span></button>
-          <button onclick="(function(){fetch('${apiBase}/thumbs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({score_id:${r.score_id},thumbs:-1}),signal:AbortSignal.timeout(5000)}).catch(()=>{});document.getElementById('${panelId}-thumbs').innerHTML='<span style=\\'font-size:12px;color:#6ee7b7\\'>✓ Thanks for the feedback!</span>'})()" style="display:flex;align-items:center;gap:5px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:5px 12px;cursor:pointer;font-size:14px;color:#d1d5db">👎 <span style="font-size:11px">No, off</span></button>
+          <button onclick="(function(){fetch('${apiBase}/thumbs',{method:'POST',headers:{'Content-Type':'application/json','X-DS-Ext-Version':'${extVersion||""}'},body:JSON.stringify({score_id:${r.score_id},thumbs:1}),signal:AbortSignal.timeout(5000)}).catch(()=>{});document.getElementById('${panelId}-thumbs').innerHTML='<span style=\\'font-size:12px;color:#6ee7b7\\'>✓ Thanks for the feedback!</span>'})()" style="display:flex;align-items:center;gap:5px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:5px 12px;cursor:pointer;font-size:14px;color:#d1d5db">👍 <span style="font-size:11px">Yes, accurate</span></button>
+          <button onclick="(function(){fetch('${apiBase}/thumbs',{method:'POST',headers:{'Content-Type':'application/json','X-DS-Ext-Version':'${extVersion||""}'},body:JSON.stringify({score_id:${r.score_id},thumbs:-1}),signal:AbortSignal.timeout(5000)}).catch(()=>{});document.getElementById('${panelId}-thumbs').innerHTML='<span style=\\'font-size:12px;color:#6ee7b7\\'>✓ Thanks for the feedback!</span>'})()" style="display:flex;align-items:center;gap:5px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:5px 12px;cursor:pointer;font-size:14px;color:#d1d5db">👎 <span style="font-size:11px">No, off</span></button>
         </div>
       </div>` : ''}
       <div style="text-align:center;font-size:10px;color:#374151;margin-top:${r.score_id ? '8' : '0'}px">${cta}</div>
@@ -179,7 +180,7 @@ document.getElementById("score-current").addEventListener("click", async () => {
   try {
     const resp = await fetch(`${API_BASE}/score`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-DS-Ext-Version": EXT_VERSION },
       body: JSON.stringify(listing),
       signal: AbortSignal.timeout(35000),
     });
@@ -195,7 +196,7 @@ document.getElementById("score-current").addEventListener("click", async () => {
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: renderDealPanel,
-      args: [result, panelId, API_BASE],
+      args: [result, panelId, API_BASE, EXT_VERSION],
     });
   } catch (e) {
     setStatus("error", `Could not render panel: ${e.message}`);
@@ -230,7 +231,7 @@ document.getElementById("modal-send").addEventListener("click", async () => {
   if (!text) return;
   const API_BASE = await getApiBase();
   try {
-    await fetch(`${API_BASE}/report`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ report: text, ts: new Date().toISOString() }), signal: AbortSignal.timeout(4000) });
+    await fetch(`${API_BASE}/report`, { method: "POST", headers: { "Content-Type": "application/json", "X-DS-Ext-Version": EXT_VERSION }, body: JSON.stringify({ report: text, ts: new Date().toISOString() }), signal: AbortSignal.timeout(4000) });
   } catch {}
   modalForm.style.display = "none";
   modalSent.style.display = "block";

@@ -1,5 +1,5 @@
 /**
- * background.js — Extension Service Worker (v0.29.0)
+ * background.js — Extension Service Worker (v0.30.0)
  *
  * WHY A SERVICE WORKER:
  *   Manifest V3 replaced background pages with service workers.
@@ -10,7 +10,7 @@
  *     - Badge updates (show deal score on extension icon)
  *     - Tab-level score caching (survives FBM context teardowns)
  *
- * FLOW (v0.29.0 — background-first scoring):
+ * FLOW (v0.30.0 — background-first scoring):
  *   Content script extracts listing data → sends SCORE_LISTING here →
  *   we call the API → cache result per tab → send score back →
  *   content script renders the panel.
@@ -184,9 +184,10 @@ async function handleScoreListing(listing, tabId, listingId) {
 
 async function callScoringAPI(listing) {
   const API_BASE = await getApiBase();
+  const extVersion = chrome.runtime.getManifest().version;
   const response = await fetch(`${API_BASE}/score/stream`, {
     method:  "POST",
-    headers: { "Content-Type": "application/json", "X-DS-Key": DS_API_KEY },
+    headers: { "Content-Type": "application/json", "X-DS-Key": DS_API_KEY, "X-DS-Ext-Version": extVersion },
     body:    JSON.stringify(listing),
   });
 
@@ -343,10 +344,11 @@ async function _flushAnalytics() {
 
   try {
     const API_BASE = await getApiBase();
+    const extVersion = chrome.runtime.getManifest().version;
     for (const evt of batch) {
       await fetch(`${API_BASE}/event`, {
         method:  "POST",
-        headers: { "Content-Type": "application/json", "X-DS-Key": DS_API_KEY },
+        headers: { "Content-Type": "application/json", "X-DS-Key": DS_API_KEY, "X-DS-Ext-Version": extVersion },
         body:    JSON.stringify(evt),
       });
     }

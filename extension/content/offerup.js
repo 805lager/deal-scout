@@ -20,7 +20,7 @@
 (function () {
   "use strict";
 
-  const VERSION  = '0.27.0';
+  const VERSION  = '0.30.0';
   const PANEL_ID = "deal-scout-ou-panel";
   const PLATFORM = "offerup";
 
@@ -220,7 +220,7 @@
     try {
       const response = await fetch(`${API_BASE}/score/stream`, {
         method:  "POST",
-        headers: { "Content-Type": "application/json", "X-DS-Key": DS_API_KEY },
+        headers: { "Content-Type": "application/json", "X-DS-Key": DS_API_KEY, "X-DS-Ext-Version": VERSION },
         body:    JSON.stringify(rawData),
         signal:  abort.signal,
       });
@@ -664,7 +664,7 @@
         btn.addEventListener("click", () => {
           if (val === 1) {
             fetch(API_BASE + "/thumbs", {
-              method: "POST", headers: {"Content-Type": "application/json", "X-DS-Key": DS_API_KEY},
+              method: "POST", headers: {"Content-Type": "application/json", "X-DS-Key": DS_API_KEY, "X-DS-Ext-Version": VERSION},
               body: JSON.stringify({score_id: r.score_id, thumbs: 1, reason: ""}),
               signal: AbortSignal.timeout(5000),
             }).catch(() => {});
@@ -682,7 +682,7 @@
               pill.addEventListener("click", (e) => {
                 e.stopPropagation();
                 fetch(API_BASE + "/thumbs", {
-                  method: "POST", headers: {"Content-Type": "application/json", "X-DS-Key": DS_API_KEY},
+                  method: "POST", headers: {"Content-Type": "application/json", "X-DS-Key": DS_API_KEY, "X-DS-Ext-Version": VERSION},
                   body: JSON.stringify({score_id: r.score_id, thumbs: -1, reason: key}),
                   signal: AbortSignal.timeout(5000),
                 }).catch(() => {});
