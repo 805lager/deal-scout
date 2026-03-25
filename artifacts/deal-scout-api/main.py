@@ -2493,12 +2493,16 @@ def _build_scorecard(
             "active_items_sample": active_items_sample[:4],
         },
         "security": _sec,
-        "affiliate_cards": affiliate_dicts,
+        "affiliate_cards": [
+            {**card, "category_detected": category_detected}
+            for card in affiliate_dicts
+        ],
         "affiliate_category": category_detected,
         "product_info": _pi,
         "product_evaluation": _pe,
         "metadata": {
             "server_ts": datetime.utcnow().isoformat(),
+            "backend_version": BACKEND_VERSION,
             "extension_version": None,
             "total_ms": None,
         },
