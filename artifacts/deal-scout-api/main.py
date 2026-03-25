@@ -2416,12 +2416,27 @@ def _build_scorecard(
     _pi  = _dc_asdict(product_info) if hasattr(product_info, '__dataclass_fields__') else (product_info if isinstance(product_info, dict) else {})
     _pe  = _dc_asdict(product_eval) if hasattr(product_eval, '__dataclass_fields__') else (product_eval if isinstance(product_eval, dict) else {})
 
+    import re as _re
+    _listing_id = ""
+    if listing.listing_url:
+        _m = _re.search(r'/item/(\d+)', listing.listing_url)
+        if _m:
+            _listing_id = _m.group(1)
+        else:
+            _m = _re.search(r'/itm/(\d+)', listing.listing_url)
+            if _m:
+                _listing_id = _m.group(1)
+            elif '/detail/' in listing.listing_url:
+                parts = listing.listing_url.rstrip('/').split('/')
+                _listing_id = parts[-1] if parts else ""
+
     return {
         "listing": {
             "title":              listing.title,
             "price":              listing.price,
             "condition":          listing.condition,
             "platform":           listing.platform or "unknown",
+            "listing_id":         _listing_id,
             "listing_url":        listing.listing_url or "",
             "location":           listing.location or "",
             "photo_count":        listing.photo_count,
@@ -2434,7 +2449,7 @@ def _build_scorecard(
             "vehicle_details":    listing.vehicle_details or {},
             "image_urls":         listing.image_urls or [],
             "raw_price_text":     listing.raw_price_text or "",
-            "description_snippet": (listing.description or "")[:300],
+            "description_snippet": (listing.description or "")[:200],
         },
         "deal_score": {
             "score":               deal_score.score,
@@ -2468,10 +2483,10 @@ def _build_scorecard(
             "query_used":          market_value.query_used,
             "ai_item_id":          market_value.ai_item_id,
             "ai_notes":            market_value.ai_notes,
-            "craigslist_avg":      market_value.craigslist_avg,
-            "craigslist_low":      market_value.craigslist_low,
-            "craigslist_high":     market_value.craigslist_high,
-            "craigslist_count":    market_value.craigslist_count,
+            "craigslist_asking_avg":  market_value.craigslist_avg,
+            "craigslist_asking_low":  market_value.craigslist_low,
+            "craigslist_asking_high": market_value.craigslist_high,
+            "craigslist_count":      market_value.craigslist_count,
             "buy_new_trigger":     buy_new,
             "buy_new_message":     buy_new_msg,
             "sold_items_sample":   sold_items_sample[:4],
@@ -2482,6 +2497,11 @@ def _build_scorecard(
         "affiliate_category": category_detected,
         "product_info": _pi,
         "product_evaluation": _pe,
+        "metadata": {
+            "server_ts": datetime.utcnow().isoformat(),
+            "extension_version": None,
+            "total_ms": None,
+        },
     }
 
 
