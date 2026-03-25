@@ -131,7 +131,7 @@ class MarketValue:
     active_items_sample: list = None  # top 4 currently active listings
     # Which pricing source produced this data — surfaced in sidebar and used
     # by Claude to calibrate how much to trust the market comps.
-    data_source: str = "claude_knowledge"  # "claude_knowledge" | "claude_knowledge" | "ebay" | "ebay_mock" | "correction_range"
+    data_source: str = "claude_knowledge"  # "claude_knowledge" | "google_shopping" | "ebay_live" | "ebay_mock" | "correction_range"
     # Claude AI metadata — only populated when data_source is claude_knowledge/gemini_search.
     # item_id: the specific product Claude identified (e.g. "Celestron NexStar 6SE")
     # ai_notes: Claude's 1-sentence market context (e.g. "Prices vary by condition")
@@ -836,7 +836,7 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         else:
             confidence = "low"
 
-        data_source = "ebay_mock" if ebay_is_mock else "ebay"
+        data_source = "ebay_mock" if ebay_is_mock else "ebay_live"
 
     # ── Locked price range override (when mock fired) ───────────────────────────
     # WHY data_source == "ebay_mock" (not just ebay_is_mock):

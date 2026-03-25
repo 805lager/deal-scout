@@ -245,7 +245,7 @@ class DealScoreResponse(BaseModel):
     active_low:        float = 0.0   # Lowest active listing price
     new_price:         float
     market_confidence: str
-    data_source:       str = "ebay"  # "ebay" | "google_shopping" | "ebay_mock" | "cargurus" | "craigslist"
+    data_source:       str = "ebay_live"  # "ebay_live" | "google_shopping" | "claude_knowledge" | "ebay_mock" | "correction_range" | "cargurus" | "craigslist"
     query_used:        str = ""       # The actual eBay/Google search query used for comps
 
     # Like Products — real eBay items surfaced as affiliate cards
