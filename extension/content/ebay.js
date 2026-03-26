@@ -17,7 +17,7 @@
 (function () {
   "use strict";
 
-  const VERSION  = "0.31.0";
+  const VERSION  = "0.31.1";
   const PANEL_ID = "deal-scout-ebay-panel";
   const PLATFORM = "ebay";
 
