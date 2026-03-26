@@ -592,6 +592,19 @@ async def score_listing(listing: ListingRequest, request: Request):
         from scoring.security_scorer import SecurityScore as _SS, _score_to_risk, _score_to_recommendation
         security = _SS(score=5, risk_level=_score_to_risk(5), flags=[], recommendation=_score_to_recommendation(5))
 
+    # ── Step 4c: Security-based score cap ────────────────────────────────────
+    _sec_score = getattr(security, 'score', 5)
+    if _sec_score <= 3 and deal_score.score > 5:
+        deal_score.score = min(deal_score.score, 5)
+        deal_score.should_buy = False
+        if not deal_score.red_flags:
+            deal_score.red_flags = []
+        deal_score.red_flags.insert(0, f"Score capped due to high security risk (security {_sec_score}/10)")
+        log.info(f"[SecurityCap] Score capped to {deal_score.score} (security={_sec_score})")
+    elif _sec_score <= 4 and deal_score.score > 6:
+        deal_score.score = min(deal_score.score, 6)
+        log.info(f"[SecurityCap] Score capped to {deal_score.score} (security={_sec_score})")
+
     # ── Step 5: Serialize ────────────────────────────────────────────────────
     from dataclasses import asdict as dc_asdict
     sold_items_sample   = [dc_asdict(i) for i in (market_value.sold_items_sample   or [])]
@@ -1096,6 +1109,19 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
             except Exception:
                 from scoring.security_scorer import SecurityScore as _SS, _score_to_risk, _score_to_recommendation
                 security = _SS(score=5, risk_level=_score_to_risk(5), flags=[], recommendation=_score_to_recommendation(5))
+
+            # ── Step 4b: Security-based score cap ────────────────────────────
+            _sec_score = getattr(security, 'score', 5)
+            if _sec_score <= 3 and deal_score.score > 5:
+                deal_score.score = min(deal_score.score, 5)
+                deal_score.should_buy = False
+                if not deal_score.red_flags:
+                    deal_score.red_flags = []
+                deal_score.red_flags.insert(0, f"Score capped due to high security risk (security {_sec_score}/10)")
+                log.info(f"[SecurityCap] Score capped to {deal_score.score} (security={_sec_score})")
+            elif _sec_score <= 4 and deal_score.score > 6:
+                deal_score.score = min(deal_score.score, 6)
+                log.info(f"[SecurityCap] Score capped to {deal_score.score} (security={_sec_score})")
 
             # ── Step 5: Serialize ─────────────────────────────────────────────
             sold_items_sample   = [_dc_asdict(i) for i in (market_value.sold_items_sample   or [])]
