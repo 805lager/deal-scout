@@ -979,6 +979,29 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
             # Send extracted data immediately — panel shows title/price now
             yield _sse({"type": "extracted", "data": extracted})
 
+            # Guard: $0 price — cannot evaluate deal value
+            if price <= 0:
+                log.info(f"[ZeroPrice][Stream] '{title}' has ${price} — returning low-confidence score")
+                yield _sse({"type": "score", "data": {
+                    "title": title, "price": 0,
+                    "condition": extracted.get("condition", ""), "location": extracted.get("location", ""),
+                    "score": 3, "verdict": "Price missing or $0 — cannot evaluate deal value",
+                    "summary": "This listing has no price or a $0 price. Without a price, we can't determine if this is a good deal.",
+                    "value_assessment": "Cannot assess value without a price",
+                    "condition_notes": "",
+                    "should_buy": False, "ai_confidence": "low", "model_used": "none",
+                    "security_score": {},
+                    "data_source": "none", "market_confidence": "none",
+                    "estimated_value": 0, "sold_avg": 0, "sold_low": 0, "sold_high": 0,
+                    "active_avg": 0, "active_low": 0, "new_price": 0,
+                    "sold_count": 0,
+                    "sold_items_sample": [], "active_items_sample": [],
+                    "red_flags": ["Price is $0 — cannot score deal value"],
+                    "green_flags": [],
+                    "recommended_offer": 0,
+                }})
+                return
+
             # ── Cache check ──────────────────────────────────────────────────
             _ck = _cache_key(title, price)
             _cached = _cache_get(_ck)
