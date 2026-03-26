@@ -37,7 +37,7 @@
 
   // ── Detection ──────────────────────────────────────────────────────────────
   function isListingPage() {
-    return /(www\.)?offerup\.com\/item\/detail\//.test(location.href);
+    return /(www\.)?offerup\.com\/item\//.test(location.href);
   }
 
   // ── Extraction (React SPA — wait for DOM to hydrate) ───────────────────────

@@ -34,7 +34,7 @@
 
   // ── Detection ──────────────────────────────────────────────────────────────
   function isListingPage() {
-    return /ebay\.com\/(itm|p)\//.test(location.href);
+    return /ebay\.(com|co\.uk|ca|com\.au|de|fr|it|es)\/(itm|p)\//.test(location.href);
   }
 
   // ── Extraction ─────────────────────────────────────────────────────────────
