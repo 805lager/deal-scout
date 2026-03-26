@@ -51,7 +51,8 @@
     },
     {
       "matches": [
-        "https://www.ebay.com/itm/*"
+        "https://www.ebay.com/itm/*",
+        "https://www.ebay.com/p/*"
       ],
       "js": [
         "content/ebay.js"
