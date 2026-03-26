@@ -749,7 +749,7 @@
       });
 
       chrome.runtime.sendMessage({ type: "BADGE_UPDATE", score: response.score });
-      renderResult(response);
+      renderScore(response);
     } catch (err) {
       showPanel();
       renderError(err.message || "Scoring failed");
