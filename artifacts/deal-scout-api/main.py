@@ -2791,14 +2791,19 @@ async def _build_daily_summary() -> dict:
 
     try:
         await _ensure_affiliate_events_table()
-        imp_row = await pool.fetchrow(
-            """SELECT COUNT(*) AS total_impressions
+        imp_rows = await pool.fetch(
+            """SELECT el->>'program' AS program, COUNT(*) AS impressions
                FROM deal_scores,
                     jsonb_array_elements(affiliate_impressions_json) AS el
                WHERE affiliate_impressions_json IS NOT NULL
                  AND affiliate_impressions_json != 'null'::jsonb
-                 AND created_at > now() - interval '24 hours'"""
+                 AND created_at > now() - interval '24 hours'
+               GROUP BY el->>'program'
+               ORDER BY impressions DESC"""
         )
+        imps_by_program = {r["program"]: r["impressions"] for r in imp_rows}
+        total_imps = sum(imps_by_program.values())
+
         click_rows = await pool.fetch(
             """SELECT program, COUNT(*) AS clicks
                FROM affiliate_events
@@ -2808,14 +2813,36 @@ async def _build_daily_summary() -> dict:
                ORDER BY clicks DESC
                LIMIT 10"""
         )
-        total_clicks = sum(r["clicks"] for r in click_rows)
-        total_imps = imp_row["total_impressions"] if imp_row else 0
-        ctr = f"{(total_clicks/total_imps*100):.1f}%" if total_imps > 0 else "—"
+        clicks_by_program = {r["program"]: r["clicks"] for r in click_rows}
+        total_clicks = sum(clicks_by_program.values())
+
+        all_programs = sorted(set(list(imps_by_program.keys()) + list(clicks_by_program.keys())))
+        program_breakdown = {}
+        for prog in all_programs:
+            p_imps = imps_by_program.get(prog, 0)
+            p_clicks = clicks_by_program.get(prog, 0)
+            p_ctr = f"{(p_clicks/p_imps*100):.1f}%" if p_imps > 0 else "—"
+            program_breakdown[prog] = {"impressions": p_imps, "clicks": p_clicks, "ctr": p_ctr}
+
+        overall_ctr = f"{(total_clicks/total_imps*100):.1f}%" if total_imps > 0 else "—"
+
+        position_rows = await pool.fetch(
+            """SELECT position, COUNT(*) AS clicks
+               FROM affiliate_events
+               WHERE event = 'affiliate_click'
+                 AND created_at > now() - interval '24 hours'
+                 AND position IS NOT NULL
+               GROUP BY position
+               ORDER BY clicks DESC
+               LIMIT 5"""
+        )
+
         summary["affiliate"] = {
             "impressions": total_imps,
             "clicks": total_clicks,
-            "ctr": ctr,
-            "by_program": {r["program"]: r["clicks"] for r in click_rows},
+            "ctr": overall_ctr,
+            "by_program": program_breakdown,
+            "by_position": {f"pos {r['position']}": r["clicks"] for r in position_rows},
         }
     except Exception as e:
         log.warning(f"[DailySummary] Affiliate query failed: {e}")
@@ -2872,9 +2899,17 @@ async def _send_daily_discord_summary():
 
     aff_lines = []
     if a.get("clicks", 0) > 0:
-        aff_lines.append(f"Impressions: {a['impressions']} · Clicks: {a['clicks']} · CTR: {a['ctr']}")
-        for prog, cnt in list(a.get("by_program", {}).items())[:5]:
-            aff_lines.append(f"  {prog}: {cnt} clicks")
+        aff_lines.append(f"**Overall:** {a['impressions']} imps · {a['clicks']} clicks · {a['ctr']} CTR")
+        by_prog = a.get("by_program", {})
+        for prog, stats in list(by_prog.items())[:5]:
+            if isinstance(stats, dict):
+                aff_lines.append(f"  {prog}: {stats['impressions']} imps · {stats['clicks']} clicks · {stats['ctr']} CTR")
+            else:
+                aff_lines.append(f"  {prog}: {stats} clicks")
+        by_pos = a.get("by_position", {})
+        if by_pos:
+            pos_parts = [f"{k}: {v}" for k, v in by_pos.items()]
+            aff_lines.append(f"**Positions:** {' · '.join(pos_parts)}")
     else:
         aff_lines.append("No affiliate clicks today")
 
