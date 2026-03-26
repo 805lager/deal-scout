@@ -721,7 +721,6 @@
     if (_scored) return;
     _scored = true;
     if (_observer) { _observer.disconnect(); _observer = null; }
-    const snapUrl = location.href;
 
     const rawData = extractRaw();
     if (!rawData.raw_text || rawData.raw_text.length < 100) {
@@ -730,7 +729,31 @@
       return;
     }
 
-    await callStreamingAPI(rawData, snapUrl);
+    showPanel();
+    renderLoading({});
+
+    try {
+      const response = await new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage(
+          { type: "SCORE_LISTING", listing: rawData, listingId: location.href },
+          (resp) => {
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message));
+            } else if (resp && resp.success) {
+              resolve(resp.result);
+            } else {
+              reject(new Error((resp && resp.error) || "Scoring failed"));
+            }
+          }
+        );
+      });
+
+      chrome.runtime.sendMessage({ type: "BADGE_UPDATE", score: response.score });
+      renderResult(response);
+    } catch (err) {
+      showPanel();
+      renderError(err.message || "Scoring failed");
+    }
   }
 
   function waitForContent() {
