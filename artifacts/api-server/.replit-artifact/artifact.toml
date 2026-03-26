@@ -1,5 +1,5 @@
 kind = "api"
-previewPath = "/api" # TODO - should be excluded from preview in the first place
+previewPath = "/api"
 title = "API Server"
 version = "1.0.0"
 id = "3B4_FFSkEVBkAeYMFRJ2e"
@@ -13,13 +13,13 @@ paths = ["/api"]
 run = "pnpm --filter @workspace/api-server run dev"
 
 [services.production]
-build = "pnpm --filter @workspace/api-server run build"
+build = "pnpm --filter @workspace/api-server run build && pip install -r artifacts/deal-scout-api/requirements.txt"
 
 [services.production.run]
-args = ["node", "artifacts/api-server/dist/index.cjs"]
+args = ["sh", "-c", "cd /home/runner/workspace/artifacts/deal-scout-api && uvicorn main:app --host 0.0.0.0 --port 8000 & PORT=8080 node /home/runner/workspace/artifacts/api-server/dist/index.cjs"]
 
 [services.production.run.env]
 PORT = "8080"
 
 [services.production.health.startup]
-path = "/api/healthz"
+path = "/api/ds/health"

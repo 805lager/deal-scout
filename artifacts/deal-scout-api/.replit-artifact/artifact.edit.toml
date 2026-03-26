@@ -1,0 +1,25 @@
+kind = "api"
+previewPath = "/api/ds"
+title = "Deal Scout API"
+version = "0.31.1"
+id = "deal-scout-api-001"
+
+[[services]]
+localPort = 8000
+name = "Deal Scout API"
+paths = ["/api/ds"]
+
+[services.development]
+run = "cd artifacts/deal-scout-api && uvicorn main:app --host 0.0.0.0 --port 8000"
+
+[services.production]
+build = "pip install -r artifacts/deal-scout-api/requirements.txt"
+
+[services.production.run]
+args = ["uvicorn", "artifacts.deal-scout-api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+[services.production.run.env]
+PORT = "8000"
+
+[services.production.health.startup]
+path = "/api/ds/health"
