@@ -2728,6 +2728,12 @@ function navTo(idx) {
 </script></body></html>"""
 
 
+_is_production = os.getenv("REPLIT_DEPLOYMENT", "") == "1"
+if _is_production:
+    _root_app = FastAPI()
+    _root_app.mount("/api/ds", app)
+    app = _root_app
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
