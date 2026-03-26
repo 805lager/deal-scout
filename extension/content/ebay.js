@@ -658,7 +658,6 @@
   async function autoScore() {
     if (!isListingPage()) return;
 
-    // Brief poll for page content to fully load (eBay is multi-page but React-rendered)
     let waited = 0;
     while ((document.body.innerText || "").length < 200 && waited < 15) {
       await new Promise(r => setTimeout(r, 200));
@@ -671,17 +670,30 @@
       return;
     }
 
-    const abort = new AbortController();
-    window.__dsEbayAbort = abort;
+    showPanel();
+    renderLoading({});
 
     try {
-      await callStreamingAPI(rawData, abort);
+      const response = await new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage(
+          { type: "SCORE_LISTING", listing: rawData, listingId: location.href },
+          (resp) => {
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message));
+            } else if (resp && resp.success) {
+              resolve(resp.result);
+            } else {
+              reject(new Error((resp && resp.error) || "Scoring failed"));
+            }
+          }
+        );
+      });
+
+      chrome.runtime.sendMessage({ type: "BADGE_UPDATE", score: response.score });
+      renderResult(response);
     } catch (err) {
-      if (abort.signal.aborted) return;
       showPanel();
       renderError(err.message || "Scoring failed");
-    } finally {
-      if (window.__dsEbayAbort === abort) window.__dsEbayAbort = null;
     }
   }
 
