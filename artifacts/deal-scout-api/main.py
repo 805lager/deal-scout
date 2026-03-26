@@ -32,7 +32,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, HTMLResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from typing import Optional
@@ -1622,7 +1622,51 @@ async def test_claude(
     except Exception as e:
         return {"status": "error", "detail": str(e)}
 
-BACKEND_VERSION = "0.26.6"  # bumped with each deploy — check /health to confirm Railway is running latest code
+BACKEND_VERSION = "0.33.1"
+
+@app.get("/privacy", response_class=HTMLResponse)
+async def privacy_policy():
+    return """<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Deal Scout — Privacy Policy</title>
+<style>body{font-family:-apple-system,system-ui,sans-serif;max-width:720px;margin:40px auto;padding:0 20px;line-height:1.6;color:#222}
+h1{font-size:1.6em}h2{font-size:1.2em;margin-top:1.5em}ul{padding-left:1.4em}</style></head>
+<body>
+<h1>Deal Scout Privacy Policy</h1>
+<p><strong>Effective date:</strong> March 26, 2026</p>
+<p>Deal Scout is a Chrome extension that helps shoppers evaluate deals on Facebook Marketplace, Craigslist, eBay, and OfferUp.</p>
+
+<h2>Data We Collect</h2>
+<ul>
+<li><strong>Listing data you view:</strong> When you browse a supported listing page, the extension sends the listing title, price, description, condition, location, seller name, and listing photos to our scoring API for analysis. This data is used solely to generate your deal score and is not stored permanently.</li>
+<li><strong>Anonymized market signals:</strong> We record aggregated, anonymized pricing data (category, condition, city-level location, price ranges) to improve our market intelligence. No personally identifiable information (PII) is included.</li>
+<li><strong>Affiliate click events:</strong> When you click an affiliate link (e.g., Amazon, eBay), we record the click event (program name, category, price bucket) to measure performance. No user IDs or browsing history are stored.</li>
+</ul>
+
+<h2>Data We Do NOT Collect</h2>
+<ul>
+<li>We do not collect your name, email, IP address, or any account credentials.</li>
+<li>We do not track your browsing history outside of supported listing pages.</li>
+<li>We do not sell or share personal data with third parties.</li>
+<li>We do not use cookies or fingerprinting.</li>
+</ul>
+
+<h2>Third-Party Services</h2>
+<ul>
+<li><strong>Claude AI (Anthropic):</strong> Listing text and photos are sent to Claude AI for deal analysis. Anthropic's privacy policy applies to data processed by their models.</li>
+<li><strong>eBay Finding API:</strong> Product titles are sent to eBay's API to fetch comparable sold/active listings for price comparison.</li>
+<li><strong>Affiliate links:</strong> Clicking a "Compare" or "Buy New" card opens Amazon, eBay, Back Market, or other retailer sites via affiliate links. Those sites have their own privacy policies.</li>
+</ul>
+
+<h2>Data Retention</h2>
+<p>Scoring results are cached in memory for up to 30 minutes to speed up repeat views, then discarded. Anonymized market signals are retained indefinitely. Affiliate click events are retained for analytics purposes.</p>
+
+<h2>Your Rights</h2>
+<p>Since we do not collect PII, there is no personal data to delete. If you have questions, contact us at <strong>dealscout@proton.me</strong>.</p>
+
+<h2>Changes</h2>
+<p>We may update this policy occasionally. Changes will be posted on this page.</p>
+</body></html>"""
 
 @app.get("/health")
 async def health():
