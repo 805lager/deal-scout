@@ -100,7 +100,16 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 ## Extension Version
 
-Current: **v0.29.9** — Enhanced security check (warnings + positives + checks list) + CarGurus affiliate for vehicles + speed optimizations
+Current: **v0.32.0** (extension) / **v0.33.0** (API)
+
+### v0.33.0 API Scoring Fixes
+- Security ≤3 unconditionally forces `should_buy=False` (not just score cap)
+- $0 price guard returns structured response early (no pipeline crash)
+- Price/score ratio post-adjustment: >1.5x overpriced → cap 5, <0.4x underpriced + safe → floor 7
+- eBay relevance threshold lowered 0.35→0.28 for better match rates
+- Claude pricer handles misspellings (Jakery→Jackery) and unreleased products
+- eBay refinement + product eval run in parallel (saves ~1-2s)
+- All fixes applied to both standard and streaming endpoints
 
 Key mechanisms in `extension/content/fbm.js`:
 - **MutationObserver settling**: Waits for DOM mutations to stop for 1s (max 8s) before extracting content. Observes document.body to catch overlay changes.
