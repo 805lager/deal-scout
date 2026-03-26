@@ -14,6 +14,13 @@
     "https://www.craigslist.org/*",
     "https://*.craigslist.org/*",
     "https://www.ebay.com/*",
+    "https://www.ebay.co.uk/*",
+    "https://www.ebay.ca/*",
+    "https://www.ebay.com.au/*",
+    "https://www.ebay.de/*",
+    "https://www.ebay.fr/*",
+    "https://www.ebay.it/*",
+    "https://www.ebay.es/*",
     "https://offerup.com/*",
     "https://www.offerup.com/*",
     "https://*.replit.dev/*",
@@ -52,7 +59,21 @@
     {
       "matches": [
         "https://www.ebay.com/itm/*",
-        "https://www.ebay.com/p/*"
+        "https://www.ebay.com/p/*",
+        "https://www.ebay.co.uk/itm/*",
+        "https://www.ebay.co.uk/p/*",
+        "https://www.ebay.ca/itm/*",
+        "https://www.ebay.ca/p/*",
+        "https://www.ebay.com.au/itm/*",
+        "https://www.ebay.com.au/p/*",
+        "https://www.ebay.de/itm/*",
+        "https://www.ebay.de/p/*",
+        "https://www.ebay.fr/itm/*",
+        "https://www.ebay.fr/p/*",
+        "https://www.ebay.it/itm/*",
+        "https://www.ebay.it/p/*",
+        "https://www.ebay.es/itm/*",
+        "https://www.ebay.es/p/*"
       ],
       "js": [
         "content/ebay.js"
@@ -62,7 +83,9 @@
     {
       "matches": [
         "https://offerup.com/item/detail/*",
-        "https://www.offerup.com/item/detail/*"
+        "https://www.offerup.com/item/detail/*",
+        "https://offerup.com/item/*",
+        "https://www.offerup.com/item/*"
       ],
       "js": [
         "content/offerup.js"
