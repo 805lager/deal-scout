@@ -383,6 +383,27 @@ async def score_listing(listing: ListingRequest, request: Request):
             detail="Could not read the listing title — please wait for the page to fully load and try again."
         )
 
+    if listing.price <= 0:
+        log.info(f"[ZeroPrice] Listing '{listing.title}' has ${listing.price} — returning low-confidence score")
+        return DealScoreResponse(
+            title=listing.title, price=0,
+            condition=listing.condition or "", location=listing.location or "",
+            score=3, verdict="Price missing or $0 — cannot evaluate deal value",
+            summary="This listing has no price or a $0 price. Without a price, we can't determine if this is a good deal.",
+            value_assessment="Cannot assess value without a price",
+            condition_notes="",
+            should_buy=False, ai_confidence="low", model_used="none",
+            security_score={},
+            data_source="none", market_confidence="none",
+            estimated_value=0, sold_avg=0, sold_low=0, sold_high=0,
+            active_avg=0, active_low=0, new_price=0,
+            sold_count=0,
+            sold_items_sample=[], active_items_sample=[],
+            red_flags=["Price is $0 — cannot score deal value"],
+            green_flags=[],
+            recommended_offer=0,
+        )
+
     # ── Step 1+2: OVERLAPPED — product extraction + preliminary eBay ────────────
     # WHY OVERLAP: product extraction (Haiku, ~1s) and eBay (~2-3s) were sequential.
     # We now launch both at the same time using the raw title as the preliminary eBay
@@ -437,35 +458,51 @@ async def score_listing(listing: ListingRequest, request: Request):
     if _ebay_mocked and extracted_q != raw_q:
         log.info(f"[Speed] Skipping eBay refinement — circuit open, mock data unchanged")
 
-    try:
-        if need_refine:
-            log.info(f"[Speed] Refining eBay: '{raw_title_query}' → '{product_info.search_query}'")
-            market_value = await get_market_value(
-                listing_title     = product_info.search_query,
-                listing_condition = listing.condition,
-                is_vehicle        = listing.is_vehicle,
-                listing_price     = listing.price,
-            )
-        else:
-            log.info(f"[Speed] Using preliminary eBay result for '{raw_title_query}'")
-            market_value = prelim_market
-    except Exception as e:
-        log.error(f"Refinement step failed: {e}")
-        market_value = prelim_market  # fall back to preliminary result
-
-    # FIX: Always re-run product evaluation with the correct brand/model once extracted.
-    # Previously gated on `need_refine` — meaning it never ran when eBay was mocked,
-    # causing reliabilityTier to always be "unknown" (preliminary call uses brand="").
+    _refine_coro = None
+    _eval_coro = None
+    if need_refine:
+        log.info(f"[Speed] Refining eBay: '{raw_title_query}' → '{product_info.search_query}'")
+        _refine_coro = get_market_value(
+            listing_title     = product_info.search_query,
+            listing_condition = listing.condition,
+            is_vehicle        = listing.is_vehicle,
+            listing_price     = listing.price,
+        )
     if product_info.brand:
+        _eval_coro = evaluate_product(
+            brand        = product_info.brand,
+            model        = product_info.model,
+            category     = product_info.category,
+            display_name = product_info.display_name,
+        )
+
+    if _refine_coro and _eval_coro:
+        _refined_mv, _refined_eval = await asyncio.gather(
+            _refine_coro, _eval_coro, return_exceptions=True,
+        )
+        if not isinstance(_refined_mv, Exception):
+            market_value = _refined_mv
+        else:
+            log.error(f"Refinement step failed: {_refined_mv}")
+            market_value = prelim_market
+        if not isinstance(_refined_eval, Exception):
+            product_eval = _refined_eval
+    elif _refine_coro:
         try:
-            product_eval = await evaluate_product(
-                brand        = product_info.brand,
-                model        = product_info.model,
-                category     = product_info.category,
-                display_name = product_info.display_name,
-            )
+            market_value = await _refine_coro
+        except Exception as e:
+            log.error(f"Refinement step failed: {e}")
+            market_value = prelim_market
+    elif _eval_coro:
+        log.info(f"[Speed] Using preliminary eBay result for '{raw_title_query}'")
+        market_value = prelim_market
+        try:
+            product_eval = await _eval_coro
         except Exception as _eval_err:
             log.warning(f"Product eval refinement failed: {_eval_err}")
+    else:
+        log.info(f"[Speed] Using preliminary eBay result for '{raw_title_query}'")
+        market_value = prelim_market
 
     # ── Step 3: Claude deal scoring ──────────────────────────────────────────
     from dataclasses import asdict as dc_asdict
@@ -637,16 +674,42 @@ async def score_listing(listing: ListingRequest, request: Request):
 
     # ── Step 4c: Security-based score cap ────────────────────────────────────
     _sec_score = getattr(security, 'score', 5)
-    if _sec_score <= 3 and deal_score.score > 5:
-        deal_score.score = min(deal_score.score, 5)
+    if _sec_score <= 3:
         deal_score.should_buy = False
+        if deal_score.score > 5:
+            deal_score.score = min(deal_score.score, 5)
         if not deal_score.red_flags:
             deal_score.red_flags = []
         deal_score.red_flags.insert(0, f"Score capped due to high security risk (security {_sec_score}/10)")
-        log.info(f"[SecurityCap] Score capped to {deal_score.score} (security={_sec_score})")
+        log.info(f"[SecurityCap] Score capped to {deal_score.score}, should_buy=False (security={_sec_score})")
     elif _sec_score <= 4 and deal_score.score > 6:
         deal_score.score = min(deal_score.score, 6)
         log.info(f"[SecurityCap] Score capped to {deal_score.score} (security={_sec_score})")
+
+    # ── Step 4d: Price-to-market ratio adjustment ────────────────────────────
+    # Catches cases where AI scored opposite to the objective price gap.
+    # Example: listing at $175 vs market $85 → overpriced, but AI gave 7/10.
+    _ev = market_value.estimated_value
+    if _ev > 0 and listing.price > 0 and market_value.confidence not in ("suspect", "none"):
+        _price_ratio = listing.price / _ev
+        if _price_ratio > 1.5 and deal_score.score > 5:
+            _old = deal_score.score
+            deal_score.score = min(deal_score.score, 5)
+            deal_score.should_buy = False
+            log.info(f"[RatioAdj] Overpriced {_price_ratio:.1f}x market — score {_old} → {deal_score.score}")
+        elif _price_ratio > 1.2 and deal_score.score > 6:
+            _old = deal_score.score
+            deal_score.score = min(deal_score.score, 6)
+            log.info(f"[RatioAdj] Above market {_price_ratio:.1f}x — score {_old} → {deal_score.score}")
+        elif _price_ratio < 0.4 and deal_score.score < 6 and _sec_score > 5:
+            _old = deal_score.score
+            deal_score.score = max(deal_score.score, 7)
+            deal_score.should_buy = True
+            log.info(f"[RatioAdj] Deep discount {_price_ratio:.1f}x market — score {_old} → {deal_score.score}")
+        elif _price_ratio < 0.6 and deal_score.score < 5 and _sec_score > 5:
+            _old = deal_score.score
+            deal_score.score = max(deal_score.score, 6)
+            log.info(f"[RatioAdj] Good discount {_price_ratio:.1f}x market — score {_old} → {deal_score.score}")
 
     # ── Step 5: Serialize ────────────────────────────────────────────────────
     from dataclasses import asdict as dc_asdict
@@ -1155,16 +1218,40 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
 
             # ── Step 4b: Security-based score cap ────────────────────────────
             _sec_score = getattr(security, 'score', 5)
-            if _sec_score <= 3 and deal_score.score > 5:
-                deal_score.score = min(deal_score.score, 5)
+            if _sec_score <= 3:
                 deal_score.should_buy = False
+                if deal_score.score > 5:
+                    deal_score.score = min(deal_score.score, 5)
                 if not deal_score.red_flags:
                     deal_score.red_flags = []
                 deal_score.red_flags.insert(0, f"Score capped due to high security risk (security {_sec_score}/10)")
-                log.info(f"[SecurityCap] Score capped to {deal_score.score} (security={_sec_score})")
+                log.info(f"[SecurityCap] Score capped to {deal_score.score}, should_buy=False (security={_sec_score})")
             elif _sec_score <= 4 and deal_score.score > 6:
                 deal_score.score = min(deal_score.score, 6)
                 log.info(f"[SecurityCap] Score capped to {deal_score.score} (security={_sec_score})")
+
+            # ── Step 4c: Price-to-market ratio adjustment ─────────────────────
+            _ev = market_value.estimated_value
+            if _ev > 0 and listing.price > 0 and market_value.confidence not in ("suspect", "none"):
+                _price_ratio = listing.price / _ev
+                if _price_ratio > 1.5 and deal_score.score > 5:
+                    _old = deal_score.score
+                    deal_score.score = min(deal_score.score, 5)
+                    deal_score.should_buy = False
+                    log.info(f"[RatioAdj] Overpriced {_price_ratio:.1f}x market — score {_old} → {deal_score.score}")
+                elif _price_ratio > 1.2 and deal_score.score > 6:
+                    _old = deal_score.score
+                    deal_score.score = min(deal_score.score, 6)
+                    log.info(f"[RatioAdj] Above market {_price_ratio:.1f}x — score {_old} → {deal_score.score}")
+                elif _price_ratio < 0.4 and deal_score.score < 6 and _sec_score > 5:
+                    _old = deal_score.score
+                    deal_score.score = max(deal_score.score, 7)
+                    deal_score.should_buy = True
+                    log.info(f"[RatioAdj] Deep discount {_price_ratio:.1f}x market — score {_old} → {deal_score.score}")
+                elif _price_ratio < 0.6 and deal_score.score < 5 and _sec_score > 5:
+                    _old = deal_score.score
+                    deal_score.score = max(deal_score.score, 6)
+                    log.info(f"[RatioAdj] Good discount {_price_ratio:.1f}x market — score {_old} → {deal_score.score}")
 
             # ── Step 5: Serialize ─────────────────────────────────────────────
             sold_items_sample   = [_dc_asdict(i) for i in (market_value.sold_items_sample   or [])]

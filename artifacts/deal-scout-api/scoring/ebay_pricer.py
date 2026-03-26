@@ -513,7 +513,7 @@ def _title_relevance_score(ebay_title: str, search_query: str) -> float:
 def _filter_by_relevance(
     items: list[dict],
     search_query: str,
-    threshold: float = 0.35,
+    threshold: float = 0.28,
     max_items: int = 4,
 ) -> list[dict]:
     """
@@ -557,7 +557,7 @@ def parse_ebay_items_with_images(
     Falls back to no filtering when search_query is empty.
     """
     # Apply relevance filter first — removes mismatched items before we parse
-    filtered = _filter_by_relevance(items, search_query, threshold=0.35, max_items=max_items * 2) \
+    filtered = _filter_by_relevance(items, search_query, threshold=0.28, max_items=max_items * 2) \
                if search_query else items
 
     if search_query and len(filtered) < len(items):
@@ -740,8 +740,8 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
     # filtering, those wrong prices pollute the average.
     # Only filter live results — mock data is pre-seeded and internally consistent.
     if not ebay_is_mock and query:
-        sold_raw_f   = _filter_by_relevance(sold_raw,   query, threshold=0.35, max_items=20)
-        active_raw_f = _filter_by_relevance(active_raw, query, threshold=0.35, max_items=20)
+        sold_raw_f   = _filter_by_relevance(sold_raw,   query, threshold=0.28, max_items=20)
+        active_raw_f = _filter_by_relevance(active_raw, query, threshold=0.28, max_items=20)
     else:
         sold_raw_f, active_raw_f = sold_raw, active_raw
 

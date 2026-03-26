@@ -86,11 +86,15 @@ Return ONLY a JSON object with this exact structure:
   "notes": "<one sentence about what drives pricing for this item>"
 }}
 
-Base your answer on typical US marketplace prices (eBay, Facebook Marketplace, Craigslist).
-For used prices, reflect what items actually SELL for — not asking prices.
-For new_retail: use the EXACT current Amazon/street price for this specific model. Budget/entry-level items typically retail for $50–300. If you are confusing this model with a premium variant, use 0 instead.
-If you're uncertain about this specific item, use "low" confidence and provide a rough estimate.
-Do NOT hallucinate — if you truly don't know, return avg_used_price: 0 and confidence: "low".
+Rules:
+- Base your answer on typical US marketplace prices (eBay, Facebook Marketplace, Craigslist).
+- For used prices, reflect what items actually SELL for — not asking prices.
+- For new_retail: use the EXACT current Amazon/street price for this specific model. Budget/entry-level items typically retail for $50–300. If you are confusing this model with a premium variant, use 0 instead.
+- If the item name contains a likely MISSPELLING, correct it (e.g. "Jakery" → Jackery, "Sonos" → Sonos) and price the corrected product. Note the correction in item_id.
+- If the item does NOT EXIST yet (unreleased product, future model), still provide a rough estimate based on the closest existing model and use "low" confidence.
+- If you're uncertain about this specific item, use "low" confidence and provide your best rough estimate rather than returning 0.
+- Do NOT return avg_used_price: 0 unless the item is truly unidentifiable. A rough estimate is always better than no estimate.
+- Do NOT hallucinate prices — if genuinely unknown, return avg_used_price: 0 and confidence: "low".
 Return ONLY the JSON, no explanation."""
 
     try:
