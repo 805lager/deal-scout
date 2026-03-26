@@ -53,21 +53,63 @@ from dataclasses import asdict as dc_asdict_top
 import time as _time
 import json as _json
 from datetime import datetime
-from collections import deque
 
-# In-memory event buffer — batched before write to avoid per-event I/O
-# In production this would flush to a database or analytics service
-_event_buffer: deque = deque(maxlen=10000)
-_event_file = Path(__file__).parent.parent / "data" / "analytics_events.jsonl"
 
-# Ensure data/ directory exists at startup.
-# WHY: data/ is gitignored (may contain PII) so it won't exist on a fresh
-# Railway container or new dev checkout. Any code that writes to _event_file
-# or REPORTS_FILE will silently fail without this guard.
 try:
-    _event_file.parent.mkdir(parents=True, exist_ok=True)
-except Exception as _mkdir_err:
-    print(f"[Startup] Warning: could not create data/ dir: {_mkdir_err}")
+    Path(__file__).parent.parent.joinpath("data").mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
+
+_affiliate_events_table_ensured = False
+
+async def _ensure_affiliate_events_table():
+    global _affiliate_events_table_ensured
+    if _affiliate_events_table_ensured:
+        return
+    from scoring.data_pipeline import _get_pool
+    pool = await _get_pool()
+    if not pool:
+        return
+    await pool.execute("""
+        CREATE TABLE IF NOT EXISTS affiliate_events (
+            id serial PRIMARY KEY,
+            created_at timestamptz DEFAULT now(),
+            event text NOT NULL,
+            program text DEFAULT '',
+            category text DEFAULT '',
+            price_bucket text DEFAULT '',
+            card_type text DEFAULT '',
+            deal_score int DEFAULT 0,
+            position int DEFAULT 0,
+            selection_reason text DEFAULT '',
+            commission_live boolean DEFAULT false
+        )
+    """)
+    _affiliate_events_table_ensured = True
+
+_corrections_table_ensured = False
+
+async def _ensure_corrections_table():
+    global _corrections_table_ensured
+    if _corrections_table_ensured:
+        return
+    from scoring.data_pipeline import _get_pool
+    pool = await _get_pool()
+    if not pool:
+        return
+    await pool.execute("""
+        CREATE TABLE IF NOT EXISTS query_corrections (
+            id serial PRIMARY KEY,
+            created_at timestamptz DEFAULT now(),
+            listing_title text NOT NULL,
+            bad_query text DEFAULT '',
+            good_query text DEFAULT '',
+            correct_price_low float DEFAULT 0,
+            correct_price_high float DEFAULT 0,
+            notes text DEFAULT ''
+        )
+    """)
+    _corrections_table_ensured = True
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -1342,7 +1384,7 @@ async def _validate_query_background(
         if result.get("relevant") is False:
             better = (result.get("better_query") or "").strip()
             if better and better.lower() != query_used.lower():
-                _save_correction(
+                await _save_correction(
                     listing_title = listing_title,
                     bad_query     = query_used,
                     good_query    = better,
@@ -1501,47 +1543,34 @@ class AnalyticsEvent(BaseModel):
 async def record_event(evt: AnalyticsEvent, request: Request):
     """
     Receive an anonymous analytics event from the extension.
-
-    WHY THIS EXISTS:
-      Affiliate click data is the foundation of the market intelligence product.
-      Over time, aggregate data tells us: which categories have the biggest
-      used-vs-new price gap, which affiliate programs convert best per category,
-      which card positions get the most clicks, and what selection reasons drive action.
-
-    PRIVACY:
-      No user ID, IP, listing URL, or identifiable data is stored.
-      Only category-level, price-bucketed, aggregated signals.
-      GDPR/CCPA compliant by design — nothing to delete.
+    Persists to PostgreSQL affiliate_events table.
     """
     _check_api_key(request)
-    record = {
-        "event":            evt.event,
-        "program":          evt.program,
-        "category":         evt.category,
-        "price_bucket":     evt.price_bucket,
-        "card_type":        evt.card_type,
-        "deal_score":       evt.deal_score,
-        "position":         evt.position,
-        "selection_reason": evt.selection_reason[:120] if evt.selection_reason else "",
-        "commission_live":  evt.commission_live,
-        "hour":             __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:00"),
-    }
-    _event_buffer.append(record)
-
-    # Flush to JSONL file every 10 events
-    if len(_event_buffer) >= 10:
-        try:
-            # Snapshot first — don't clear until write succeeds.
-            # If we cleared before writing and the write failed,
-            # all buffered events would be silently lost.
-            snapshot = list(_event_buffer)
-            with open(_event_file, "a") as f:
-                for r in snapshot:
-                    f.write(_json.dumps(r) + "\n")
-            _event_buffer.clear()
-            log.debug(f"Flushed {len(snapshot)} events to {_event_file.name}")
-        except Exception as e:
-            log.warning(f"Event flush failed: {e}")
+    try:
+        from scoring.data_pipeline import _get_pool
+        await _ensure_affiliate_events_table()
+        pool = await _get_pool()
+        if pool:
+            await pool.execute(
+                """INSERT INTO affiliate_events
+                   (event, program, category, price_bucket, card_type,
+                    deal_score, position, selection_reason, commission_live)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)""",
+                evt.event,
+                evt.program or "",
+                evt.category or "",
+                evt.price_bucket or "",
+                evt.card_type or "",
+                evt.deal_score or 0,
+                evt.position or 0,
+                (evt.selection_reason or "")[:120],
+                evt.commission_live or False,
+            )
+            log.debug(f"[Event] Saved affiliate event: {evt.event} / {evt.program}")
+        else:
+            log.warning("[Event] No DB pool — event not persisted")
+    except Exception as e:
+        log.warning(f"[Event] DB insert failed: {e}")
 
     return {"ok": True}
 
@@ -1800,16 +1829,12 @@ async def submit_thumbs(body: ThumbsRequest, request: Request):
 async def submit_feedback(body: FeedbackRequest, request: Request):
     """
     Accepts a manual query correction from the sidebar or admin page.
-    Saves to corrections.jsonl and immediately affects future scores.
-
-    Example: GoPro listing gets compared to GoPro accessories instead of cameras.
-    Submit: bad_query="GoPro accessories" good_query="GoPro HERO 12 Black camera"
-    Next GoPro listing will use the corrected query automatically.
+    Saves to PostgreSQL query_corrections table and immediately affects future scores.
     """
     _check_api_key(request)
     from scoring.corrections import save_correction
     price_range = [body.correct_price_low, body.correct_price_high] if body.correct_price_low else []
-    ok = save_correction(
+    ok = await save_correction(
         listing_title       = body.listing_title,
         bad_query           = body.bad_query,
         good_query          = body.good_query,
@@ -1829,7 +1854,8 @@ async def admin_page():
     """
     from scoring.corrections import get_all_corrections
     from scoring.data_pipeline import _get_pool
-    corrections = get_all_corrections()
+    await _ensure_corrections_table()
+    corrections = await get_all_corrections()
 
     # ── Fetch recent scored listings ─────────────────────────────────────────
     recent_scores = []
@@ -1897,35 +1923,27 @@ async def admin_page():
     except Exception as _ae:
         log.warning(f"[admin] affiliate impressions query failed: {_ae}")
 
-    # Read click events from JSONL
-    events_path = "data/analytics_events.jsonl"
     try:
-        import json as _json
-        if os.path.exists(events_path):
-            with open(events_path) as _ef:
-                for line in _ef:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        ev = _json.loads(line)
-                        if ev.get("event_type") != "AFFILIATE_CLICK":
-                            continue
-                        prog  = ev.get("program") or ev.get("program_key") or "unknown"
-                        pos   = int(ev.get("position") or 0)
-                        ctype = ev.get("card_type") or "unknown"
-                        if prog not in affiliate_stats:
-                            affiliate_stats[prog] = {"impressions": 0, "clicks": 0, "positions": [], "categories": []}
-                        affiliate_stats[prog]["clicks"] += 1
-                        if 1 <= pos <= 3:
-                            affiliate_by_pos[pos]["clicks"] += 1
-                        if ctype not in affiliate_by_type:
-                            affiliate_by_type[ctype] = {"impressions": 0, "clicks": 0}
-                        affiliate_by_type[ctype]["clicks"] += 1
-                    except Exception:
-                        pass
+        await _ensure_affiliate_events_table()
+        pool2 = await _get_pool()
+        if pool2:
+            click_rows = await pool2.fetch(
+                "SELECT program, position, card_type FROM affiliate_events WHERE event = 'affiliate_click'"
+            )
+            for row in click_rows:
+                prog  = row["program"] or "unknown"
+                pos   = row["position"] or 0
+                ctype = row["card_type"] or "unknown"
+                if prog not in affiliate_stats:
+                    affiliate_stats[prog] = {"impressions": 0, "clicks": 0, "positions": [], "categories": []}
+                affiliate_stats[prog]["clicks"] += 1
+                if 1 <= pos <= 3:
+                    affiliate_by_pos[pos]["clicks"] += 1
+                if ctype not in affiliate_by_type:
+                    affiliate_by_type[ctype] = {"impressions": 0, "clicks": 0}
+                affiliate_by_type[ctype]["clicks"] += 1
     except Exception as _ce:
-        log.warning(f"[admin] click event read failed: {_ce}")
+        log.warning(f"[admin] affiliate click query failed: {_ce}")
 
     def _ctr(clicks, impressions):
         if impressions == 0:
@@ -2727,6 +2745,196 @@ function navTo(idx) {
   currentIdx = idx;
 }
 </script></body></html>"""
+
+
+import asyncio as _asyncio
+
+async def _build_daily_summary() -> dict:
+    from scoring.data_pipeline import _get_pool
+    pool = await _get_pool()
+    if not pool:
+        return {}
+
+    summary = {}
+    try:
+        row = await pool.fetchrow(
+            """SELECT
+                 COUNT(*) AS total,
+                 COUNT(*) FILTER (WHERE platform='facebook_marketplace') AS fbm,
+                 COUNT(*) FILTER (WHERE platform='craigslist') AS cl,
+                 COUNT(*) FILTER (WHERE platform='ebay') AS ebay,
+                 COUNT(*) FILTER (WHERE platform='offerup') AS ou,
+                 ROUND(AVG(score)::numeric, 1) AS avg_score,
+                 COUNT(*) FILTER (WHERE thumbs=1) AS thumbs_up,
+                 COUNT(*) FILTER (WHERE thumbs=-1) AS thumbs_down,
+                 COUNT(*) FILTER (WHERE security_score <= 3) AS high_risk
+               FROM deal_scores
+               WHERE created_at > now() - interval '24 hours'"""
+        )
+        if row:
+            summary["scores"] = dict(row)
+    except Exception as e:
+        log.warning(f"[DailySummary] Scores query failed: {e}")
+
+    try:
+        await _ensure_affiliate_events_table()
+        imp_row = await pool.fetchrow(
+            """SELECT COUNT(*) AS total_impressions
+               FROM deal_scores,
+                    jsonb_array_elements(affiliate_impressions_json) AS el
+               WHERE affiliate_impressions_json IS NOT NULL
+                 AND affiliate_impressions_json != 'null'::jsonb
+                 AND created_at > now() - interval '24 hours'"""
+        )
+        click_rows = await pool.fetch(
+            """SELECT program, COUNT(*) AS clicks
+               FROM affiliate_events
+               WHERE event = 'affiliate_click'
+                 AND created_at > now() - interval '24 hours'
+               GROUP BY program
+               ORDER BY clicks DESC
+               LIMIT 10"""
+        )
+        total_clicks = sum(r["clicks"] for r in click_rows)
+        total_imps = imp_row["total_impressions"] if imp_row else 0
+        ctr = f"{(total_clicks/total_imps*100):.1f}%" if total_imps > 0 else "—"
+        summary["affiliate"] = {
+            "impressions": total_imps,
+            "clicks": total_clicks,
+            "ctr": ctr,
+            "by_program": {r["program"]: r["clicks"] for r in click_rows},
+        }
+    except Exception as e:
+        log.warning(f"[DailySummary] Affiliate query failed: {e}")
+
+    try:
+        await _ensure_corrections_table()
+        corr_row = await pool.fetchrow(
+            "SELECT COUNT(*) AS cnt FROM query_corrections WHERE created_at > now() - interval '24 hours'"
+        )
+        summary["corrections"] = corr_row["cnt"] if corr_row else 0
+    except Exception as e:
+        log.warning(f"[DailySummary] Corrections query failed: {e}")
+
+    try:
+        cat_rows = await pool.fetch(
+            """SELECT category_detected AS cat, COUNT(*) AS cnt
+               FROM deal_scores
+               WHERE created_at > now() - interval '24 hours'
+                 AND category_detected IS NOT NULL AND category_detected != ''
+               GROUP BY category_detected
+               ORDER BY cnt DESC
+               LIMIT 5"""
+        )
+        summary["top_categories"] = {r["cat"]: r["cnt"] for r in cat_rows}
+    except Exception as e:
+        log.warning(f"[DailySummary] Categories query failed: {e}")
+
+    return summary
+
+
+async def _send_daily_discord_summary():
+    discord_url = os.getenv("DISCORD_WEBHOOK_URL")
+    if not discord_url:
+        log.debug("[DailySummary] No DISCORD_WEBHOOK_URL set — skipping")
+        return
+
+    summary = await _build_daily_summary()
+    if not summary:
+        return
+
+    s = summary.get("scores", {})
+    a = summary.get("affiliate", {})
+    corr_count = summary.get("corrections", 0)
+    cats = summary.get("top_categories", {})
+
+    total = s.get("total", 0)
+    if total == 0:
+        log.info("[DailySummary] No scores in last 24h — skipping Discord post")
+        return
+
+    platform_line = f"FBM: {s.get('fbm',0)} · CL: {s.get('cl',0)} · eBay: {s.get('ebay',0)} · OfferUp: {s.get('ou',0)}"
+    thumbs_line = f"👍 {s.get('thumbs_up',0)}  ·  👎 {s.get('thumbs_down',0)}"
+    risk_line = f"🚨 {s.get('high_risk',0)} high-risk flagged" if s.get("high_risk", 0) > 0 else ""
+
+    aff_lines = []
+    if a.get("clicks", 0) > 0:
+        aff_lines.append(f"Impressions: {a['impressions']} · Clicks: {a['clicks']} · CTR: {a['ctr']}")
+        for prog, cnt in list(a.get("by_program", {}).items())[:5]:
+            aff_lines.append(f"  {prog}: {cnt} clicks")
+    else:
+        aff_lines.append("No affiliate clicks today")
+
+    cat_line = " · ".join(f"{c}: {n}" for c, n in cats.items()) if cats else "—"
+
+    fields = [
+        {"name": "📊 Scores", "value": f"**{total}** total  ·  avg **{s.get('avg_score', '—')}**/10\n{platform_line}", "inline": False},
+        {"name": "👍 Feedback", "value": thumbs_line, "inline": True},
+        {"name": "🔗 Affiliate", "value": "\n".join(aff_lines), "inline": False},
+        {"name": "📁 Top Categories", "value": cat_line, "inline": False},
+        {"name": "✏️ Corrections", "value": f"{corr_count} new today", "inline": True},
+    ]
+    if risk_line:
+        fields.append({"name": "⚠️ Security", "value": risk_line, "inline": True})
+
+    payload = {
+        "embeds": [{
+            "title": "📈 Deal Scout — Daily Summary",
+            "color": 0x6366f1,
+            "fields": fields,
+            "footer": {"text": f"Period: last 24 hours · {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"},
+        }]
+    }
+
+    try:
+        import httpx
+        async with httpx.AsyncClient() as client:
+            r = await client.post(discord_url, json=payload, timeout=10.0)
+            if r.status_code < 300:
+                log.info(f"[DailySummary] Discord summary posted ({total} scores)")
+            else:
+                log.warning(f"[DailySummary] Discord responded {r.status_code}: {r.text[:200]}")
+    except Exception as e:
+        log.warning(f"[DailySummary] Discord post failed: {e}")
+
+
+async def _daily_summary_scheduler():
+    while True:
+        now = datetime.utcnow()
+        tomorrow_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        if tomorrow_midnight <= now:
+            tomorrow_midnight = tomorrow_midnight.replace(day=now.day + 1) if now.month == tomorrow_midnight.month else tomorrow_midnight
+            import calendar
+            days_in_month = calendar.monthrange(now.year, now.month)[1]
+            if now.day < days_in_month:
+                tomorrow_midnight = now.replace(day=now.day + 1, hour=0, minute=0, second=0, microsecond=0)
+            else:
+                if now.month < 12:
+                    tomorrow_midnight = now.replace(month=now.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0)
+                else:
+                    tomorrow_midnight = now.replace(year=now.year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        wait_seconds = (tomorrow_midnight - now).total_seconds()
+        log.info(f"[DailySummary] Next summary in {wait_seconds/3600:.1f}h (midnight UTC)")
+        await _asyncio.sleep(wait_seconds)
+
+        try:
+            await _send_daily_discord_summary()
+        except Exception as e:
+            log.error(f"[DailySummary] Scheduler error: {e}")
+
+
+@app.on_event("startup")
+async def _start_daily_summary_task():
+    _asyncio.create_task(_daily_summary_scheduler())
+    log.info("[DailySummary] Background scheduler started")
+
+
+@app.get("/admin/daily-summary")
+async def trigger_daily_summary():
+    """Manual trigger for the daily Discord summary — useful for testing."""
+    await _send_daily_discord_summary()
+    return {"ok": True, "message": "Daily summary sent to Discord (if DISCORD_WEBHOOK_URL is set)"}
 
 
 _is_production = os.getenv("REPLIT_DEPLOYMENT", "") == "1"

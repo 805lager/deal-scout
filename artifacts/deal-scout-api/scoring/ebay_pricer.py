@@ -649,7 +649,7 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
     _locked_price_high = 0.0
     try:
         from scoring.corrections import lookup_correction
-        _corr = lookup_correction(listing_title, query)
+        _corr = await lookup_correction(listing_title, query)
         if _corr:
             if _corr["good_query"] and _corr["good_query"] != query:
                 log.info(f"[Corrections] Query override: '{query}' → '{_corr['good_query']}'"
