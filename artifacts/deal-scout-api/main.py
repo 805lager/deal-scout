@@ -2810,13 +2810,16 @@ async def _build_daily_summary() -> dict:
                WHERE event = 'affiliate_click'
                  AND created_at > now() - interval '24 hours'
                GROUP BY program
-               ORDER BY clicks DESC
-               LIMIT 10"""
+               ORDER BY clicks DESC"""
         )
         clicks_by_program = {r["program"]: r["clicks"] for r in click_rows}
         total_clicks = sum(clicks_by_program.values())
 
-        all_programs = sorted(set(list(imps_by_program.keys()) + list(clicks_by_program.keys())))
+        all_programs = sorted(
+            set(list(imps_by_program.keys()) + list(clicks_by_program.keys())),
+            key=lambda p: clicks_by_program.get(p, 0),
+            reverse=True,
+        )
         program_breakdown = {}
         for prog in all_programs:
             p_imps = imps_by_program.get(prog, 0)
