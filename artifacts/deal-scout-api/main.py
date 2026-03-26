@@ -168,7 +168,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "X-DS-Key"],
+    allow_headers=["Content-Type", "Authorization", "X-DS-Key", "X-DS-Ext-Version",
+                    "Accept", "Accept-Language", "Content-Language"],
 )
 
 
@@ -2731,6 +2732,13 @@ function navTo(idx) {
 _is_production = os.getenv("REPLIT_DEPLOYMENT", "") == "1"
 if _is_production:
     _root_app = FastAPI()
+    _root_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization", "X-DS-Key", "X-DS-Ext-Version",
+                        "Accept", "Accept-Language", "Content-Language"],
+    )
     _root_app.mount("/api/ds", app)
     app = _root_app
 
