@@ -2792,13 +2792,13 @@ async def _build_daily_summary() -> dict:
     try:
         await _ensure_affiliate_events_table()
         imp_rows = await pool.fetch(
-            """SELECT el->>'program' AS program, COUNT(*) AS impressions
+            """SELECT el->>'program_key' AS program, COUNT(*) AS impressions
                FROM deal_scores,
                     jsonb_array_elements(affiliate_impressions_json) AS el
                WHERE affiliate_impressions_json IS NOT NULL
                  AND affiliate_impressions_json != 'null'::jsonb
                  AND created_at > now() - interval '24 hours'
-               GROUP BY el->>'program'
+               GROUP BY el->>'program_key'
                ORDER BY impressions DESC"""
         )
         imps_by_program = {r["program"]: r["impressions"] for r in imp_rows}
