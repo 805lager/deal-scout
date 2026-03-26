@@ -656,28 +656,36 @@
 
   // ── Auto-Score ─────────────────────────────────────────────────────────────
   async function autoScore() {
-    if (!isListingPage()) return;
+    console.log("[DealScout/eBay] autoScore() called, url:", location.href);
+    if (!isListingPage()) {
+      console.log("[DealScout/eBay] Not a listing page — skipping");
+      return;
+    }
 
     let waited = 0;
     while ((document.body.innerText || "").length < 200 && waited < 15) {
       await new Promise(r => setTimeout(r, 200));
       waited++;
     }
+    console.log("[DealScout/eBay] Page content length:", (document.body.innerText || "").length);
 
     const rawData = extractRaw();
+    console.log("[DealScout/eBay] extractRaw:", rawData.raw_text?.length, "chars, platform:", rawData.platform);
     if (!rawData.raw_text || rawData.raw_text.length < 100) {
-      console.debug("[DealScout/eBay] No page content — skipping");
+      console.log("[DealScout/eBay] Raw text too short — skipping");
       return;
     }
 
     showPanel();
     renderLoading({});
+    console.log("[DealScout/eBay] Panel shown, sending SCORE_LISTING to background.js…");
 
     try {
       const response = await new Promise((resolve, reject) => {
         chrome.runtime.sendMessage(
           { type: "SCORE_LISTING", listing: rawData, listingId: location.href },
           (resp) => {
+            console.log("[DealScout/eBay] background.js response:", JSON.stringify(resp)?.slice(0, 200));
             if (chrome.runtime.lastError) {
               reject(new Error(chrome.runtime.lastError.message));
             } else if (resp && resp.success) {
@@ -692,6 +700,7 @@
       chrome.runtime.sendMessage({ type: "BADGE_UPDATE", score: response.score });
       renderScore(response);
     } catch (err) {
+      console.error("[DealScout/eBay] autoScore error:", err);
       showPanel();
       renderError(err.message || "Scoring failed");
     }
@@ -704,6 +713,7 @@
   });
 
   // ── Init ───────────────────────────────────────────────────────────────────
+  console.log("[DealScout/eBay] Content script loaded, isListingPage:", isListingPage(), "url:", location.href);
   if (isListingPage()) setTimeout(autoScore, 1500);
 
 })();
