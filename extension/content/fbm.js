@@ -1,6 +1,6 @@
 /**
  * fbm.js — Deal Scout Content Script for Facebook Marketplace
- * v0.30.0
+ * v0.31.0
  *
  * INJECTED INTO: facebook.com/marketplace/*
  * PURPOSE: Extracts listing data, sends to background.js for scoring,
@@ -24,7 +24,7 @@
 (function () {
   "use strict";
 
-  const VERSION  = '0.30.0';
+  const VERSION  = '0.31.0';
   const PANEL_ID  = "deal-scout-panel";
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
   const DS_API_KEY = "ds_live_098caae54340d797cb216856d0cffe50";

@@ -1,6 +1,6 @@
 /**
  * ebay.js — Deal Scout Content Script for eBay Listings
- * v1.0.0
+ * v0.31.0
  *
  * INJECTED INTO: www.ebay.com/itm/*  (listing detail pages)
  * PURPOSE: Scores eBay used/refurb listings against market comps,
@@ -17,7 +17,7 @@
 (function () {
   "use strict";
 
-  const VERSION  = "0.30.0";
+  const VERSION  = "0.31.0";
   const PANEL_ID = "deal-scout-ebay-panel";
   const PLATFORM = "ebay";
 
@@ -34,7 +34,7 @@
 
   // ── Detection ──────────────────────────────────────────────────────────────
   function isListingPage() {
-    return /ebay\.com\/itm\/\d+/.test(location.href);
+    return /ebay\.com\/itm\//.test(location.href);
   }
 
   // ── Extraction ─────────────────────────────────────────────────────────────

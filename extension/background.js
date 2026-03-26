@@ -1,5 +1,5 @@
 /**
- * background.js — Extension Service Worker (v0.30.0)
+ * background.js — Extension Service Worker (v0.31.0)
  *
  * WHY A SERVICE WORKER:
  *   Manifest V3 replaced background pages with service workers.
@@ -10,7 +10,7 @@
  *     - Badge updates (show deal score on extension icon)
  *     - Tab-level score caching (survives FBM context teardowns)
  *
- * FLOW (v0.30.0 — background-first scoring):
+ * FLOW (v0.31.0 — background-first scoring):
  *   Content script extracts listing data → sends SCORE_LISTING here →
  *   we call the API → cache result per tab → send score back →
  *   content script renders the panel.

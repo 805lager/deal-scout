@@ -20,7 +20,7 @@
 (function () {
   "use strict";
 
-  const VERSION  = '0.30.0';
+  const VERSION  = '0.31.0';
   const PANEL_ID = "deal-scout-ou-panel";
   const PLATFORM = "offerup";
 
@@ -37,7 +37,7 @@
 
   // ── Detection ──────────────────────────────────────────────────────────────
   function isListingPage() {
-    return /offerup\.com\/item\/detail\//.test(location.href);
+    return /(www\.)?offerup\.com\/item\/detail\//.test(location.href);
   }
 
   // ── Extraction (React SPA — wait for DOM to hydrate) ───────────────────────
