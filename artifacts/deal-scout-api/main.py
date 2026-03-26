@@ -2892,9 +2892,6 @@ async def _send_daily_discord_summary():
     cats = summary.get("top_categories", {})
 
     total = s.get("total", 0)
-    if total == 0:
-        log.info("[DailySummary] No scores in last 24h — skipping Discord post")
-        return
 
     platform_line = f"FBM: {s.get('fbm',0)} · CL: {s.get('cl',0)} · eBay: {s.get('ebay',0)} · OfferUp: {s.get('ou',0)}"
     thumbs_line = f"👍 {s.get('thumbs_up',0)}  ·  👎 {s.get('thumbs_down',0)}"
