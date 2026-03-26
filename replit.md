@@ -42,6 +42,10 @@ artifacts/deal-scout-api/
 - `GET /test-claude-connection` — tests Claude API connection
 - `GET /test-ebay` — tests eBay API connection
 - `GET /v1/market-data` — anonymized aggregate market signals (B2B data product)
+- `POST /event` — records affiliate click events to PostgreSQL `affiliate_events` table
+- `POST /feedback` — saves query corrections to PostgreSQL `query_corrections` table
+- `GET /admin` — admin dashboard (reads affiliate clicks + corrections from DB)
+- `GET /admin/daily-summary` — manual trigger for daily Discord digest
 - `GET /admin/dashboard` — data pipeline summary stats
 - `GET /score-log` — comprehensive scoring history (last 500 scorecards); each entry has listing info, deal score, security check, affiliate cards, price comparison, product evaluation, product info — for post-browse audit of every feature
 - `DELETE /score-log` — clears scoring history
@@ -56,7 +60,13 @@ artifacts/deal-scout-api/
 - **20+ other programs** configured in `affiliate_router.py` (search-only; activate by adding env var tag)
 - Cards redesigned: full-width CTA buttons, brand colors, score-aware headers, trust signals
 
-### 2. Market Intelligence Data
+### 2. Analytics & Persistence (PostgreSQL)
+- `affiliate_events` table: records every affiliate click (program, category, price bucket, deal score, position, selection reason, commission status)
+- `query_corrections` table: stores user-submitted query corrections for improving eBay search queries
+- Daily Discord digest: background scheduler fires at midnight UTC, summarizes last 24h of affiliate clicks and corrections. Manual trigger at `GET /admin/daily-summary`. Requires `DISCORD_WEBHOOK_URL` env var.
+- `corrections.py` is fully async with lazy table creation via `_ensure_table()`
+
+### 3. Market Intelligence Data
 - Every `/score` call writes an anonymized signal to `market_signals` PostgreSQL table
 - Signals include: category, item label, condition, city, pricing from all sources, deal score, affiliate programs shown
 - No PII collected — no user IDs, no listing URLs, no seller data

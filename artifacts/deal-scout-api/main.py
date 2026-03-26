@@ -1569,8 +1569,12 @@ async def record_event(evt: AnalyticsEvent, request: Request):
             log.debug(f"[Event] Saved affiliate event: {evt.event} / {evt.program}")
         else:
             log.warning("[Event] No DB pool — event not persisted")
+            raise HTTPException(status_code=503, detail="Database unavailable")
+    except HTTPException:
+        raise
     except Exception as e:
         log.warning(f"[Event] DB insert failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to persist event")
 
     return {"ok": True}
 
@@ -1847,11 +1851,20 @@ async def submit_feedback(body: FeedbackRequest, request: Request):
     return {"ok": True, "message": f"Correction saved. Future scores for similar listings will use: '{body.good_query}'"}
 
 
+def _check_admin_auth(request: Request):
+    if not _DS_API_KEY:
+        return
+    key = request.headers.get("X-DS-Key", "") or request.query_params.get("key", "")
+    if key != _DS_API_KEY:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
 @app.get("/admin")
-async def admin_page():
+async def admin_page(request: Request):
     """
     Admin page: recent scored listings with thumbs, correction log, links.
     """
+    _check_admin_auth(request)
     from scoring.corrections import get_all_corrections
     from scoring.data_pipeline import _get_pool
     await _ensure_corrections_table()
@@ -2899,29 +2912,18 @@ async def _send_daily_discord_summary():
 
 
 async def _daily_summary_scheduler():
+    from datetime import timedelta
     while True:
-        now = datetime.utcnow()
-        tomorrow_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        if tomorrow_midnight <= now:
-            tomorrow_midnight = tomorrow_midnight.replace(day=now.day + 1) if now.month == tomorrow_midnight.month else tomorrow_midnight
-            import calendar
-            days_in_month = calendar.monthrange(now.year, now.month)[1]
-            if now.day < days_in_month:
-                tomorrow_midnight = now.replace(day=now.day + 1, hour=0, minute=0, second=0, microsecond=0)
-            else:
-                if now.month < 12:
-                    tomorrow_midnight = now.replace(month=now.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0)
-                else:
-                    tomorrow_midnight = now.replace(year=now.year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-
-        wait_seconds = (tomorrow_midnight - now).total_seconds()
-        log.info(f"[DailySummary] Next summary in {wait_seconds/3600:.1f}h (midnight UTC)")
-        await _asyncio.sleep(wait_seconds)
-
         try:
+            now = datetime.utcnow()
+            next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            wait_seconds = (next_midnight - now).total_seconds()
+            log.info(f"[DailySummary] Next summary in {wait_seconds/3600:.1f}h (midnight UTC)")
+            await _asyncio.sleep(wait_seconds)
             await _send_daily_discord_summary()
         except Exception as e:
             log.error(f"[DailySummary] Scheduler error: {e}")
+            await _asyncio.sleep(60)
 
 
 @app.on_event("startup")
@@ -2931,8 +2933,9 @@ async def _start_daily_summary_task():
 
 
 @app.get("/admin/daily-summary")
-async def trigger_daily_summary():
+async def trigger_daily_summary(request: Request):
     """Manual trigger for the daily Discord summary — useful for testing."""
+    _check_admin_auth(request)
     await _send_daily_discord_summary()
     return {"ok": True, "message": "Daily summary sent to Discord (if DISCORD_WEBHOOK_URL is set)"}
 
