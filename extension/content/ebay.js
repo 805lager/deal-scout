@@ -177,67 +177,6 @@
     };
   }
 
-  // ── Streaming API Client ─────────────────────────────────────────────────────
-
-  async function callStreamingAPI(rawData, abort) {
-    showPanel();
-    renderLoading({});
-
-    const response = await fetch(`${API_BASE}/score/stream`, {
-      method:  "POST",
-      headers: { "Content-Type": "application/json", "X-DS-Key": DS_API_KEY, "X-DS-Ext-Version": VERSION },
-      body:    JSON.stringify(rawData),
-      signal:  abort.signal,
-    });
-
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({}));
-      throw new Error(err.detail || `API error ${response.status}`);
-    }
-
-    const reader  = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (abort.signal.aborted) { reader.cancel(); return; }
-
-      buffer += decoder.decode(value, { stream: true });
-      const parts = buffer.split("\n\n");
-      buffer = parts.pop() || "";
-
-      for (const part of parts) {
-        const line = part.trim();
-        if (!line.startsWith("data: ")) continue;
-        try {
-          const evt = JSON.parse(line.slice(6));
-          if (evt.type === "progress") {
-            renderProgress(evt.label);
-          } else if (evt.type === "extracted") {
-            renderLoading(evt.data);
-          } else if (evt.type === "score") {
-            const result = evt.data;
-            try {
-              const afLinks = await new Promise((res) => {
-                chrome.runtime.sendMessage(
-                  { type: "GET_AFFILIATE_LINKS", query: result.title, price: result.price },
-                  (r) => res((r?.success && r.links) ? r.links : [])
-                );
-              });
-              if (afLinks.length) result.affiliateLinks = afLinks;
-            } catch (_) {}
-            renderScore(result);
-            chrome.runtime.sendMessage({ type: "BADGE_UPDATE", score: result.score }).catch(() => {});
-          } else if (evt.type === "error") {
-            renderError(evt.message || "Scoring failed");
-          }
-        } catch (_) {}
-      }
-    }
-  }
-
   // ── Rendering ──────────────────────────────────────────────────────────────
   function renderLoading(listing) {
     const panel = getPanel();
@@ -273,11 +212,6 @@
       s.textContent = "@keyframes ds-spin{to{transform:rotate(360deg)}}";
       document.head.appendChild(s);
     }
-  }
-
-  function renderProgress(label) {
-    const el = document.getElementById("ds-progress-label");
-    if (el) el.textContent = label;
   }
 
   function renderError(msg) {
@@ -656,36 +590,25 @@
 
   // ── Auto-Score ─────────────────────────────────────────────────────────────
   async function autoScore() {
-    console.log("[DealScout/eBay] autoScore() called, url:", location.href);
-    if (!isListingPage()) {
-      console.log("[DealScout/eBay] Not a listing page — skipping");
-      return;
-    }
+    if (!isListingPage()) return;
 
     let waited = 0;
     while ((document.body.innerText || "").length < 200 && waited < 15) {
       await new Promise(r => setTimeout(r, 200));
       waited++;
     }
-    console.log("[DealScout/eBay] Page content length:", (document.body.innerText || "").length);
 
     const rawData = extractRaw();
-    console.log("[DealScout/eBay] extractRaw:", rawData.raw_text?.length, "chars, platform:", rawData.platform);
-    if (!rawData.raw_text || rawData.raw_text.length < 100) {
-      console.log("[DealScout/eBay] Raw text too short — skipping");
-      return;
-    }
+    if (!rawData.raw_text || rawData.raw_text.length < 100) return;
 
     showPanel();
     renderLoading({});
-    console.log("[DealScout/eBay] Panel shown, sending SCORE_LISTING to background.js…");
 
     try {
       const response = await new Promise((resolve, reject) => {
         chrome.runtime.sendMessage(
           { type: "SCORE_LISTING", listing: rawData, listingId: location.href },
           (resp) => {
-            console.log("[DealScout/eBay] background.js response:", JSON.stringify(resp)?.slice(0, 200));
             if (chrome.runtime.lastError) {
               reject(new Error(chrome.runtime.lastError.message));
             } else if (resp && resp.success) {
@@ -700,7 +623,6 @@
       chrome.runtime.sendMessage({ type: "BADGE_UPDATE", score: response.score });
       renderScore(response);
     } catch (err) {
-      console.error("[DealScout/eBay] autoScore error:", err);
       showPanel();
       renderError(err.message || "Scoring failed");
     }
@@ -713,7 +635,6 @@
   });
 
   // ── Init ───────────────────────────────────────────────────────────────────
-  console.log("[DealScout/eBay] Content script loaded, isListingPage:", isListingPage(), "url:", location.href);
   if (isListingPage()) setTimeout(autoScore, 1500);
 
 })();

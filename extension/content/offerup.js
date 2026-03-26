@@ -208,77 +208,7 @@
     };
   }
 
-  // ── Streaming API Client ─────────────────────────────────────────────────────
 
-  async function callStreamingAPI(rawData, snapUrl) {
-    const abort = new AbortController();
-    window.__dsOUAbort = abort;
-
-    showPanel();
-    renderLoading({});
-
-    try {
-      const response = await fetch(`${API_BASE}/score/stream`, {
-        method:  "POST",
-        headers: { "Content-Type": "application/json", "X-DS-Key": DS_API_KEY, "X-DS-Ext-Version": VERSION },
-        body:    JSON.stringify(rawData),
-        signal:  abort.signal,
-      });
-
-      if (!response.ok) {
-        const err = await response.json().catch(() => ({}));
-        throw new Error(err.detail || `API error ${response.status}`);
-      }
-
-      const reader  = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (abort.signal.aborted || location.href !== snapUrl) { reader.cancel(); return; }
-
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split("\n\n");
-        buffer = parts.pop() || "";
-
-        for (const part of parts) {
-          const line = part.trim();
-          if (!line.startsWith("data: ")) continue;
-          try {
-            const evt = JSON.parse(line.slice(6));
-            if (evt.type === "progress") {
-              renderProgress(evt.label);
-            } else if (evt.type === "extracted") {
-              renderLoading(evt.data);
-            } else if (evt.type === "score") {
-              if (location.href !== snapUrl) return;
-              const result = evt.data;
-              try {
-                const afLinks = await new Promise((res) => {
-                  chrome.runtime.sendMessage(
-                    { type: "GET_AFFILIATE_LINKS", query: result.title, price: result.price },
-                    (r) => res((r?.success && r.links) ? r.links : [])
-                  );
-                });
-                if (afLinks.length) result.affiliateLinks = afLinks;
-              } catch (_) {}
-              renderScore(result);
-              chrome.runtime.sendMessage({ type: "BADGE_UPDATE", score: result.score }).catch(() => {});
-            } else if (evt.type === "error") {
-              renderError(evt.message || "Scoring failed");
-            }
-          } catch (_) {}
-        }
-      }
-    } catch (err) {
-      if (abort.signal.aborted || location.href !== snapUrl) return;
-      renderError(err.message || "Scoring failed");
-    } finally {
-      if (window.__dsOUAbort === abort) window.__dsOUAbort = null;
-    }
-  }
 
   // ── Rendering ──────────────────────────────────────────────────────────────
   function renderNavigating() {
@@ -339,11 +269,6 @@
       s.textContent = "@keyframes ds-spin{to{transform:rotate(360deg)}}";
       document.head.appendChild(s);
     }
-  }
-
-  function renderProgress(label) {
-    const el = document.getElementById("ds-progress-label");
-    if (el) el.textContent = label;
   }
 
   function renderError(msg) {
