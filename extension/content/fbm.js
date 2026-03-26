@@ -24,7 +24,7 @@
 (function () {
   "use strict";
 
-  const VERSION  = '0.31.0';
+  const VERSION  = '0.31.1';
   const PANEL_ID  = "deal-scout-panel";
   let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
   const DS_API_KEY = "ds_live_098caae54340d797cb216856d0cffe50";
@@ -401,6 +401,8 @@
     const sellerName = sellerEl ? sellerEl.textContent.trim().slice(0, 60) : '';
 
     const _allScontent = Array.from(document.querySelectorAll('img[src*="scontent"]'));
+    const _videoPosterUrls = Array.from(document.querySelectorAll('video[poster*="scontent"]'))
+      .map(v => v.poster).filter(Boolean);
     const _isCardImage = img =>
       !!img.closest('a[href*="/marketplace/item/"]') ||
       !!img.closest('div[data-testid="marketplace-search-item"]') ||
@@ -420,11 +422,14 @@
       .filter(src => src && src.length > 10)
       .slice(0, 3);
 
-    const imageUrls =
+    let imageUrls =
       _pickImages(200).length       ? _pickImages(200)       :
       _pickImages(100).length       ? _pickImages(100)       :
       _pickImages(100, 1800).length ? _pickImages(100, 1800) :
       _allScontent.map(i => i.src).filter(s => s).slice(0, 3);
+    if (imageUrls.length === 0 && _videoPosterUrls.length > 0) {
+      imageUrls = _videoPosterUrls.slice(0, 3);
+    }
 
     const vehicleText = title + ' ' + description.slice(0, 300);
     const isVehicle =
@@ -437,9 +442,11 @@
     const sellerTrust = extractSellerTrust();
     const listingUrl = location.href;
 
-    const photoCount = _allScontent.filter(img =>
+    const _imgCount = _allScontent.filter(img =>
       !_isCardImage(img) && _absTop(img) < 900
-    ).length || imageUrls.length;
+    ).length;
+    const _vidCount = _videoPosterUrls.length;
+    const photoCount = (_imgCount + _vidCount) || imageUrls.length;
 
     return {
       title,
@@ -473,6 +480,8 @@
       const fallback = Array.from(document.querySelectorAll('img[src*="scontent"]'));
       _raw_all.push(...fallback);
     }
+    const _raw_vidPosters = Array.from((container || document).querySelectorAll('video[poster*="scontent"]'))
+      .map(v => v.poster).filter(Boolean);
     const _raw_absTop = img => img.getBoundingClientRect().top + window.scrollY;
     const _raw_isCard = img =>
       !!img.closest('a[href*="/marketplace/item/"]') ||
@@ -499,11 +508,14 @@
       .map(img => img.src)
       .filter(src => src && src.length > 10)
       .slice(0, 3);
-    const imageUrls =
+    let imageUrls =
       _raw_pick(200).length       ? _raw_pick(200)       :
       _raw_pick(100).length       ? _raw_pick(100)       :
       _raw_pick(100, 1800).length ? _raw_pick(100, 1800) :
       _raw_all.map(i => i.src).filter(s => s).slice(0, 3);
+    if (imageUrls.length === 0 && _raw_vidPosters.length > 0) {
+      imageUrls = _raw_vidPosters.slice(0, 3);
+    }
 
     const _rh1 = (() => {
       const allH1 = Array.from(container.querySelectorAll('h1[dir="auto"]'));
@@ -527,9 +539,10 @@
       ? (_rpre.slice(-200) + _rpost).slice(0, 4000)
       : (container.innerText || '').slice(0, 4000);
 
-    const _raw_photoCount = _raw_all.filter(img =>
+    const _raw_imgCount = _raw_all.filter(img =>
       !_raw_isCard(img) && _raw_absTop(img) < 900
-    ).length || imageUrls.length;
+    ).length;
+    const _raw_photoCount = (_raw_imgCount + _raw_vidPosters.length) || imageUrls.length;
 
     return {
       raw_text:    rawText,
