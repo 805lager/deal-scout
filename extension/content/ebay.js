@@ -17,14 +17,14 @@
 (function () {
   "use strict";
 
-  const VERSION  = "0.31.1";
+  const VERSION  = "0.32.0";
   const PANEL_ID = "deal-scout-ebay-panel";
   const PLATFORM = "ebay";
 
   if (window.__dsEbayInjected) return;
   window.__dsEbayInjected = true;
 
-  let API_BASE = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
+  let API_BASE = "https://deal-scout-805lager.replit.app/api/ds";
   const DS_API_KEY = "ds_live_098caae54340d797cb216856d0cffe50";
   try {
     chrome.storage.local.get("ds_api_base", (r) => {
