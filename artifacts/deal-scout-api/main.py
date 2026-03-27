@@ -2934,7 +2934,7 @@ async def _build_daily_summary() -> dict:
                  ROUND(AVG(score)::numeric, 1) AS avg_score,
                  COUNT(*) FILTER (WHERE thumbs=1) AS thumbs_up,
                  COUNT(*) FILTER (WHERE thumbs=-1) AS thumbs_down,
-                 COUNT(*) FILTER (WHERE security_score <= 3) AS high_risk
+                 COUNT(*) FILTER (WHERE (score_json->'security_score'->>'score')::int <= 3) AS high_risk
                FROM deal_scores
                WHERE created_at > now() - interval '24 hours'"""
         )
@@ -3015,11 +3015,12 @@ async def _build_daily_summary() -> dict:
 
     try:
         cat_rows = await pool.fetch(
-            """SELECT category_detected AS cat, COUNT(*) AS cnt
+            """SELECT score_json->>'category_detected' AS cat, COUNT(*) AS cnt
                FROM deal_scores
                WHERE created_at > now() - interval '24 hours'
-                 AND category_detected IS NOT NULL AND category_detected != ''
-               GROUP BY category_detected
+                 AND score_json->>'category_detected' IS NOT NULL
+                 AND score_json->>'category_detected' != ''
+               GROUP BY score_json->>'category_detected'
                ORDER BY cnt DESC
                LIMIT 5"""
         )
