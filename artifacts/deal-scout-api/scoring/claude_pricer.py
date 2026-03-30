@@ -98,16 +98,15 @@ Rules:
 Return ONLY the JSON, no explanation."""
 
     try:
-        loop = asyncio.get_event_loop()
         client = _get_client()
-
-        response = await loop.run_in_executor(
-            None,
+        from scoring import claude_call_with_retry
+        response = await claude_call_with_retry(
             lambda: client.messages.create(
                 model=CLAUDE_MODEL,
                 max_tokens=300,
                 messages=[{"role": "user", "content": prompt}],
-            )
+            ),
+            label="ClaudePricer",
         )
 
         raw = response.content[0].text.strip()

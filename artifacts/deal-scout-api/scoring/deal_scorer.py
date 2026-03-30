@@ -541,17 +541,14 @@ async def score_deal(
         log.info("Sending listing to Claude (text-only)...")
 
     try:
-        # WHY executor: anthropic client is synchronous; wrap to avoid blocking FastAPI
-        # WHY get_running_loop() not get_event_loop(): we're inside an async function,
-        # so there's always a running loop. get_running_loop() is the correct call here.
-        loop = asyncio.get_running_loop()
-        response = await loop.run_in_executor(
-            None,
+        from scoring import claude_call_with_retry
+        response = await claude_call_with_retry(
             lambda: _get_scoring_client().messages.create(
                 model="claude-haiku-4-5",
                 max_tokens=1024,
                 messages=[{"role": "user", "content": message_content}]
-            )
+            ),
+            label="DealScorer",
         )
 
         raw_text = response.content[0].text.strip()

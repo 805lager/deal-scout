@@ -323,14 +323,14 @@ If you cannot confidently name a specific real alternative, return:
 {{"brand": "", "model": "", "why_better": "", "approx_used_price": 0, "search_query": ""}}"""
 
     try:
-        loop = asyncio.get_running_loop()
-        response = await loop.run_in_executor(
-            None,
+        from scoring import claude_call_with_retry
+        response = await claude_call_with_retry(
             lambda: _get_client().messages.create(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=200,
                 messages=[{"role": "user", "content": prompt}]
-            )
+            ),
+            label="SuggestionEngine",
         )
 
         raw = response.content[0].text.strip()

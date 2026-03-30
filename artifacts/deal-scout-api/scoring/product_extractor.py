@@ -149,14 +149,14 @@ Respond ONLY with valid JSON, no preamble, no fences:
 }}"""
 
     try:
-        loop = asyncio.get_running_loop()
-        response = await loop.run_in_executor(
-            None,
+        from scoring import claude_call_with_retry
+        response = await claude_call_with_retry(
             lambda: _get_client().messages.create(
                 model="claude-haiku-4-5",
                 max_tokens=300,
                 messages=[{"role": "user", "content": prompt}]
-            )
+            ),
+            label="ProductExtractor",
         )
 
         raw = response.content[0].text.strip()

@@ -112,32 +112,42 @@ async def extract_listing_from_text(
         raw_text=truncated,
     )
 
-    try:
-        client = _get_client()
-        msg = client.messages.create(
-            model="claude-haiku-4-5",
-            max_tokens=600,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = msg.content[0].text.strip()
+    import asyncio as _aio
+    last_err = None
+    for _attempt in range(3):
+        try:
+            client = _get_client()
+            msg = client.messages.create(
+                model="claude-haiku-4-5",
+                max_tokens=600,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = msg.content[0].text.strip()
 
-        # Strip markdown code fences if model wraps output
-        if text.startswith("```"):
-            lines = text.split("\n")
-            lines = lines[1:]  # drop opening ```json line
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            text = "\n".join(lines).strip()
+            if text.startswith("```"):
+                lines = text.split("\n")
+                lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                text = "\n".join(lines).strip()
 
-        data = json.loads(text)
-        log.info(
-            f"[Extract] '{data.get('title', '?')}' @ ${(data.get('price') or 0):.0f} "
-            f"({platform})"
-        )
-        return data
+            data = json.loads(text)
+            log.info(
+                f"[Extract] '{data.get('title', '?')}' @ ${(data.get('price') or 0):.0f} "
+                f"({platform})"
+            )
+            return data
 
-    except Exception as e:
-        log.warning(f"[Extract] Haiku extraction failed: {e!r} — returning empty dict")
+        except anthropic.AuthenticationError as e:
+            last_err = e
+            log.warning(f"[Extract] Auth error (attempt {_attempt+1}/3) — retrying in 1s")
+            await _aio.sleep(1)
+        except Exception as e:
+            last_err = e
+            break
+
+    if last_err:
+        log.warning(f"[Extract] Haiku extraction failed: {last_err!r} — returning empty dict")
         return {
             "title": "",
             "price": 0.0,

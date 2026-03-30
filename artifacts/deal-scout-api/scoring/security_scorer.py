@@ -403,13 +403,14 @@ async def run_layer2(
         layer1_flags  = layer1_summary,
     )
 
-    # asyncio.to_thread is the correct way to call sync SDK methods inside
-    # an async FastAPI route — run_in_executor breaks on uvicorn's event loop
-    response = await asyncio.to_thread(
-        client.messages.create,
-        model      = "claude-haiku-4-5",
-        max_tokens = 400,
-        messages   = [{"role": "user", "content": prompt}],
+    from scoring import claude_call_with_retry
+    response = await claude_call_with_retry(
+        lambda: client.messages.create(
+            model      = "claude-haiku-4-5",
+            max_tokens = 400,
+            messages   = [{"role": "user", "content": prompt}],
+        ),
+        label="SecurityScorer",
     )
 
     raw = response.content[0].text.strip()

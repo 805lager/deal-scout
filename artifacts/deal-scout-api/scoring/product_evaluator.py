@@ -267,15 +267,15 @@ If you lack model-specific data but know the brand's general reliability, use th
             api_key=_os.getenv("AI_INTEGRATIONS_ANTHROPIC_API_KEY", "placeholder"),
             base_url=_os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"),
         )
-        loop = _asyncio.get_event_loop()
+        from scoring import claude_call_with_retry
         response = await _asyncio.wait_for(
-            loop.run_in_executor(
-                None,
+            claude_call_with_retry(
                 lambda: client.messages.create(
                     model="claude-haiku-4-5",
                     max_tokens=400,
                     messages=[{"role": "user", "content": prompt}],
-                )
+                ),
+                label="ProductEvaluator",
             ),
             timeout=10.0,
         )
