@@ -384,9 +384,9 @@ async def run_layer2(
     else:
         seller_rating = "unknown"
 
-    # Use photo_count from listing if the extension sent it (accurate carousel total).
-    # Fall back to len(image_urls) for older payloads that don't include it.
-    photo_count = (getattr(listing, "photo_count", 0) or 0) or len(getattr(listing, "image_urls", None) or [])
+    raw_photo_count = getattr(listing, "photo_count", 0) or 0
+    raw_image_urls  = len(getattr(listing, "image_urls", None) or [])
+    photo_count     = max(raw_photo_count, raw_image_urls)
     photo_str   = f"{photo_count} photo(s)" if photo_count else "none"
 
     # Use effective_title if passed, fall back to raw listing title
@@ -563,7 +563,9 @@ async def score_security(
     elif seller_joined:
         positives.append(f"Seller profile since {seller_joined}")
 
-    photo_count = (getattr(listing, "photo_count", 0) or 0) or len(getattr(listing, "image_urls", None) or [])
+    raw_pc2 = getattr(listing, "photo_count", 0) or 0
+    raw_iu2 = len(getattr(listing, "image_urls", None) or [])
+    photo_count = max(raw_pc2, raw_iu2)
     if photo_count >= 4:
         positives.append(f"{photo_count} photos provided")
 

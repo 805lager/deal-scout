@@ -556,12 +556,13 @@ async def score_listing(listing: ListingRequest, request: Request):
     )
 
     try:
+        effective_photo_count = max(listing.photo_count or 0, len(listing.image_urls or []))
         deal_score = await score_deal(
             listing_dict,
             market_value_dict,
             image_url          = image_url,
             product_evaluation = product_eval,
-            photo_count        = listing.photo_count,
+            photo_count        = effective_photo_count,
         )
     except RuntimeError as e:
         _security_task.cancel()
@@ -1169,11 +1170,12 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
             )
 
             try:
+                effective_photo_count = max(listing.photo_count or 0, len(listing.image_urls or []))
                 deal_score = await score_deal(
                     listing_dict, market_value_dict,
                     image_url          = image_url,
                     product_evaluation = product_eval,
-                    photo_count        = listing.photo_count,
+                    photo_count        = effective_photo_count,
                 )
             except Exception as _score_err:
                 _security_task.cancel()

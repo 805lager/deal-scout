@@ -142,6 +142,21 @@ def _format_seller_trust(trust: dict) -> str:
     return "\n".join(lines)
 
 
+def _price_direction_hint(asking_price: float, estimated_value: float) -> str:
+    if estimated_value <= 0 or asking_price <= 0:
+        return ""
+    ratio = asking_price / estimated_value
+    pct = abs(1 - ratio) * 100
+    if ratio < 0.5:
+        return f"\n>>> PRICE DIRECTION: Asking ${asking_price:.0f} is {pct:.0f}% BELOW estimated value ${estimated_value:.0f}. This is a DISCOUNTED listing — do NOT say overpriced."
+    elif ratio < 0.85:
+        return f"\n>>> PRICE DIRECTION: Asking ${asking_price:.0f} is {pct:.0f}% BELOW estimated value ${estimated_value:.0f}. This is a good discount."
+    elif ratio <= 1.15:
+        return f"\n>>> PRICE DIRECTION: Asking ${asking_price:.0f} is roughly AT estimated value ${estimated_value:.0f} (within 15%)."
+    else:
+        return f"\n>>> PRICE DIRECTION: Asking ${asking_price:.0f} is {pct:.0f}% ABOVE estimated value ${estimated_value:.0f}. This is overpriced."
+
+
 def build_scoring_prompt(listing: dict, market_value: dict, product_evaluation=None, photo_count: int = 0) -> str:
     """
     Build the prompt that Claude uses to score the deal.
@@ -245,6 +260,7 @@ eBay lowest active:  ${market_value['active_low']:.2f}
 New retail price:    ${market_value['new_price']:.2f}
 Estimated value:     ${market_value['estimated_value']:.2f}
 Data confidence:     {market_value['confidence']}
+{_price_direction_hint(total_cost, market_value['estimated_value'])}
 
 ## YOUR TASK
 Analyze this listing holistically. Consider:
