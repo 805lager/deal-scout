@@ -920,6 +920,7 @@ async def score_listing(listing: ListingRequest, request: Request):
 #   and a progress label, then the full score arrives at t≈10-12s.
 #   This makes the extension feel dramatically faster without changing back-end speed.
 
+@app.post("/score-stream")
 @app.post("/score/stream")
 async def score_listing_stream(raw: RawListingRequest, request: Request):
     """
