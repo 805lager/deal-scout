@@ -102,8 +102,18 @@ def _normalize_query_key(query: str) -> str:
     return q
 
 
+def _query_word_overlap(a: str, b: str) -> float:
+    """Compute word overlap ratio between two normalized query keys."""
+    words_a = set(a.split())
+    words_b = set(b.split())
+    union = words_a | words_b
+    if not union:
+        return 0.0
+    return len(words_a & words_b) / len(union)
+
+
 async def _db_cache_get(query: str, condition: str) -> Optional[dict]:
-    """Check PostgreSQL price cache for a matching entry within TTL."""
+    """Check PostgreSQL price cache for an exact or similar entry within TTL."""
     try:
         await _ensure_price_cache_table()
         from scoring.data_pipeline import _get_pool
@@ -125,21 +135,50 @@ async def _db_cache_get(query: str, condition: str) -> Optional[dict]:
             query_key, condition, _DB_CACHE_TTL_HOURS,
         )
         if row:
-            log.info(f"[ClaudePricer] DB cache hit: {query}")
-            return {
-                "avg_used_price": row["avg_used_price"],
-                "price_low": row["price_low"],
-                "price_high": row["price_high"],
-                "new_retail": row["new_retail"] or 0,
-                "confidence": row["confidence"] or "medium",
-                "item_id": row["item_id"] or "",
-                "notes": row["notes"] or "",
-                "data_source": row["data_source"] or "claude_knowledge",
-            }
+            log.info(f"[ClaudePricer] DB cache hit (exact): {query}")
+            return _row_to_dict(row)
+
+        rows = await pool.fetch(
+            """
+            SELECT query_key, avg_used_price, price_low, price_high, new_retail,
+                   confidence, item_id, notes, data_source
+            FROM price_cache
+            WHERE condition = $1
+              AND created_at > NOW() - make_interval(hours => $2)
+            ORDER BY created_at DESC
+            LIMIT 50
+            """,
+            condition, _DB_CACHE_TTL_HOURS,
+        )
+        best_row = None
+        best_overlap = 0.0
+        for r in rows:
+            overlap = _query_word_overlap(query_key, r["query_key"])
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_row = r
+        if best_row and best_overlap >= 0.75:
+            log.info(f"[ClaudePricer] DB cache hit (similar {best_overlap:.0%}): "
+                     f"'{query}' matched '{best_row['query_key']}'")
+            return _row_to_dict(best_row)
+
         return None
     except Exception as e:
         log.debug(f"[ClaudePricer] DB cache lookup failed (non-fatal): {e}")
         return None
+
+
+def _row_to_dict(row) -> dict:
+    return {
+        "avg_used_price": row["avg_used_price"],
+        "price_low": row["price_low"],
+        "price_high": row["price_high"],
+        "new_retail": row["new_retail"] or 0,
+        "confidence": row["confidence"] or "medium",
+        "item_id": row["item_id"] or "",
+        "notes": row["notes"] or "",
+        "data_source": row["data_source"] or "claude_knowledge",
+    }
 
 
 async def _db_cache_set(query: str, condition: str, result: dict):
