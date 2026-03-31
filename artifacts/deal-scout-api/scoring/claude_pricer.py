@@ -164,9 +164,12 @@ Return ONLY the JSON, no explanation."""
         )
 
         raw = response.content[0].text.strip()
-        # Strip markdown code fences if present
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
+
+        json_match = re.search(r"\{[^{}]*\}", raw)
+        if json_match:
+            raw = json_match.group(0)
 
         data = json.loads(raw)
         result = _validate_and_normalize(data, listing_price, data_source)

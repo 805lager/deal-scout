@@ -433,21 +433,52 @@ rather than listing them separately. Values should reflect realistic used eBay s
 
 # ── Claude API Call ───────────────────────────────────────────────────────────
 
+def _is_safe_image_url(url: str) -> bool:
+    """Validate image URL to prevent SSRF attacks."""
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        host = parsed.hostname or ""
+        if not host:
+            return False
+        blocked = (
+            host in ("localhost", "127.0.0.1", "0.0.0.0", "[::1]", "metadata.google.internal")
+            or host.startswith("10.")
+            or host.startswith("172.") and 16 <= int(host.split(".")[1]) <= 31
+            or host.startswith("192.168.")
+            or host.startswith("169.254.")
+            or host.endswith(".local")
+            or host.endswith(".internal")
+        )
+        return not blocked
+    except Exception:
+        return False
+
+
 async def _fetch_image_base64(image_url: str) -> Optional[tuple[str, str]]:
     """
     Fetch an image URL and return (base64_data, media_type).
     Returns None if fetch fails — caller falls back to text-only scoring.
     """
+    if not _is_safe_image_url(image_url):
+        log.warning(f"Image URL blocked (SSRF protection): {image_url[:80]}")
+        return None
     try:
         import httpx
         import base64
-        async with httpx.AsyncClient(timeout=6.0, follow_redirects=True) as http:
+        MAX_IMAGE_SIZE = 10 * 1024 * 1024
+        async with httpx.AsyncClient(timeout=6.0, follow_redirects=True, max_redirects=3) as http:
             resp = await http.get(
                 image_url,
                 headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
             )
         if resp.status_code != 200:
             log.warning(f"Image fetch failed: HTTP {resp.status_code} for {image_url[:80]}")
+            return None
+        if len(resp.content) > MAX_IMAGE_SIZE:
+            log.warning(f"Image too large: {len(resp.content)//1024}KB for {image_url[:80]}")
             return None
         media_type = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
         if not media_type.startswith("image/"):
