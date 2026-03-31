@@ -131,7 +131,7 @@ _SCORE_CACHE_TTL_URL = 7200  # 2 hours (URL-keyed)
 def _cache_key(title: str, price: float, listing_url: str = "") -> str:
     import hashlib
     if listing_url and listing_url.startswith("http"):
-        raw = f"{listing_url.strip()}|{price:.2f}"
+        raw = listing_url.strip()
     else:
         raw = f"{title.strip().lower()}|{price:.2f}"
     return hashlib.md5(raw.encode()).hexdigest()
@@ -483,13 +483,18 @@ async def score_listing(listing: ListingRequest, request: Request):
             is_vehicle        = listing.is_vehicle,
             listing_price     = listing.price,
         )
-    if product_info.brand:
+    _prelim_display = listing.title.strip().lower()
+    _refined_display = (product_info.display_name or "").strip().lower()
+    _brand_model_changed = bool(product_info.brand) and _refined_display != _prelim_display
+    if _brand_model_changed:
         _eval_coro = evaluate_product(
             brand        = product_info.brand,
             model        = product_info.model,
             category     = product_info.category,
             display_name = product_info.display_name,
         )
+    elif product_info.brand:
+        log.info(f"[Speed] Skipping product eval re-run — display_name unchanged")
 
     if _refine_coro and _eval_coro:
         _refined_mv, _refined_eval = await asyncio.gather(
@@ -1106,7 +1111,15 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
             if _queries_similar and extracted_q != raw_q:
                 log.info(f"[Stream] Skipping market refinement — queries {_word_overlap:.0%} similar")
 
-            need_eval_refine = bool(product_info.brand)
+            _prelim_display = listing.title.strip().lower()
+            _refined_display = (product_info.display_name or "").strip().lower()
+            _brand_model_changed = (
+                bool(product_info.brand) and
+                _refined_display != _prelim_display
+            )
+            need_eval_refine = _brand_model_changed
+            if product_info.brand and not _brand_model_changed:
+                log.info(f"[Stream] Skipping product eval re-run — display_name unchanged")
 
             if need_refine and need_eval_refine:
                 _refine_market_task = get_market_value(
