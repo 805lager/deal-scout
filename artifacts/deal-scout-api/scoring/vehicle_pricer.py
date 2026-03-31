@@ -470,6 +470,29 @@ async def get_vehicle_market_value(
     if not stats:
         return None
 
+    if stats["count"] < 3:
+        try:
+            from scoring.claude_pricer import get_claude_market_price
+            _vq = f"{year} {make} {model}"
+            ai = await get_claude_market_price(_vq, condition="used", listing_price=listing_price)
+            if ai and ai.get("avg_used_price"):
+                ai_avg  = ai["avg_used_price"]
+                ai_low  = ai["price_low"]
+                ai_high = ai["price_high"]
+                log.info(
+                    f"[VehiclePricer] Claude supplement: ${ai_avg:.0f} "
+                    f"({ai_low:.0f}–{ai_high:.0f}) vs {stats['count']} comps avg=${stats['avg']}"
+                )
+                prices.append(ai_avg)
+                prices.append(ai_low)
+                prices.append(ai_high)
+                stats = _compute_vehicle_stats(prices)
+                if not stats:
+                    return None
+                source = f"{source}+claude"
+        except Exception as e:
+            log.warning(f"[VehiclePricer] Claude supplement failed: {e}")
+
     confidence = "high" if stats["count"] >= 8 else "medium" if stats["count"] >= 4 else "low"
 
     result = {
