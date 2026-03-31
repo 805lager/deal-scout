@@ -9,6 +9,11 @@ Compared to the old Gemini approach:
   - Uses Claude Haiku for speed (same model used elsewhere in the pipeline)
   - No Google Search Grounding (Claude uses training data for pricing)
   - data_source = "claude_knowledge" instead of gemini_knowledge/gemini_search
+
+Price cache:
+  - PostgreSQL `price_cache` table stores Claude estimates for 48 hours
+  - Avoids redundant Claude calls for similar items across users/sessions
+  - Falls back to in-memory cache if DB is unavailable
 """
 
 import asyncio
@@ -21,10 +26,13 @@ from typing import Optional
 
 log = logging.getLogger(__name__)
 
-_CACHE_TTL = 600  # 10 minutes
+_CACHE_TTL = 600  # 10 minutes (in-memory fallback)
+_DB_CACHE_TTL_HOURS = 48
 _cache: dict = {}
 
 CLAUDE_MODEL = "claude-haiku-4-5"
+
+_price_cache_table_ready = False
 
 
 def _get_client():
@@ -37,6 +45,122 @@ def _get_client():
 
 def claude_is_configured() -> bool:
     return bool(os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"))
+
+
+async def _ensure_price_cache_table():
+    """Create the price_cache table if it doesn't exist."""
+    global _price_cache_table_ready
+    if _price_cache_table_ready:
+        return
+    try:
+        from scoring.data_pipeline import _get_pool
+        pool = await _get_pool()
+        if not pool:
+            return
+        await pool.execute("""
+            CREATE TABLE IF NOT EXISTS price_cache (
+                id SERIAL PRIMARY KEY,
+                query_key TEXT NOT NULL,
+                condition TEXT NOT NULL DEFAULT 'Used',
+                avg_used_price DOUBLE PRECISION,
+                price_low DOUBLE PRECISION,
+                price_high DOUBLE PRECISION,
+                new_retail DOUBLE PRECISION DEFAULT 0,
+                confidence TEXT DEFAULT 'medium',
+                item_id TEXT DEFAULT '',
+                notes TEXT DEFAULT '',
+                data_source TEXT DEFAULT 'claude_knowledge',
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        await pool.execute("""
+            CREATE INDEX IF NOT EXISTS idx_price_cache_query
+            ON price_cache (query_key, condition)
+        """)
+        _price_cache_table_ready = True
+        log.info("[ClaudePricer] price_cache table ready")
+    except Exception as e:
+        log.debug(f"[ClaudePricer] price_cache table setup failed (non-fatal): {e}")
+
+
+def _normalize_query_key(query: str) -> str:
+    """Normalize a query string for cache matching."""
+    q = query.lower().strip()
+    q = re.sub(r'[^\w\s]', ' ', q)
+    q = re.sub(r'\s+', ' ', q).strip()
+    return q
+
+
+async def _db_cache_get(query: str, condition: str) -> Optional[dict]:
+    """Check PostgreSQL price cache for a matching entry within TTL."""
+    try:
+        await _ensure_price_cache_table()
+        from scoring.data_pipeline import _get_pool
+        pool = await _get_pool()
+        if not pool:
+            return None
+
+        query_key = _normalize_query_key(query)
+        row = await pool.fetchrow(
+            """
+            SELECT avg_used_price, price_low, price_high, new_retail,
+                   confidence, item_id, notes, data_source
+            FROM price_cache
+            WHERE query_key = $1 AND condition = $2
+              AND created_at > NOW() - INTERVAL '%s hours'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """ % _DB_CACHE_TTL_HOURS,
+            query_key, condition,
+        )
+        if row:
+            log.info(f"[ClaudePricer] DB cache hit: {query}")
+            return {
+                "avg_used_price": row["avg_used_price"],
+                "price_low": row["price_low"],
+                "price_high": row["price_high"],
+                "new_retail": row["new_retail"] or 0,
+                "confidence": row["confidence"] or "medium",
+                "item_id": row["item_id"] or "",
+                "notes": row["notes"] or "",
+                "data_source": row["data_source"] or "claude_knowledge",
+            }
+        return None
+    except Exception as e:
+        log.debug(f"[ClaudePricer] DB cache lookup failed (non-fatal): {e}")
+        return None
+
+
+async def _db_cache_set(query: str, condition: str, result: dict):
+    """Store a Claude pricing result in the PostgreSQL cache."""
+    try:
+        await _ensure_price_cache_table()
+        from scoring.data_pipeline import _get_pool
+        pool = await _get_pool()
+        if not pool:
+            return
+
+        query_key = _normalize_query_key(query)
+        await pool.execute(
+            """
+            INSERT INTO price_cache
+                (query_key, condition, avg_used_price, price_low, price_high,
+                 new_retail, confidence, item_id, notes, data_source)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            """,
+            query_key, condition,
+            result.get("avg_used_price", 0),
+            result.get("price_low", 0),
+            result.get("price_high", 0),
+            result.get("new_retail", 0),
+            result.get("confidence", "medium"),
+            result.get("item_id", ""),
+            result.get("notes", ""),
+            result.get("data_source", "claude_knowledge"),
+        )
+        log.debug(f"[ClaudePricer] DB cache stored: {query}")
+    except Exception as e:
+        log.debug(f"[ClaudePricer] DB cache write failed (non-fatal): {e}")
 
 
 def _condition_price_guide(condition: str) -> str:
@@ -89,8 +213,13 @@ async def get_claude_market_price(
     cache_key = f"{query}|{condition}"
     now = time.time()
     if cache_key in _cache and now - _cache[cache_key]["ts"] < _CACHE_TTL:
-        log.debug(f"[ClaudePricer] Cache hit: {query}")
+        log.debug(f"[ClaudePricer] Memory cache hit: {query}")
         return _cache[cache_key]["result"]
+
+    db_cached = await _db_cache_get(query, condition)
+    if db_cached:
+        _cache[cache_key] = {"result": db_cached, "ts": now}
+        return db_cached
 
     web_context = ""
     data_source = "claude_knowledge"
@@ -176,6 +305,7 @@ Return ONLY the JSON, no explanation."""
 
         if result:
             _cache[cache_key] = {"result": result, "ts": now}
+            asyncio.create_task(_db_cache_set(query, condition, result))
             log.info(
                 f"[ClaudePricer] {query}: avg=${result['avg_used_price']:.0f} "
                 f"({result['price_low']:.0f}-{result['price_high']:.0f}) "
@@ -202,7 +332,6 @@ def _validate_and_normalize(data: dict, listing_price: float, data_source: str =
     if avg <= 0:
         return None
 
-    # Sanity: if Claude returns absurdly high (>10x listing price), discard
     if listing_price > 0 and avg > listing_price * 10:
         log.warning(f"[ClaudePricer] Sanity check failed: avg={avg} vs listing={listing_price}")
         return None
@@ -217,10 +346,6 @@ def _validate_and_normalize(data: dict, listing_price: float, data_source: str =
     except (TypeError, ValueError):
         new_retail = 0.0
 
-    # Sanity: new retail should not be more than 5× the used market avg.
-    # If it is, Claude likely confused this model with a premium variant
-    # (e.g. returned a $600 Celestron price for a $100 Gskyer query).
-    # Set to 0 so the affiliate cards don't display a misleading price.
     if new_retail > 0 and avg > 0 and new_retail > avg * 5:
         log.warning(
             f"[ClaudePricer] new_retail=${new_retail:.0f} is {new_retail/avg:.1f}× avg=${avg:.0f} "

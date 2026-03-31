@@ -5,16 +5,16 @@ WHY THIS EXISTS:
   Claude's pricing knowledge comes from training data, which can be months
   or years stale. A used iPhone 15 Pro price changes weekly.
 
-  This module performs a quick web scrape of Google Shopping results to find
+  This module performs a quick web search via DuckDuckGo HTML to find
   current market prices and feeds the results into Claude's pricing prompt
   as grounding data.
 
 FLOW:
-  1. Search Google Shopping for the item
+  1. Search DuckDuckGo HTML for the item
   2. Parse snippets for price signals ($XXX patterns)
   3. Return structured price context for the Claude pricer prompt
 
-COST: Free (HTTP requests)
+COST: Free (HTTP requests, no API key needed)
 LATENCY: ~1-2s (runs concurrently with other pipeline steps)
 """
 
@@ -62,13 +62,16 @@ async def search_market_prices(
         async with httpx.AsyncClient(
             timeout=_WEB_SEARCH_TIMEOUT,
             follow_redirects=True,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            }
         ) as client:
             tasks = []
             for sq in search_queries:
-                encoded = urllib.parse.quote_plus(sq)
-                url = f"https://www.google.com/search?q={encoded}&num=5&hl=en&gl=us"
-                tasks.append(client.get(url))
+                tasks.append(client.get(
+                    "https://lite.duckduckgo.com/lite/",
+                    params={"q": sq},
+                ))
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -77,7 +80,7 @@ async def search_market_prices(
                     log.debug(f"[WebPricer] Search request failed: {result}")
                     continue
 
-                if result.status_code != 200:
+                if result.status_code >= 300:
                     log.debug(f"[WebPricer] Search returned {result.status_code}")
                     continue
 
@@ -143,10 +146,24 @@ def _extract_prices(html_text: str) -> list[float]:
 def _extract_snippets(html_text: str) -> list[str]:
     """Extract text snippets that contain price-related information."""
     snippet_pattern = re.compile(
-        r'(?:sold|price|cost|worth|value|buy|used|market)[^<]{10,200}',
-        re.IGNORECASE
+        r'class="result-snippet"[^>]*>(.*?)</td>',
+        re.IGNORECASE | re.DOTALL,
     )
     matches = snippet_pattern.findall(html_text)
+
+    if not matches:
+        snippet_pattern = re.compile(
+            r'class="result__snippet"[^>]*>(.*?)</a>',
+            re.IGNORECASE | re.DOTALL,
+        )
+        matches = snippet_pattern.findall(html_text)
+
+    if not matches:
+        snippet_pattern = re.compile(
+            r'(?:sold|price|cost|worth|value|buy|used|market)[^<]{10,200}',
+            re.IGNORECASE
+        )
+        matches = snippet_pattern.findall(html_text)
 
     cleaned = []
     for m in matches[:5]:

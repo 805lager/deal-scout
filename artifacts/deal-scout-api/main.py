@@ -121,32 +121,37 @@ API_PORT = int(os.getenv("PORT", os.getenv("API_PORT", "8000")))
 UI_PORT  = int(os.getenv("UI_PORT",  "3000"))
 
 # ── In-memory score cache ─────────────────────────────────────────────────────
-# Keyed by (title.lower(), price). TTL = 20 min.
-# Avoids re-running the full AI pipeline when a user revisits the same listing
-# or clicks back/forward during a browsing session.
+# Keyed by (title.lower(), price) or listing_url when available.
+# URL-matched results get a longer 2-hour TTL since the same listing rarely changes.
+# Title+price matches keep 20-minute TTL as a fallback for listings without URLs.
 _score_cache: dict = {}
-_SCORE_CACHE_TTL = 1200  # 20 minutes
+_SCORE_CACHE_TTL = 1200  # 20 minutes (title+price keyed)
+_SCORE_CACHE_TTL_URL = 7200  # 2 hours (URL-keyed)
 
-def _cache_key(title: str, price: float) -> str:
+def _cache_key(title: str, price: float, listing_url: str = "") -> str:
     import hashlib
-    raw = f"{title.strip().lower()}|{price:.2f}"
+    if listing_url and listing_url.startswith("http"):
+        raw = listing_url.strip().lower()
+    else:
+        raw = f"{title.strip().lower()}|{price:.2f}"
     return hashlib.md5(raw.encode()).hexdigest()
 
 def _cache_get(key: str):
     entry = _score_cache.get(key)
     if not entry:
         return None
-    if _time.time() - entry["ts"] > _SCORE_CACHE_TTL:
+    ttl = entry.get("ttl", _SCORE_CACHE_TTL)
+    if _time.time() - entry["ts"] > ttl:
         del _score_cache[key]
         return None
     return entry["payload"]
 
-def _cache_set(key: str, payload: dict):
-    # Evict oldest entries if cache grows too large
+def _cache_set(key: str, payload: dict, url_keyed: bool = False):
     if len(_score_cache) > 500:
         oldest = min(_score_cache, key=lambda k: _score_cache[k]["ts"])
         del _score_cache[oldest]
-    _score_cache[key] = {"ts": _time.time(), "payload": payload}
+    ttl = _SCORE_CACHE_TTL_URL if url_keyed else _SCORE_CACHE_TTL
+    _score_cache[key] = {"ts": _time.time(), "payload": payload, "ttl": ttl}
 
 app = FastAPI(
     title="Personal Shopping Bot API",
@@ -370,7 +375,8 @@ async def score_listing(listing: ListingRequest, request: Request):
     _scoring_start_ts = _time.time()
 
     # ── Cache check ────────────────────────────────────────────────────────────
-    _ck = _cache_key(listing.title, listing.price)
+    _url_keyed = bool(listing.listing_url and listing.listing_url.startswith("http"))
+    _ck = _cache_key(listing.title, listing.price, listing.listing_url)
     _cached = _cache_get(_ck)
     if _cached:
         log.info(f"[Cache] HIT for '{listing.title}' @ ${listing.price} — returning cached score")
@@ -455,9 +461,17 @@ async def score_listing(listing: ListingRequest, request: Request):
     # Skip refinement if eBay is rate-limited — a refined query returns the same
     # mock data, so the extra round-trip wastes 1-2s with zero accuracy gain.
     _ebay_mocked = getattr(prelim_market, "data_source", "") == "ebay_mock"
-    need_refine = extracted_q and extracted_q != raw_q and len(extracted_q) > 4 and not _ebay_mocked
+    _raw_words = set(raw_q.split())
+    _ext_words = set(extracted_q.split())
+    _word_overlap = len(_raw_words & _ext_words) / max(len(_raw_words | _ext_words), 1)
+    _queries_similar = _word_overlap > 0.8
+
+    need_refine = (extracted_q and extracted_q != raw_q and len(extracted_q) > 4
+                   and not _ebay_mocked and not _queries_similar)
     if _ebay_mocked and extracted_q != raw_q:
         log.info(f"[Speed] Skipping eBay refinement — circuit open, mock data unchanged")
+    elif _queries_similar and extracted_q != raw_q:
+        log.info(f"[Speed] Skipping market refinement — queries {_word_overlap:.0%} similar")
 
     _refine_coro = None
     _eval_coro = None
@@ -897,8 +911,8 @@ async def score_listing(listing: ListingRequest, request: Request):
     except Exception:
         pass  # Validator must never block or crash the response
 
-    # ── Cache the result for 20 min ──────────────────────────────────────────
-    _cache_set(_ck, response)
+    # ── Cache the result ─────────────────────────────────────────────────────
+    _cache_set(_ck, response, url_keyed=_url_keyed)
 
     return response
 
@@ -1009,7 +1023,8 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                 return
 
             # ── Cache check ──────────────────────────────────────────────────
-            _ck = _cache_key(title, price)
+            _url_keyed = bool(raw.listing_url and raw.listing_url.startswith("http"))
+            _ck = _cache_key(title, price, raw.listing_url)
             _cached = _cache_get(_ck)
             if _cached:
                 log.info(f"[Stream Cache] HIT for '{title}'")
@@ -1080,7 +1095,17 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
             extracted_q  = (product_info.search_query or "").strip().lower()
             raw_q        = raw_title_query.lower()
             _ebay_mocked = getattr(prelim_market, "data_source", "") == "ebay_mock"
-            need_refine  = extracted_q and extracted_q != raw_q and len(extracted_q) > 4 and not _ebay_mocked
+
+            _raw_words = set(raw_q.split())
+            _ext_words = set(extracted_q.split())
+            _word_overlap = len(_raw_words & _ext_words) / max(len(_raw_words | _ext_words), 1)
+            _queries_similar = _word_overlap > 0.8
+
+            need_refine  = (extracted_q and extracted_q != raw_q and len(extracted_q) > 4
+                            and not _ebay_mocked and not _queries_similar)
+            if _queries_similar and extracted_q != raw_q:
+                log.info(f"[Stream] Skipping market refinement — queries {_word_overlap:.0%} similar")
+
             need_eval_refine = bool(product_info.brand)
 
             if need_refine and need_eval_refine:
@@ -1377,7 +1402,7 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                 log.warning(f"[Stream] deal_scores save failed (non-fatal): {_db_err}")
 
             response_dict = response.model_dump()
-            _cache_set(_ck, response_dict)
+            _cache_set(_ck, response_dict, url_keyed=_url_keyed)
 
             # ── Send the final score ──────────────────────────────────────────
             yield _sse({"type": "score", "data": response_dict})
