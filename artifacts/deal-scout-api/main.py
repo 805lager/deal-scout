@@ -131,7 +131,7 @@ _SCORE_CACHE_TTL_URL = 7200  # 2 hours (URL-keyed)
 def _cache_key(title: str, price: float, listing_url: str = "") -> str:
     import hashlib
     if listing_url and listing_url.startswith("http"):
-        raw = listing_url.strip().lower()
+        raw = f"{listing_url.strip()}|{price:.2f}"
     else:
         raw = f"{title.strip().lower()}|{price:.2f}"
     return hashlib.md5(raw.encode()).hexdigest()

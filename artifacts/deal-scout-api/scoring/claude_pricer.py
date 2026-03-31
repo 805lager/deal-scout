@@ -33,6 +33,7 @@ _cache: dict = {}
 CLAUDE_MODEL = "claude-haiku-4-5"
 
 _price_cache_table_ready = False
+_price_cache_table_lock = None
 
 
 def _get_client():
@@ -49,38 +50,48 @@ def claude_is_configured() -> bool:
 
 async def _ensure_price_cache_table():
     """Create the price_cache table if it doesn't exist."""
-    global _price_cache_table_ready
+    global _price_cache_table_ready, _price_cache_table_lock
     if _price_cache_table_ready:
         return
-    try:
-        from scoring.data_pipeline import _get_pool
-        pool = await _get_pool()
-        if not pool:
+    if _price_cache_table_lock is None:
+        _price_cache_table_lock = asyncio.Lock()
+    async with _price_cache_table_lock:
+        if _price_cache_table_ready:
             return
-        await pool.execute("""
-            CREATE TABLE IF NOT EXISTS price_cache (
-                id SERIAL PRIMARY KEY,
-                query_key TEXT NOT NULL,
-                condition TEXT NOT NULL DEFAULT 'Used',
-                avg_used_price DOUBLE PRECISION,
-                price_low DOUBLE PRECISION,
-                price_high DOUBLE PRECISION,
-                new_retail DOUBLE PRECISION DEFAULT 0,
-                confidence TEXT DEFAULT 'medium',
-                item_id TEXT DEFAULT '',
-                notes TEXT DEFAULT '',
-                data_source TEXT DEFAULT 'claude_knowledge',
-                created_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        """)
-        await pool.execute("""
-            CREATE INDEX IF NOT EXISTS idx_price_cache_query
-            ON price_cache (query_key, condition)
-        """)
-        _price_cache_table_ready = True
-        log.info("[ClaudePricer] price_cache table ready")
-    except Exception as e:
-        log.debug(f"[ClaudePricer] price_cache table setup failed (non-fatal): {e}")
+        try:
+            return await _create_price_cache_table()
+        except Exception as e:
+            log.debug(f"[ClaudePricer] price_cache table setup failed (non-fatal): {e}")
+
+
+async def _create_price_cache_table():
+    global _price_cache_table_ready
+    from scoring.data_pipeline import _get_pool
+    pool = await _get_pool()
+    if not pool:
+        return
+    await pool.execute("""
+        CREATE TABLE IF NOT EXISTS price_cache (
+            id SERIAL PRIMARY KEY,
+            query_key TEXT NOT NULL,
+            condition TEXT NOT NULL DEFAULT 'Used',
+            avg_used_price DOUBLE PRECISION,
+            price_low DOUBLE PRECISION,
+            price_high DOUBLE PRECISION,
+            new_retail DOUBLE PRECISION DEFAULT 0,
+            confidence TEXT DEFAULT 'medium',
+            item_id TEXT DEFAULT '',
+            notes TEXT DEFAULT '',
+            data_source TEXT DEFAULT 'claude_knowledge',
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        )
+    """)
+    await pool.execute("""
+        CREATE INDEX IF NOT EXISTS idx_price_cache_query
+        ON price_cache (query_key, condition)
+    """)
+    _price_cache_table_ready = True
+    log.info("[ClaudePricer] price_cache table ready")
 
 
 def _normalize_query_key(query: str) -> str:
@@ -107,11 +118,11 @@ async def _db_cache_get(query: str, condition: str) -> Optional[dict]:
                    confidence, item_id, notes, data_source
             FROM price_cache
             WHERE query_key = $1 AND condition = $2
-              AND created_at > NOW() - INTERVAL '%s hours'
+              AND created_at > NOW() - make_interval(hours => $3)
             ORDER BY created_at DESC
             LIMIT 1
-            """ % _DB_CACHE_TTL_HOURS,
-            query_key, condition,
+            """,
+            query_key, condition, _DB_CACHE_TTL_HOURS,
         )
         if row:
             log.info(f"[ClaudePricer] DB cache hit: {query}")
