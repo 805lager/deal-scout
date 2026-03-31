@@ -93,6 +93,65 @@ Rules:
 """
 
 
+def _validate_extracted_price(data: dict, raw_text: str) -> dict:
+    """
+    Validate that Claude's extracted price actually appears in the raw text.
+    If the extracted price doesn't match any price in the text, attempt to
+    find the correct price from the raw text.
+    """
+    import re as _re
+    extracted_price = data.get("price")
+    if extracted_price is None or extracted_price == 0:
+        return data
+
+    extracted_price = float(extracted_price)
+
+    price_pattern = r'\$\s*([\d,]+(?:\.\d{2})?)'
+    found_prices = []
+    for match in _re.finditer(price_pattern, raw_text):
+        try:
+            p = float(match.group(1).replace(",", ""))
+            if p > 0:
+                found_prices.append(p)
+        except ValueError:
+            continue
+
+    if not found_prices:
+        return data
+
+    if extracted_price in found_prices:
+        return data
+
+    close_match = None
+    for p in found_prices:
+        if abs(p - extracted_price) / max(extracted_price, 1) < 0.01:
+            close_match = p
+            break
+
+    if close_match:
+        return data
+
+    if len(found_prices) == 1:
+        corrected = found_prices[0]
+        if abs(corrected - extracted_price) / max(extracted_price, 1) > 0.5:
+            log.warning(
+                f"[Extract] Price mismatch: Claude extracted ${extracted_price:.0f} "
+                f"but raw text only has ${corrected:.0f} — correcting"
+            )
+            data["price"] = corrected
+            return data
+
+    lowest_reasonable = min(found_prices)
+    if extracted_price < lowest_reasonable * 0.1 or extracted_price > max(found_prices) * 10:
+        log.warning(
+            f"[Extract] Price ${extracted_price:.0f} is far outside text prices "
+            f"(${lowest_reasonable:.0f}-${max(found_prices):.0f}) — using lowest"
+        )
+        data["price"] = lowest_reasonable
+
+    return data
+
+
 async def extract_listing_from_text(
     raw_text: str,
     platform: str = "facebook_marketplace",
@@ -132,6 +191,9 @@ async def extract_listing_from_text(
                 text = "\n".join(lines).strip()
 
             data = json.loads(text)
+
+            data = _validate_extracted_price(data, raw_text)
+
             log.info(
                 f"[Extract] '{data.get('title', '?')}' @ ${(data.get('price') or 0):.0f} "
                 f"({platform})"

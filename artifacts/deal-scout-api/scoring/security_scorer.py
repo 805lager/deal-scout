@@ -234,24 +234,18 @@ def run_layer1(listing_text: str, title: str, category: str, listing_price: floa
             seen.add(message)
 
     # Price-based check — category-aware thresholds
-    # WHY CATEGORY-AWARE: used bikes/furniture legitimately sell at 20-35% of
-    # market on FBM. Electronics and phones at that discount ARE suspicious.
-    # Triggering HIGH RISK on a $275 Rockhopper is a false positive that
-    # destroys user trust in the security scorer.
     PRICE_THRESHOLDS = {
-        # (threshold_fraction, severity)
-        # Only flag if price < threshold * market_est
-        "phones":      (0.30, "critical"),   # iPhones rarely go below 30%
-        "electronics": (0.25, "high"),        # TVs/laptops 25%+ below = suspicious
+        "phones":      (0.30, "critical"),
+        "electronics": (0.25, "high"),
         "computers":   (0.25, "high"),
         "gaming":      (0.25, "high"),
         "cameras":     (0.25, "high"),
-        "tools":       (0.15, "medium"),      # Power tools regularly go low
-        "bikes":       (0.15, "medium"),      # Bikes commonly 70-80% off retail
-        "furniture":   (0.10, "low"),         # Furniture moves fast at low prices
+        "tools":       (0.15, "medium"),
+        "bikes":       (0.15, "medium"),
+        "furniture":   (0.10, "low"),
         "outdoor":     (0.15, "medium"),
         "sports":      (0.15, "medium"),
-        "vehicles":    (0.40, "high"),        # Vehicles rarely go <40% of market
+        "vehicles":    (0.40, "high"),
         "_default":    (0.20, "high"),
     }
     if market_value and listing_price > 0:
@@ -264,6 +258,20 @@ def run_layer1(listing_text: str, title: str, category: str, listing_price: floa
                     "flag": f"Price is {pct_below}% below market estimate — verify legitimacy",
                     "severity": severity,
                 })
+
+    HARD_FLOOR_PRICES = {
+        "phones":    100,
+        "computers": 75,
+        "gaming":    50,
+        "vehicles":  500,
+        "cameras":   40,
+    }
+    floor = HARD_FLOOR_PRICES.get(category, 0)
+    if floor > 0 and 0 < listing_price < floor and "too good" not in str(seen).lower():
+        found.append({
+            "flag": f"Price ${listing_price:.0f} is unusually low for {category} — verify legitimacy",
+            "severity": "high",
+        })
 
     return found
 

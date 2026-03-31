@@ -66,7 +66,10 @@ _client: Optional[anthropic.Anthropic] = None
 def _get_client() -> anthropic.Anthropic:
     global _client
     if _client is None:
-        _client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        _client = anthropic.Anthropic(
+            api_key=os.getenv("AI_INTEGRATIONS_ANTHROPIC_API_KEY", "placeholder"),
+            base_url=os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"),
+        )
     return _client
 
 
@@ -286,7 +289,7 @@ async def _get_claude_recommendation(
     For good deals (score >= 7), the user should buy the listing — we don't
     want to distract them with alternatives when they've found a real deal.
     """
-    if not os.getenv("ANTHROPIC_API_KEY"):
+    if not os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"):
         return None
 
     # Don't suggest alternatives when the deal is already good
@@ -300,15 +303,16 @@ async def _get_claude_recommendation(
     effective_price = true_cost if true_cost > listing_price else listing_price
     shipping_note   = f" (plus ${true_cost - listing_price:.0f} shipping = ${true_cost:.0f} total)" if true_cost > listing_price else ""
 
-    prompt = f"""You are a product recommendation expert.
+    prompt = f"""You are a product recommendation expert with current 2026 market knowledge.
 
 A buyer is evaluating a used "{product_name}" ({product_info.category}) listed at ${listing_price:.0f}{shipping_note}.
 The deal score indicates this is overpriced or a poor value.
 
 Recommend exactly ONE specific alternative product that:
 1. Is better value or more reliable at a similar or lower price point
-2. Is a real, currently available product (not discontinued in 2024 or later)  
-3. Would appear on eBay or Amazon today when searched
+2. Is a real, currently available product that can be found on eBay or Amazon TODAY
+3. Is from the same product category (don't suggest a laptop when they're looking at a tablet)
+4. Has a well-known brand name that buyers would recognize
 
 Respond ONLY with JSON (no preamble, no markdown):
 {{
@@ -318,6 +322,12 @@ Respond ONLY with JSON (no preamble, no markdown):
   "approx_used_price": <estimated used market price as integer>,
   "search_query": "<4-6 word eBay/Amazon search query>"
 }}
+
+CRITICAL RULES:
+- The approx_used_price MUST be realistic for the USED market, not new retail
+- Do NOT suggest discontinued or obsolete products
+- Do NOT suggest a product more expensive than the current listing unless it's clearly superior
+- If you cannot confidently name a specific real alternative, return empty strings
 
 If you cannot confidently name a specific real alternative, return:
 {{"brand": "", "model": "", "why_better": "", "approx_used_price": 0, "search_query": ""}}"""
@@ -347,6 +357,20 @@ If you cannot confidently name a specific real alternative, return:
         alt_name     = f"{data.get('brand', '')} {data.get('model', '')}".strip()
         search_query = data.get("search_query") or alt_name
         approx_price = float(data.get("approx_used_price") or 0)
+
+        if approx_price > 0 and approx_price > effective_price * 4:
+            log.warning(
+                f"[Suggestions] Claude alt price ${approx_price:.0f} is >4x listing "
+                f"${effective_price:.0f} — likely model confusion, discarding"
+            )
+            return None
+
+        if approx_price > 0 and approx_price > effective_price * 1.5:
+            log.info(
+                f"[Suggestions] Claude alt price ${approx_price:.0f} is notably higher "
+                f"than listing ${effective_price:.0f} — demoting"
+            )
+            approx_price = 0
 
         encoded = urllib.parse.quote_plus(search_query)
         ebay_url = (

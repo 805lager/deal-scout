@@ -527,7 +527,7 @@ async def score_listing(listing: ListingRequest, request: Request):
         "photo_count":    listing.photo_count,
     }
 
-    image_url = listing.image_urls[0] if listing.image_urls else None
+    all_image_urls_sync = listing.image_urls or []
 
     # ── Step 3 + 4b: Deal scoring AND security scoring run concurrently ─────────
     # WHY: security scoring is an independent Haiku call (~2s) that only needs
@@ -560,7 +560,7 @@ async def score_listing(listing: ListingRequest, request: Request):
         deal_score = await score_deal(
             listing_dict,
             market_value_dict,
-            image_url          = image_url,
+            image_urls         = all_image_urls_sync,
             product_evaluation = product_eval,
             photo_count        = effective_photo_count,
         )
@@ -1152,7 +1152,7 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                 "image_urls":     listing.image_urls or [],
                 "photo_count":    listing.photo_count,
             }
-            image_url = listing.image_urls[0] if listing.image_urls else None
+            all_image_urls = listing.image_urls or []
 
             _prelim_category = detect_category(product_info)
             if listing.is_vehicle:
@@ -1174,7 +1174,7 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                 effective_photo_count = max(listing.photo_count or 0, len(listing.image_urls or []))
                 deal_score = await score_deal(
                     listing_dict, market_value_dict,
-                    image_url          = image_url,
+                    image_urls         = all_image_urls,
                     product_evaluation = product_eval,
                     photo_count        = effective_photo_count,
                 )

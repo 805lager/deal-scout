@@ -157,6 +157,68 @@ def _price_direction_hint(asking_price: float, estimated_value: float) -> str:
         return f"\n>>> PRICE DIRECTION: Asking ${asking_price:.0f} is {pct:.0f}% ABOVE estimated value ${estimated_value:.0f}. This is overpriced."
 
 
+def _category_specific_rules(listing: dict) -> str:
+    """Generate category-specific scoring rules based on listing attributes."""
+    rules = []
+
+    category = (listing.get("affiliate_category") or "").lower()
+    title_lower = (listing.get("title") or "").lower()
+    is_vehicle = listing.get("is_vehicle", False)
+
+    if is_vehicle or category == "vehicles":
+        return ""
+
+    if category in ("phones", "tablets") or any(w in title_lower for w in ["iphone", "samsung galaxy", "pixel", "ipad"]):
+        rules.append("""## CATEGORY RULES: PHONES/TABLETS
+- Storage capacity matters hugely: 64GB vs 256GB can mean $200+ price difference
+- Carrier unlocked is worth 10-15% more than carrier-locked
+- Battery health below 80% is a significant red flag — mention it
+- Check for mentions of screen burn-in (OLED), water damage, or Face ID issues
+- iCloud/activation lock = DO NOT BUY (score 1-2)""")
+
+    elif category in ("electronics", "computers") or any(w in title_lower for w in ["laptop", "macbook", "desktop", "gpu", "monitor"]):
+        rules.append("""## CATEGORY RULES: ELECTRONICS/COMPUTERS
+- Model year matters: a 2021 laptop is worth 30-50% less than a 2024 model
+- Check RAM and storage specs — they heavily affect value
+- "Refurbished" from a seller vs certified refurbished are very different
+- Missing power adapter/charger reduces value by $20-50
+- Check for signs of heavy use: worn keycaps, screen scratches, fan noise mentions""")
+
+    elif category == "furniture" or any(w in title_lower for w in ["sofa", "couch", "desk", "table", "chair", "bed", "dresser"]):
+        rules.append("""## CATEGORY RULES: FURNITURE
+- Dimensions are critical — buyers need to know if it fits
+- Solid wood vs particle board/MDF is a major quality & value difference
+- Pet damage, smoke exposure, and stains permanently reduce value
+- Delivery/disassembly complexity affects real cost to buyer
+- Brand matters less than material quality and condition""")
+
+    elif category == "tools" or any(w in title_lower for w in ["drill", "saw", "dewalt", "milwaukee", "makita", "ryobi"]):
+        rules.append("""## CATEGORY RULES: POWER TOOLS
+- Battery platform matters: check if batteries/charger are included
+- Bare tool vs kit (with batteries) is a 40-60% price difference
+- Brushless motors are worth 20-30% more than brushed
+- Check if it's a corded vs cordless version — very different values
+- Professional-grade (Milwaukee FUEL, DeWalt XR) vs consumer-grade pricing""")
+
+    elif category in ("gaming",) or any(w in title_lower for w in ["ps5", "xbox", "nintendo", "switch", "steam deck"]):
+        rules.append("""## CATEGORY RULES: GAMING
+- Console ban status is critical — banned consoles lose 50%+ value
+- Digital vs disc edition consoles have different values
+- Check for controller drift or stick issues
+- Game bundles: value each game separately, most used games are worth $5-15
+- Limited editions and special colors hold value better""")
+
+    elif category in ("cameras",) or any(w in title_lower for w in ["camera", "lens", "dslr", "mirrorless", "telescope"]):
+        rules.append("""## CATEGORY RULES: CAMERAS/OPTICS
+- Shutter count on DSLRs/mirrorless is like mileage on a car
+- Lens glass condition (fungus, haze, scratches) is the #1 value factor
+- Check if the item is the latest version — older camera bodies depreciate fast
+- For telescopes: collimation quality and mirror condition are critical
+- Aftermarket accessories (tripods, eyepieces) add modest value""")
+
+    return "\n".join(rules)
+
+
 def build_scoring_prompt(listing: dict, market_value: dict, product_evaluation=None, photo_count: int = 0) -> str:
     """
     Build the prompt that Claude uses to score the deal.
@@ -237,9 +299,11 @@ Apply vehicle-specific reasoning:
     else:
         photos_line = "\nPhotos:       Not provided"
 
+    category_rules = _category_specific_rules(listing)
+
     return f"""You are an expert deal evaluator for a personal shopping assistant.
 Your job is to analyze a second-hand marketplace listing and produce a structured deal score.
-{multi_item_instruction}{vehicle_instruction}
+{multi_item_instruction}{vehicle_instruction}{category_rules}
 ## LISTING DETAILS
 Title:        {listing['title']}
 Price:        {listing['raw_price_text']}{f" (reduced from ${listing['original_price']:.0f} — seller has already dropped the price)" if listing.get('original_price') and listing['original_price'] > listing.get('price', 0) else ''}{shipping_line}
@@ -373,15 +437,6 @@ async def _fetch_image_base64(image_url: str) -> Optional[tuple[str, str]]:
     """
     Fetch an image URL and return (base64_data, media_type).
     Returns None if fetch fails — caller falls back to text-only scoring.
-
-    WHY httpx OVER requests:
-      httpx is async-native, so we can await it without blocking the event loop.
-      requests.get() would block the entire FastAPI server during the image fetch.
-
-    WHY FBM IMAGES WORK SERVER-SIDE:
-      Facebook CDN (fbcdn.net) images are publicly accessible via URL — the
-      security parameters are embedded in the URL itself (no session cookie needed).
-      They're typically valid for several hours after page load.
     """
     try:
         import httpx
@@ -403,6 +458,27 @@ async def _fetch_image_base64(image_url: str) -> Optional[tuple[str, str]]:
     except Exception as e:
         log.warning(f"Image fetch error: {type(e).__name__}: {e}")
         return None
+
+
+async def _fetch_multiple_images(image_urls: list[str], max_images: int = 3) -> list[tuple[str, str]]:
+    """
+    Fetch up to max_images concurrently. Returns list of (base64_data, media_type) tuples.
+    Skips failed fetches gracefully.
+    """
+    if not image_urls:
+        return []
+
+    urls_to_fetch = image_urls[:max_images]
+    tasks = [_fetch_image_base64(url) for url in urls_to_fetch]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    fetched = []
+    for r in results:
+        if isinstance(r, tuple) and len(r) == 2:
+            fetched.append(r)
+
+    log.info(f"[Vision] Fetched {len(fetched)}/{len(urls_to_fetch)} images for multi-image analysis")
+    return fetched
 
 
 def _market_fallback_score(listing: dict, market_value: dict, image_analyzed: bool = False) -> DealScore:
@@ -480,20 +556,15 @@ async def score_deal(
     listing: dict,
     market_value: dict,
     image_url: Optional[str] = None,
-    product_evaluation=None,  # ProductEvaluation from product_evaluator — enriches Claude's context
+    image_urls: Optional[list[str]] = None,
+    product_evaluation=None,
     photo_count: int = 0,
 ) -> Optional[DealScore]:
     """
     Send listing + market data to Claude and parse the deal score response.
 
-    image_url: if provided, fetches the image and includes it in the Claude
-    message as a vision input. Claude will analyze actual photo condition
-    vs. the seller's claimed condition — catches "like new" listings with
-    obvious damage. Adds ~1s latency for the image fetch.
-
-    WHY claude-haiku-4-5 for vision:
-      Haiku 4.5 supports multimodal input and is fast enough for real-time
-      sidebar scoring. We can upgrade to Sonnet if vision quality is lacking.
+    image_urls: list of image URLs for multi-image vision analysis (up to 3).
+    image_url: legacy single URL fallback (used if image_urls not provided).
     """
     if not os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"):
         log.error("ANTHROPIC_API_KEY not set in .env")
@@ -502,56 +573,52 @@ async def score_deal(
 
     prompt = build_scoring_prompt(listing, market_value, product_evaluation, photo_count=photo_count)
 
-    # Attempt image fetch if URL provided
-    # WHY CONCURRENT: fetch image while building prompt — saves ~0.5s
-    image_result = None
-    if image_url:
-        log.info(f"Fetching listing image for vision analysis...")
-        image_result = await _fetch_image_base64(image_url)
+    all_urls = image_urls or ([image_url] if image_url else [])
+    image_results = []
+    if all_urls:
+        log.info(f"Fetching {min(len(all_urls), 3)} listing image(s) for vision analysis...")
+        image_results = await _fetch_multiple_images(all_urls, max_images=3)
 
-    image_analyzed = image_result is not None
+    image_analyzed = len(image_results) > 0
+    num_images = len(image_results)
 
-    # Build Claude message — text-only or multimodal depending on image availability
     if image_analyzed:
-        b64_data, media_type = image_result
-        # WHY IMAGE FIRST: Claude processes content blocks in order.
-        # Seeing the photo before reading the description mirrors how a
-        # human buyer evaluates a listing — you look at the photos first.
-        message_content = [
-            {
+        message_content = []
+        for idx, (b64_data, media_type) in enumerate(image_results):
+            message_content.append({
                 "type": "image",
                 "source": {
                     "type":       "base64",
                     "media_type": media_type,
                     "data":       b64_data,
                 }
-            },
-            {
-                "type": "text",
-                "text": (
-                    # CRITICAL: Tell Claude exactly what item is for sale and to ignore background objects.
-                    # Without this, Claude sees background items (bikes in a room, decor, etc.) and
-                    # flags them as mismatches with the listing title. This caused a couch listing to
-                    # score 2/10 because Claude saw a bike in the background bookshelf area.
-                    f"This photo is for a listing titled: '{listing.get('title', 'unknown item')}'\n\n"
-                    + (
-                        f"NOTE: This listing has {photo_count} total photo(s). You are analyzing photo 1 of {photo_count}. "
-                        "Do NOT flag limited photo quantity as a red flag — additional photos exist.\n\n"
-                        if photo_count > 1 else ""
-                    )
-                    + "IMPORTANT: Focus ONLY on the PRIMARY SUBJECT of this photo (the item being sold). "
-                    "Background objects, room decor, and other items visible in the environment are "
-                    "INCIDENTAL — they are NOT the listing item and should NOT affect your analysis. "
-                    "If you see multiple objects, the item matching the listing title is the one being sold.\n\n"
-                    "Analyze the primary item (the one being sold):\n"
-                    "- Is the visible condition consistent with the seller's claimed condition?\n"
-                    "- Are there signs of damage, wear, or missing parts not mentioned?\n"
-                    "- Are any included accessories visible?\n\n"
-                    + prompt
-                )
-            }
-        ]
-        log.info("Sending listing + photo to Claude Vision...")
+            })
+
+        vision_instruction = (
+            f"These {num_images} photo(s) are for a listing titled: '{listing.get('title', 'unknown item')}'\n\n"
+        )
+        if photo_count > num_images:
+            vision_instruction += (
+                f"NOTE: This listing has {photo_count} total photo(s). You are analyzing {num_images} of {photo_count}. "
+                "Do NOT flag limited photo quantity as a red flag — additional photos exist.\n\n"
+            )
+        vision_instruction += (
+            "IMPORTANT: Focus ONLY on the PRIMARY SUBJECT of these photos (the item being sold). "
+            "Background objects, room decor, and other items visible in the environment are "
+            "INCIDENTAL — they are NOT the listing item and should NOT affect your analysis. "
+            "If you see multiple objects, the item matching the listing title is the one being sold.\n\n"
+            "Analyze the primary item (the one being sold) across ALL provided photos:\n"
+            "- Is the visible condition consistent with the seller's claimed condition?\n"
+            "- Are there signs of damage, wear, or missing parts not mentioned in ANY photo?\n"
+            "- Are any included accessories visible?\n"
+            "- Do different angles reveal issues not visible in the first photo?\n\n"
+        )
+
+        message_content.append({
+            "type": "text",
+            "text": vision_instruction + prompt
+        })
+        log.info(f"Sending listing + {num_images} photo(s) to Claude Vision...")
     else:
         message_content = prompt
         log.info("Sending listing to Claude (text-only)...")
