@@ -9,7 +9,7 @@ FastAPI backend for the Deal Scout Chrome extension. Scores deals on Facebook Ma
 - **Language**: Python 3.11
 - **Framework**: FastAPI + Uvicorn
 - **AI**: Claude Haiku (via Replit AI integration — no API key needed)
-- **Pricing**: eBay Finding API + Claude AI fallback
+- **Pricing**: Claude AI (primary) + DuckDuckGo web grounding + eBay Finding API fallback
 - **Monorepo tool**: pnpm workspaces (Node.js side)
 
 ## Architecture
@@ -22,7 +22,7 @@ artifacts/deal-scout-api/
     ├── deal_scorer.py         # Claude scoring (main AI call)
     ├── product_extractor.py   # Claude extracts brand/model from vague title
     ├── ebay_pricer.py         # eBay Finding API comps + _safe_craigslist wrapper
-    ├── claude_pricer.py       # Claude AI price fallback (replaces Gemini)
+    ├── claude_pricer.py       # Claude AI price estimation + PostgreSQL price cache (48hr TTL)
     ├── craigslist_pricer.py   # Craigslist asking prices via RSS (no API key)
     ├── product_evaluator.py   # Reddit + Google reliability signals
     ├── security_scorer.py     # Claude scam/fraud detection
@@ -31,7 +31,8 @@ artifacts/deal-scout-api/
     ├── vehicle_pricer.py      # Car pricing via CarGurus
     ├── suggestion_engine.py   # Deal card generation
     ├── corrections.py         # Manual query corrections
-    └── google_pricer.py       # Google Shopping price scraper
+    ├── web_pricer.py          # DuckDuckGo Lite web search for real-time price grounding
+    └── google_pricer.py       # Google Shopping price scraper (deprecated — replaced by web_pricer)
 ```
 
 ## API Endpoints

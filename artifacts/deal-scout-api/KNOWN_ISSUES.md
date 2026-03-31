@@ -5,6 +5,23 @@ Check this file when reviewing new score logs to see if old issues have resurfac
 
 ---
 
+## FIXED — v0.34.0 (2026-03-31)
+
+### ISS-008: Google web search rate-limited (429 errors) — web pricer never worked
+- **Symptom**: `data_source` was always `claude_knowledge`, never `claude_web_grounded`.
+  Server logs showed `[WebPricer] Search returned 429` on every Google request.
+- **Root cause**: Google blocks automated search requests from server IPs.
+- **Fix**: Replaced Google scraping with DuckDuckGo Lite (`lite.duckduckgo.com/lite/`).
+  DDG Lite returns 200 with actual search results and price data. No API key needed.
+- **Bonus**: Added PostgreSQL `price_cache` table (48hr TTL) so repeated Claude pricing
+  lookups return instantly from DB cache instead of burning another Claude API call.
+  Added URL-based result caching (2hr TTL) for repeated scoring of the same listing.
+  Added query similarity check to skip redundant market value refinement calls.
+- **Regression check**: In score log, count `data_source = claude_web_grounded`. Should be
+  non-zero when DuckDuckGo returns prices. `price_cache` table should have rows.
+
+---
+
 ## FIXED — v0.33.2 (2026-03-31)
 
 ### ISS-007: Daily Discord summary always shows 0 scores
