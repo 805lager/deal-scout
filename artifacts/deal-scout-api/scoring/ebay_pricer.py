@@ -222,16 +222,13 @@ async def _try_claude_ai_pricing(query: str, condition: str, listing_price: floa
 
         avg = result["avg_used_price"]
 
-        # Sanity guard: if Gemini's avg is > 4x the listing price, it likely
-        # hallucinated a premium product substitution (e.g. returned Celestron
-        # NexStar $650 for a Gskyer $150 query). Discard and fall back to eBay.
-        # WHY 4x (not 2x): legitimate deals can be 60-70% below market, so
-        # a $250 listing with a $650 market value IS plausible for premium items.
-        # 4x catches clear substitutions while allowing real deep discounts.
-        if listing_price > 20 and avg > listing_price * 4:
+        _is_web_grounded = result.get("data_source") == "claude_web_grounded"
+        _sanity_cap = 10.0 if _is_web_grounded else 4.0
+        if listing_price > 20 and avg > listing_price * _sanity_cap:
             log.warning(
                 f"[Gemini PRIMARY] Sanity fail for '{query}': "
                 f"avg=${avg:.0f} is {avg/listing_price:.1f}x listing=${listing_price:.0f} "
+                f"(cap={_sanity_cap}x, web_grounded={_is_web_grounded})"
                 f"— likely brand substitution, discarding"
             )
             return None
