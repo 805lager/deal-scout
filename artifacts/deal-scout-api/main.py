@@ -3120,6 +3120,9 @@ async def _daily_summary_scheduler():
 
 @app.on_event("startup")
 async def _start_daily_summary_task():
+    if os.getenv("REPLIT_DEPLOYMENT", "") != "1":
+        log.info("[DailySummary] Skipping scheduler in dev (only runs in production)")
+        return
     _asyncio.create_task(_daily_summary_scheduler())
     log.info("[DailySummary] Background scheduler started")
 

@@ -5,6 +5,25 @@ Check this file when reviewing new score logs to see if old issues have resurfac
 
 ---
 
+## FIXED — v0.33.2 (2026-03-31)
+
+### ISS-007: Daily Discord summary always shows 0 scores
+- **Symptom**: Discord daily digest shows "0 total" even though scores exist
+  in the production database.
+- **Root cause**: Both the dev server AND production server had the daily
+  scheduler running. The dev server's scheduler fires at midnight UTC and
+  queries the DEV database (which has 0 recent scores because all user traffic
+  goes to the production API). The dev's "0 scores" message overwrites or
+  precedes the production summary.
+- **Fix**: Added `REPLIT_DEPLOYMENT=1` guard to `_start_daily_summary_task()`.
+  The scheduler now only runs in production, where the real score data lives.
+  The manual `/admin/daily-summary` endpoint still works in both environments.
+- **Regression check**: Discord daily summary should show non-zero scores
+  matching production DB. Manual trigger via
+  `GET /admin/daily-summary?key=...` can verify.
+
+---
+
 ## FIXED — v0.33.2 (2026-03-30)
 
 ### ISS-001: Photo count undercount → false "1 photo" security ding
