@@ -395,7 +395,12 @@ async def run_layer2(
     raw_photo_count = getattr(listing, "photo_count", 0) or 0
     raw_image_urls  = len(getattr(listing, "image_urls", None) or [])
     photo_count     = max(raw_photo_count, raw_image_urls)
-    photo_str   = f"{photo_count} photo(s)" if photo_count else "none"
+    if photo_count == 0:
+        photo_str = "unknown (not available from DOM extraction)"
+    elif raw_photo_count > raw_image_urls:
+        photo_str = f"{photo_count} photo(s)"
+    else:
+        photo_str = f"{photo_count} photo(s) extracted (listing may have more — DOM extraction is limited)"
 
     # Use effective_title if passed, fall back to raw listing title
     title_for_prompt = (effective_title or listing.title or "")[:100]

@@ -263,6 +263,7 @@ class RawListingRequest(BaseModel):
     """
     raw_text:    str        # Truncated page text (max 4000 chars, client-side trimmed)
     image_urls:  list = []  # DOM-extracted image URLs (position-filtered, max 5)
+    photo_count: int  = 0   # True carousel photo count from DOM (may be > len(image_urls))
     platform:    str = "facebook_marketplace"
     listing_url: str = ""
 
@@ -956,7 +957,10 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
             extracted["image_urls"] = raw.image_urls or []
             extracted["listing_url"] = raw.listing_url
             extracted["platform"]    = raw.platform
-            extracted.setdefault("photo_count", len(raw.image_urls or []))
+            claude_photo_count = int(extracted.get("photo_count", 0) or 0)
+            dom_image_count    = len(raw.image_urls or [])
+            dom_carousel_count = raw.photo_count or 0
+            extracted["photo_count"] = max(claude_photo_count, dom_image_count, dom_carousel_count)
 
             title     = extracted.get("title", "").strip()
             price_raw = extracted.get("price")          # None means truly unknown
