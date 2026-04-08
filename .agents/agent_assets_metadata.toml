@@ -84,3 +84,9 @@ id = "FR-wFZdJFALy0-73nV6vR"
 uri = "file://deal_scout_extension.zip"
 type = "unspecified"
 title = "Deal Scout v0.26.42 Extension Zip"
+
+[[outputs]]
+id = "1R3OENLfaB-6pRuYi_bWt"
+uri = "file://deal-scout-chrome-v0.33.0.zip"
+type = "unspecified"
+title = "Deal Scout v0.33.0 — Chrome Web Store Package"
