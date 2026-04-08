@@ -16,15 +16,16 @@
  *   instantly without a new API call.
  *
  * BOT DETECTION NOTES:
- *   - We read existing DOM — no Playwright, no synthetic clicks
- *   - All extraction is passive (no form submissions, no navigation)
+ *   - We read existing DOM — no Playwright, minimal user-like clicks
+ *   - Only click: "See more" button to expand truncated descriptions
+ *   - No form submissions, no navigation, no scrolling automation
  *   - Sidebar injection uses a div, never modifies FBM's own DOM tree
  */
 
 (function () {
   "use strict";
 
-  const VERSION  = '0.32.0';
+  const VERSION  = '0.33.0';
   const PANEL_ID  = "deal-scout-panel";
   let API_BASE = "https://deal-scout-805lager.replit.app/api/ds";
   const DS_API_KEY = "ds_live_098caae54340d797cb216856d0cffe50";
@@ -384,7 +385,7 @@
                 || document.querySelector('[class*="xz9dl007"]')
                 || document.querySelector('div[dir="auto"][style*="white-space"]');
     if (descEl) {
-      description = descEl.textContent.trim().slice(0, 800);
+      description = descEl.textContent.trim().slice(0, 4000);
     }
 
     const conditionMatch = (document.body.innerText || '').match(
@@ -469,6 +470,37 @@
   }
 
   // ── Raw Data Extraction ───────────────────────────────────────────────────────
+
+  async function _expandSeeMore() {
+    try {
+      const selectors = [
+        'div[role="button"]',
+        'span[role="button"]',
+        'a[role="button"]',
+        'div[tabindex="0"]',
+      ];
+      let clicked = false;
+      for (const sel of selectors) {
+        const els = document.querySelectorAll(sel);
+        for (const el of els) {
+          const txt = (el.textContent || '').trim().toLowerCase();
+          if (txt === 'see more' || txt === 'see more…' || txt === 'see more...') {
+            const parent = el.closest('[data-testid="marketplace-pdp-description"]')
+                        || el.closest('div[dir="auto"]')
+                        || el.parentElement;
+            if (!parent) continue;
+            el.click();
+            clicked = true;
+            break;
+          }
+        }
+        if (clicked) break;
+      }
+      if (clicked) {
+        await new Promise(r => setTimeout(r, 300));
+      }
+    } catch (_e) {}
+  }
 
   function extractRaw() {
     const { el: container, source: containerSource, diag: containerDiag } = _getListingContainer();
@@ -821,6 +853,8 @@
 
     window.__dealScoutPrevTitle = undefined;
     try { sessionStorage.removeItem('ds_prevTitle'); } catch (_e) {}
+
+    await _expandSeeMore();
 
     const _maxContentRetries = 8;
     const _contentRetryDelays = [500, 800, 1000, 1500, 2000, 2000, 2000, 2000];
