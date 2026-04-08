@@ -511,7 +511,10 @@
       if (clicked) {
         await new Promise(r => setTimeout(r, 400));
       }
-    } catch (_e) {}
+      return clicked;
+    } catch (_e) {
+      return false;
+    }
   }
 
   function extractRaw() {
@@ -866,7 +869,7 @@
     window.__dealScoutPrevTitle = undefined;
     try { sessionStorage.removeItem('ds_prevTitle'); } catch (_e) {}
 
-    await _expandSeeMore();
+    const _seeMoreClicked = await _expandSeeMore();
 
     const _maxContentRetries = 8;
     const _contentRetryDelays = [500, 800, 1000, 1500, 2000, 2000, 2000, 2000];
@@ -951,7 +954,7 @@
 
     const _fpMatched = _fpRetries > 0;
     const _h1AtExtract = _getCurrentH1Title();
-    _dsDebugPost('extraction-done', { urlId: listingId, rawLen: rawData.raw_text.length, h1: _h1AtExtract.slice(0, 80), rawSnippet: rawData.raw_text.slice(0, 80), fpRetries: _fpRetries, fpMatched: _fpMatched, titleCheckRetries: _titleCheckRetries, contentTitleMatch: _contentTitleMatch, mutationSettleMs: _mutationSettleMs, titleWaitMs: _titleWaitMs });
+    _dsDebugPost('extraction-done', { urlId: listingId, rawLen: rawData.raw_text.length, h1: _h1AtExtract.slice(0, 80), rawSnippet: rawData.raw_text.slice(0, 80), fpRetries: _fpRetries, fpMatched: _fpMatched, titleCheckRetries: _titleCheckRetries, contentTitleMatch: _contentTitleMatch, mutationSettleMs: _mutationSettleMs, titleWaitMs: _titleWaitMs, seeMoreClicked: _seeMoreClicked });
 
     const abort = new AbortController();
     window.__dealScoutAbort = abort;
