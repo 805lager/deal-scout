@@ -473,22 +473,23 @@
 
   async function _expandSeeMore() {
     try {
+      const { el: container } = _getListingContainer();
+      const descContainer = container.querySelector('[data-testid="marketplace-pdp-description"]')
+                         || container.querySelector('[class*="xz9dl007"]')
+                         || container;
       const selectors = [
         'div[role="button"]',
         'span[role="button"]',
         'a[role="button"]',
         'div[tabindex="0"]',
+        'span',
       ];
       let clicked = false;
       for (const sel of selectors) {
-        const els = document.querySelectorAll(sel);
+        const els = descContainer.querySelectorAll(sel);
         for (const el of els) {
           const txt = (el.textContent || '').trim().toLowerCase();
           if (txt === 'see more' || txt === 'see more…' || txt === 'see more...') {
-            const parent = el.closest('[data-testid="marketplace-pdp-description"]')
-                        || el.closest('div[dir="auto"]')
-                        || el.parentElement;
-            if (!parent) continue;
             el.click();
             clicked = true;
             break;
@@ -496,8 +497,19 @@
         }
         if (clicked) break;
       }
+      if (!clicked) {
+        const allBtns = container.querySelectorAll('div[role="button"], span[role="button"]');
+        for (const el of allBtns) {
+          const txt = (el.textContent || '').trim().toLowerCase();
+          if (txt === 'see more' || txt === 'see more…' || txt === 'see more...') {
+            el.click();
+            clicked = true;
+            break;
+          }
+        }
+      }
       if (clicked) {
-        await new Promise(r => setTimeout(r, 300));
+        await new Promise(r => setTimeout(r, 400));
       }
     } catch (_e) {}
   }
