@@ -145,9 +145,9 @@ async def search_ebay_browse(
         "limit": str(min(limit, 200)),
     }
 
-    filters = []
+    filter_parts = []
     if sold:
-        filters.append("{soldItemsOnly:true}")
+        filter_parts.append("soldItemsOnly:{true}")
     if condition:
         cond_map = {
             "new": "NEW",
@@ -158,10 +158,10 @@ async def search_ebay_browse(
         }
         mapped = cond_map.get(condition.lower().strip(), "")
         if mapped:
-            filters.append(f"{{conditions:{{{mapped}}}}}") 
+            filter_parts.append(f"conditions:{{{mapped}}}")
 
-    if filters:
-        params["filter"] = ",".join(filters)
+    if filter_parts:
+        params["filter"] = ",".join(filter_parts)
 
     try:
         async with httpx.AsyncClient(timeout=12.0) as client:
@@ -178,11 +178,16 @@ async def search_ebay_browse(
         if resp.status_code == 401:
             global _cached_token
             _cached_token = None
-            log.warning("[BrowseAPI] Token expired — will refresh on next call")
+            log.warning("[BrowseAPI] Token expired (401) — will refresh on next call")
             return None
 
         if resp.status_code == 429:
             log.warning("[BrowseAPI] Rate limited (429) — skipping")
+            return None
+
+        if resp.status_code >= 400:
+            body_snippet = resp.text[:300] if resp.text else "(empty)"
+            log.warning(f"[BrowseAPI] HTTP {resp.status_code} for '{query}': {body_snippet}")
             return None
 
         resp.raise_for_status()

@@ -733,9 +733,12 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         except Exception as e:
             log.warning(f"[GoogleFallback] Failed for '{query}': {e}")
 
-    # ── Step 1c: If both failed, try Claude AI pricing (web-grounded then knowledge) ──
+    # ── Step 1c: If Browse failed, try Claude AI pricing ─────────────────────
+    # When Google Shopping found prices, they're injected into the DuckDuckGo
+    # web_pricer context so Claude sees both Google and DDG data as grounding.
+    # When neither has data, Claude falls back to training knowledge.
     ai_pricing_stats = None
-    if not _browse_result and not _google_stats:
+    if not _browse_result:
         ai_pricing_stats = await _try_claude_ai_pricing(query, condition=listing_condition, listing_price=listing_price)
 
     _ai_item_id = ai_pricing_stats.get("item_id", "") if ai_pricing_stats else ""
@@ -762,7 +765,11 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
     new_items    = parse_ebay_items(new_raw, sold=False)
 
     # ── Step 3: Build market stats from whichever source won ──────────────────
-    # Priority: eBay Browse API → Google Shopping → Claude AI → eBay Finding → Mock
+    # Priority: Browse API → Claude AI (grounded by Google+DDG) → raw Google → eBay Finding → Mock
+    # When Browse fails, both Google and Claude run. Claude gets DuckDuckGo data
+    # as web grounding context. Claude's estimate is preferred over raw Google
+    # because Claude interprets used-vs-new, adjusts for condition, and gives
+    # richer context. Raw Google stats are only used when Claude also fails.
     if _browse_result:
         sold_avg        = _browse_result["avg_price"]
         sold_low        = _browse_result["low_price"]
@@ -785,25 +792,6 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         estimated_value = _browse_result["avg_price"]
         confidence      = "high" if _browse_result["count"] >= 8 else "medium" if _browse_result["count"] >= 3 else "low"
         data_source     = "ebay_browse"
-
-    elif _google_stats:
-        sold_avg        = _google_stats["avg"]
-        sold_low        = _google_stats["low"]
-        sold_high       = _google_stats["high"]
-        sold_count      = _google_stats["count"]
-        if active_items and not ebay_is_mock:
-            active_prices = [p.price for p in active_items]
-            active_avg    = statistics.mean(active_prices)
-            active_low    = min(active_prices)
-            active_count  = len(active_items)
-        else:
-            active_avg   = round(_google_stats["avg"] * 1.05, 2)
-            active_low   = _google_stats["low"]
-            active_count = 0
-        new_price       = min(p.price for p in new_items) if (new_items and not ebay_is_mock) else 0.0
-        estimated_value = _google_stats["avg"]
-        confidence      = "medium" if _google_stats["count"] >= 5 else "low"
-        data_source     = "google_shopping"
 
     elif ai_pricing_stats:
         sold_avg        = ai_pricing_stats["avg"]
@@ -828,6 +816,25 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         estimated_value = ai_pricing_stats["avg"]
         confidence      = ai_pricing_stats["confidence"]
         data_source     = ai_pricing_stats["data_source"]
+
+    elif _google_stats:
+        sold_avg        = _google_stats["avg"]
+        sold_low        = _google_stats["low"]
+        sold_high       = _google_stats["high"]
+        sold_count      = _google_stats["count"]
+        if active_items and not ebay_is_mock:
+            active_prices = [p.price for p in active_items]
+            active_avg    = statistics.mean(active_prices)
+            active_low    = min(active_prices)
+            active_count  = len(active_items)
+        else:
+            active_avg   = round(_google_stats["avg"] * 1.05, 2)
+            active_low   = _google_stats["low"]
+            active_count = 0
+        new_price       = min(p.price for p in new_items) if (new_items and not ebay_is_mock) else 0.0
+        estimated_value = _google_stats["avg"]
+        confidence      = "medium" if _google_stats["count"] >= 5 else "low"
+        data_source     = "google_shopping"
 
     else:
         sold_prices  = [p.price for p in sold_items]
