@@ -628,19 +628,17 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
     """
     Main entry point. Given a listing title, return a full MarketValue estimate.
 
-    FLOW (v0.6.0 — eBay Browse API first, multi-source fallback):
+    FLOW (v0.6.0 — real data first, AI guesses last):
       1. Try eBay Browse API (real sold prices — ground truth)
-      1b. If Browse fails → try Google Shopping scraper
-      1c. If Google fails → try Claude AI (DuckDuckGo-grounded then knowledge)
+      1b. If Browse fails → try Google Shopping + Claude AI (DDG-grounded) in parallel
       2. Always fetch eBay Finding API + Craigslist for sidebar cards
-      3. Pick pricing from first successful source:
-         Browse API → Google Shopping → Claude AI → eBay Finding → Mock
+      3. Pick pricing — real data always beats AI guesses:
+         Browse API → Claude web-grounded → Google Shopping → Claude knowledge → eBay Finding → Mock
       4. If all live sources fail → mock data, then correction_range override
 
-    WHY BROWSE API FIRST:
-      Real sold prices are ground truth — what buyers actually paid.
-      Claude's training data can be stale and produces round-number estimates.
-      Browse API returns precise sold prices with high accuracy.
+    KEY RULE: claude_knowledge (ungrounded AI estimate) NEVER overrides real data
+    from Google Shopping or eBay. Only claude_web_grounded (backed by DuckDuckGo
+    real prices) can beat Google Shopping.
     """
     query       = build_search_query(listing_title)
     campaign_id = os.getenv("EBAY_CAMPAIGN_ID", "")
@@ -734,9 +732,10 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
             log.warning(f"[GoogleFallback] Failed for '{query}': {e}")
 
     # ── Step 1c: If Browse failed, try Claude AI pricing ─────────────────────
-    # When Google Shopping found prices, they're injected into the DuckDuckGo
-    # web_pricer context so Claude sees both Google and DDG data as grounding.
-    # When neither has data, Claude falls back to training knowledge.
+    # Claude calls DuckDuckGo for web grounding. If DDG returns prices, Claude
+    # uses them → data_source="claude_web_grounded" (real data, trusted).
+    # If DDG fails, Claude uses training knowledge → data_source="claude_knowledge"
+    # (AI guess, lower priority than Google Shopping real prices).
     ai_pricing_stats = None
     if not _browse_result:
         ai_pricing_stats = await _try_claude_ai_pricing(query, condition=listing_condition, listing_price=listing_price)
@@ -765,11 +764,22 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
     new_items    = parse_ebay_items(new_raw, sold=False)
 
     # ── Step 3: Build market stats from whichever source won ──────────────────
-    # Priority: Browse API → Claude AI (grounded by Google+DDG) → raw Google → eBay Finding → Mock
-    # When Browse fails, both Google and Claude run. Claude gets DuckDuckGo data
-    # as web grounding context. Claude's estimate is preferred over raw Google
-    # because Claude interprets used-vs-new, adjusts for condition, and gives
-    # richer context. Raw Google stats are only used when Claude also fails.
+    # Priority (real data before AI guesses):
+    #   1. eBay Browse API (real sold prices — ground truth)
+    #   2. Claude AI web-grounded (DuckDuckGo real prices interpreted by Claude)
+    #   3. Google Shopping (real retail prices, but skews NEW not used)
+    #   4. Claude AI knowledge (ungrounded AI estimate — last resort before mock)
+    #   5. eBay Finding API live data (if any got through rate limit)
+    #   6. eBay mock data
+    #
+    # Key rule: claude_knowledge NEVER overrides real data (Google/eBay).
+    # claude_web_grounded CAN override Google because it's real DDG prices
+    # interpreted by Claude with condition-awareness.
+
+    _ai_is_web_grounded = (
+        ai_pricing_stats and ai_pricing_stats.get("data_source") == "claude_web_grounded"
+    )
+
     if _browse_result:
         sold_avg        = _browse_result["avg_price"]
         sold_low        = _browse_result["low_price"]
@@ -793,7 +803,7 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         confidence      = "high" if _browse_result["count"] >= 8 else "medium" if _browse_result["count"] >= 3 else "low"
         data_source     = "ebay_browse"
 
-    elif ai_pricing_stats:
+    elif _ai_is_web_grounded and ai_pricing_stats:
         sold_avg        = ai_pricing_stats["avg"]
         sold_low        = ai_pricing_stats["low"]
         sold_high       = ai_pricing_stats["high"]
@@ -807,7 +817,6 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
             active_avg   = round(ai_pricing_stats["avg"] * 1.05, 2)
             active_low   = ai_pricing_stats["low"]
             active_count = 0
-
         new_price       = (
             min(p.price for p in new_items)
             if (new_items and not ebay_is_mock)
@@ -815,7 +824,7 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         )
         estimated_value = ai_pricing_stats["avg"]
         confidence      = ai_pricing_stats["confidence"]
-        data_source     = ai_pricing_stats["data_source"]
+        data_source     = "claude_web_grounded"
 
     elif _google_stats:
         sold_avg        = _google_stats["avg"]
@@ -835,6 +844,29 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         estimated_value = _google_stats["avg"]
         confidence      = "medium" if _google_stats["count"] >= 5 else "low"
         data_source     = "google_shopping"
+
+    elif ai_pricing_stats:
+        sold_avg        = ai_pricing_stats["avg"]
+        sold_low        = ai_pricing_stats["low"]
+        sold_high       = ai_pricing_stats["high"]
+        sold_count      = ai_pricing_stats["count"]
+        if active_items and not ebay_is_mock:
+            active_prices = [p.price for p in active_items]
+            active_avg    = statistics.mean(active_prices)
+            active_low    = min(active_prices)
+            active_count  = len(active_items)
+        else:
+            active_avg   = round(ai_pricing_stats["avg"] * 1.05, 2)
+            active_low   = ai_pricing_stats["low"]
+            active_count = 0
+        new_price       = (
+            min(p.price for p in new_items)
+            if (new_items and not ebay_is_mock)
+            else ai_pricing_stats.get("new_retail", 0.0)
+        )
+        estimated_value = ai_pricing_stats["avg"]
+        confidence      = ai_pricing_stats["confidence"]
+        data_source     = ai_pricing_stats["data_source"]
 
     else:
         sold_prices  = [p.price for p in sold_items]
