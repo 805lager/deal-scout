@@ -1,0 +1,4 @@
+artifacts/deal-scout-brand-video/public/videos/demo.mp4 filter=lfs diff=lfs merge=lfs -text
+attached_assets/Screen_Recording_2026-04-10_125721_1775856220626.mp4 filter=lfs diff=lfs merge=lfs -text
+attached_assets/Screen_Recording_2026-04-10_125721_1775856267349.mp4 filter=lfs diff=lfs merge=lfs -text
+artifacts/deal-scout-social-ad/public/videos/demo.mp4 filter=lfs diff=lfs merge=lfs -text

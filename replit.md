@@ -1,3 +1,28 @@
+# Deal Scout — Replit Project
+
+## Artifacts
+
+### Deal Scout Social Media Ad
+- **Location**: `artifacts/deal-scout-social-ad/`
+- **Type**: Animated video (React + Framer Motion)
+- **Preview**: `/deal-scout-social-ad/`
+- **Description**: ~25-second punchy social media ad for Instagram/TikTok/YouTube Shorts. Fast-paced 5-scene format.
+- **Scenes**: 5 scenes (hook 3.5s, scoring 5s, features 5.5s, demo 7s, close 4s)
+- **Features Covered**: Deal scoring, scam detection, price comparison, negotiation help
+- **Assets**: Real Chrome Web Store logo, screen recording of Deal Scout in action
+- **Fonts**: Outfit (display) + Inter (body)
+- **Colors**: Same as brand video — emerald/slate dark theme
+
+### Deal Scout Brand Awareness Video
+- **Location**: `artifacts/deal-scout-brand-video/`
+- **Type**: Animated video (React + Framer Motion)
+- **Preview**: `/deal-scout-brand-video/`
+- **Description**: ~56-second brand awareness video introducing Deal Scout. Tells a problem/solution narrative across 7 scenes.
+- **Scenes**: 7 scenes (hook 8s, problem 8s, solution 7s, scoring/scam-detection 9s, reputation/negotiation 9s, demo 8s, close 7s)
+- **Features Covered**: AI deal scoring, 3-layer scam detection, product reputation checks, negotiation help, eBay price comparisons
+- **Fonts**: Outfit (display) + Inter (body) from Google Fonts
+- **Colors**: Emerald green (#10B981) primary, blue (#3B82F6) accent, slate dark theme
+
 # Deal Scout API — Replit Backend
 
 ## Overview
