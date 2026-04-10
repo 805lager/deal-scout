@@ -148,6 +148,7 @@ async def search_ebay_browse(
     filter_parts = []
     if sold:
         filter_parts.append("soldItemsOnly:{true}")
+    filter_parts.append("buyingOptions:{FIXED_PRICE}")
     if condition:
         cond_map = {
             "new": "NEW",

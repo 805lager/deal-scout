@@ -630,7 +630,7 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
 
     FLOW (v0.6.0 — real data first, AI guesses last):
       1. Try eBay Browse API (real sold prices — ground truth)
-      1b. If Browse fails → try Google Shopping + Claude AI (DDG-grounded) in parallel
+      1b. If Browse fails → try Google Shopping scraper, then Claude AI (DDG-grounded)
       2. Always fetch eBay Finding API + Craigslist for sidebar cards
       3. Pick pricing — real data always beats AI guesses:
          Browse API → Claude web-grounded → Google Shopping → Claude knowledge → eBay Finding → Mock
