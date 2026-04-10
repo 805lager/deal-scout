@@ -1,0 +1,31 @@
+kind = "video"
+previewPath = "/deal-scout-ad/"
+title = "Deal Scout Ad"
+version = "1.0.0"
+id = "artifacts/deal-scout-ad"
+router = "path"
+
+[[integratedSkills]]
+name = "video-js"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/deal-scout-ad/" ]
+localPort = 20976
+
+[services.development]
+run = "pnpm --filter @workspace/deal-scout-ad run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/deal-scout-ad", "run", "build" ]
+publicDir = "artifacts/deal-scout-ad/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "20976"
+BASE_PATH = "/deal-scout-ad/"
