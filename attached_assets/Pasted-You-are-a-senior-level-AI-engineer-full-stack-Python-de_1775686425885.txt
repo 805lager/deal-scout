@@ -1,0 +1,207 @@
+You are a senior-level AI engineer, full-stack Python developer, and data scientist.
+
+Build **“Deal Scout System v1.0”**, a near-autonomous government surplus deal sourcing, scoring, and flipping platform. This system must include, covering scraping, analytics, profit prediction, bidding strategy, alerts, resale automation, and self-improving intelligence.
+
+---
+
+# CORE OBJECTIVE
+
+The system must:
+
+* Aggregate listings from multiple government auction sources
+* Analyze and score deals based on real market data
+* Predict profit, ROI, demand, and time-to-sell
+* Recommend bidding strategies
+* Prepare resale listings automatically
+* Learn from historical data to improve scoring and alerts
+* Provide a dashboard showing ranked deals, alerts, and performance metrics
+
+---
+
+# 1. DATA COLLECTION
+
+Scrapers must:
+
+* Collect from: Municibid, GovDeals, Public Surplus
+* Extract: title, description, price, current bid, location, end time, URL, images
+* Handle pagination and incremental scraping
+* Normalize into a unified schema
+* Store raw and cleaned data
+
+---
+
+# 2. DATABASE
+
+Use SQLite (or PostgreSQL optional) with tables for:
+
+* listings
+* historical_prices
+* deal_scores
+* resale_predictions
+* alerts
+* user_actions
+* scoring_model_history
+
+Include:
+
+* indexing
+* deduplication
+* versioning of model weights/data
+
+---
+
+# 3. MARKET DATA INTEGRATION
+
+Integrate resale and market data:
+
+* eBay sold listings API (or scraping fallback)
+* Optional: Facebook Marketplace scraping
+* Extract: average sold price, sell-through rate, condition-based pricing, demand trends
+
+---
+
+# 4. AI-POWERED ANALYSIS
+
+* NLP keyword extraction (spaCy or similar)
+* Fuzzy title matching for model/part numbers
+* Calculate: estimated resale value, profit, ROI %, demand score, risk score
+
+---
+
+# 5. DEAL SCORING
+
+Weighted scoring formula:
+
+Score = ROI_weight * ROI + Demand_weight * demand_score - Risk_weight * risk_score + Competition_weight * (low bids bonus)
+
+* Rank deals
+* Track historical scoring trends
+* Store top candidates
+
+---
+
+# 6. PREDICTIVE MODELING (ML)
+
+* Regression/classification for: time-to-sell, probability-of-sale
+* Features: category, price, condition, historical sale trends
+* Use scikit-learn or lightweight ML models
+* Track model performance and retrain periodically
+
+---
+
+# 7. SMART FILTERING
+
+Filter deals:
+
+* ROI threshold (configurable)
+* High confidence score
+* Low risk
+* Location constraints
+* Category and keyword filters
+* Alert only for top-scoring opportunities
+
+---
+
+# 8. ALERT SYSTEM
+
+* Multi-channel: Email, Discord webhook, console
+* Include deal summary, score breakdown, predicted resale, recommended max bid, time-to-sell
+* Only alert for high-confidence deals
+
+---
+
+# 9. BIDDING STRATEGY ENGINE
+
+* Simulate sniping strategies
+* Max bid recommendation based on ROI
+* Competition-aware logic
+* Optional: integrate with bidding APIs later (for simulation only now)
+
+---
+
+# 10. AUTO RESALE GENERATOR
+
+* Generate eBay-style title (SEO optimized)
+* Description
+* Suggested price based on AI predictions
+* Export to CSV or JSON for upload
+* Track past resale performance
+
+---
+
+# 11. DASHBOARD
+
+* Flask or FastAPI
+* Show:
+
+  * Ranked deals
+  * ROI leaderboard
+  * Alerts
+  * Deal detail view
+  * Historical trends
+* Include filtering controls and sortable tables
+
+---
+
+# 12. AUTOMATION & SCHEDULING
+
+* Scheduler (cron or loop)
+* Periodic scraping, scoring, alerting
+* Deduplication to avoid multiple alerts for same deal
+
+---
+
+# 13. CONFIGURATION
+
+config.py must include:
+
+* ROI thresholds
+* scoring weights
+* zip code radius
+* alert preferences
+* API keys
+* retrain intervals
+
+---
+
+# 14. LEARNING SYSTEM (V4 SPECIFIC)
+
+* Track all user decisions (bought, ignored, lost bid)
+* Retrain scoring model periodically using historical outcomes
+* Adjust scoring weights dynamically based on profit success
+* Self-improve deal ranking based on feedback loop
+
+---
+
+# 15. PROJECT STRUCTURE
+
+Organize code modularly:
+
+```
+/scrapers
+/database
+/analysis
+/ml
+/alerts
+/dashboard
+/resale
+/utils
+main.py
+config.py
+requirements.txt
+```
+
+---
+
+# 16. OUTPUT REQUIREMENTS
+
+* Full working Python code (no pseudocode)
+* Include setup/run instructions
+* Include sample dataset for testing
+* Comments for clarity
+* Version tag: Deal Scout System v1.0
+
+---
+
+GOAL:
+A near-autonomous deal intelligence and resale system that drastically reduces manual effort and maximizes ROI. Must be modular, scalable, and production-ready.
