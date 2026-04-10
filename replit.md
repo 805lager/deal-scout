@@ -9,7 +9,7 @@ FastAPI backend for the Deal Scout Chrome extension. Scores deals on Facebook Ma
 - **Language**: Python 3.11
 - **Framework**: FastAPI + Uvicorn
 - **AI**: Claude Haiku (via Replit AI integration — no API key needed)
-- **Pricing**: Claude AI (primary) + DuckDuckGo web grounding + eBay Finding API fallback
+- **Pricing**: eBay Browse API (primary) → Google Shopping → Claude AI + DuckDuckGo grounding → eBay Finding API (sidebar only)
 - **Monorepo tool**: pnpm workspaces (Node.js side)
 
 ## Architecture
@@ -21,7 +21,8 @@ artifacts/deal-scout-api/
 └── scoring/                  # Pipeline modules
     ├── deal_scorer.py         # Claude scoring (main AI call)
     ├── product_extractor.py   # Claude extracts brand/model from vague title
-    ├── ebay_pricer.py         # eBay Finding API comps + _safe_craigslist wrapper
+    ├── ebay_pricer.py         # Market value orchestrator — multi-source pipeline
+    ├── ebay_browse.py         # eBay Browse API (OAuth2, real sold prices — PRIMARY source)
     ├── claude_pricer.py       # Claude AI price estimation + PostgreSQL price cache (48hr TTL)
     ├── craigslist_pricer.py   # Craigslist asking prices via RSS (no API key)
     ├── product_evaluator.py   # Reddit + Google reliability signals
@@ -31,8 +32,8 @@ artifacts/deal-scout-api/
     ├── vehicle_pricer.py      # Car pricing via CarGurus
     ├── suggestion_engine.py   # Deal card generation
     ├── corrections.py         # Manual query corrections
-    ├── web_pricer.py          # DuckDuckGo Lite web search for real-time price grounding
-    └── google_pricer.py       # Google Shopping price scraper (deprecated — replaced by web_pricer)
+    ├── web_pricer.py          # DuckDuckGo Lite web search (4 queries, real-time price grounding)
+    └── google_pricer.py       # Google Shopping price scraper (4 extraction strategies)
 ```
 
 ## API Endpoints
@@ -81,8 +82,9 @@ artifacts/deal-scout-api/
 | `AI_INTEGRATIONS_ANTHROPIC_BASE_URL` | ✅ Set by Replit | Claude AI proxy URL |
 | `AI_INTEGRATIONS_ANTHROPIC_API_KEY` | ✅ Set by Replit | Claude AI proxy key |
 | `EBAY_APP_ID` | ⚠️ Required | eBay Developer App ID (Client ID) |
+| `EBAY_CERT_ID` | ⚠️ Required | eBay Developer Cert ID (Client Secret) — for Browse API |
 
-Get your free eBay key at: https://developer.ebay.com/my/keys
+Get your free eBay keys at: https://developer.ebay.com/my/keys
 
 ## Running Locally
 
