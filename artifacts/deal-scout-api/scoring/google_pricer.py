@@ -59,9 +59,9 @@ _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/122.0.0.0 Safari/537.36"
+        "Chrome/124.0.0.0 Safari/537.36"
     ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
     "Accept-Encoding": "gzip, deflate, br",
     "Referer": "https://www.google.com/",
@@ -71,7 +71,12 @@ _HEADERS = {
     "Sec-Fetch-Dest": "document",
     "Sec-Fetch-Mode": "navigate",
     "Sec-Fetch-Site": "same-origin",
+    "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
 }
+
+_blocked_count = 0
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────
@@ -191,8 +196,15 @@ async def _fetch_google_shopping(query: str, max_results: int, min_price: float 
     page_title = title_match.group(1).strip() if title_match else "unknown"
     log.info(f"[GooglePricer] Page title: '{page_title}'")
 
-    if any(t in page_title.lower() for t in ["before you continue", "captcha", "unusual traffic", "consent"]):
-        log.warning(f"[GooglePricer] Consent/captcha page detected — no prices available")
+    _block_keywords = ["before you continue", "captcha", "unusual traffic", "consent", "sorry", "blocked", "verify"]
+    if any(t in page_title.lower() for t in _block_keywords):
+        global _blocked_count
+        _blocked_count += 1
+        log.warning(f"[GooglePricer] Blocked/captcha page detected (count={_blocked_count}): title='{page_title}'")
+        return []
+
+    if resp.status_code == 429:
+        log.warning(f"[GooglePricer] HTTP 429 rate limited for '{query}'")
         return []
 
     results: list[dict] = []
@@ -235,12 +247,19 @@ async def _fetch_google_shopping(query: str, max_results: int, min_price: float 
         _extract_js_blob_prices(html, add_price)
         log.info(f"[GooglePricer] Strategy 2 (JS blobs): {len(results)} prices total")
 
-    # ── Strategy 3: Raw HTML price regex ──────────────────────────────────────
+    # ── Strategy 3: aria-label and data-attribute prices ─────────────────────
+    # Google Shopping product cards often embed prices in aria-label or
+    # data-price attributes even when JSON-LD and JS blobs are absent.
+    if len(results) < 3:
+        _extract_aria_prices(html, add_price)
+        log.info(f"[GooglePricer] Strategy 3 (aria/data): {len(results)} prices total")
+
+    # ── Strategy 4: Raw HTML price regex ──────────────────────────────────────
     # Broadest fallback — finds any $X.XX or $X,XXX pattern in the HTML.
     # Less accurate (may include non-product prices) but better than nothing.
     if len(results) < 3:
         _extract_regex_prices(html, add_price)
-        log.info(f"[GooglePricer] Strategy 3 (regex): {len(results)} prices total")
+        log.info(f"[GooglePricer] Strategy 4 (regex): {len(results)} prices total")
 
     if not results:
         # Log a snippet to help debug what Google actually returned
@@ -315,6 +334,43 @@ def _extract_js_blob_prices(html: str, add_price):
                 add_price(price)
             except ValueError:
                 continue
+
+
+def _extract_aria_prices(html: str, add_price):
+    """
+    Extract prices from aria-label attributes and data-price attributes.
+    Google Shopping cards often have aria-label="Product Name $XX.XX" or
+    data-price="XX.XX" even when other structured data is missing.
+    """
+    aria_re = re.compile(r'aria-label="[^"]*\$(\d[\d,]*\.?\d*)[^"]*"', re.I)
+    for m in aria_re.finditer(html):
+        try:
+            price = float(m.group(1).replace(",", ""))
+            if 2 <= price <= 50_000:
+                add_price(price)
+        except ValueError:
+            continue
+
+    data_price_re = re.compile(r'data-price="(\d[\d,]*\.?\d*)"', re.I)
+    for m in data_price_re.finditer(html):
+        try:
+            price = float(m.group(1).replace(",", ""))
+            if 2 <= price <= 50_000:
+                add_price(price)
+        except ValueError:
+            continue
+
+    price_span_re = re.compile(
+        r'<span[^>]*class="[^"]*(?:price|a8Pemb|HRLxBb)[^"]*"[^>]*>\s*\$(\d[\d,]*\.?\d*)',
+        re.I
+    )
+    for m in price_span_re.finditer(html):
+        try:
+            price = float(m.group(1).replace(",", ""))
+            if 2 <= price <= 50_000:
+                add_price(price)
+        except ValueError:
+            continue
 
 
 def _extract_regex_prices(html: str, add_price):

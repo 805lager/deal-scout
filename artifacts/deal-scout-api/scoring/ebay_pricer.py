@@ -1,30 +1,35 @@
 """
-Market Value Module — Google Shopping PRIMARY, eBay FALLBACK
+Market Value Module — Multi-Source Pricing Pipeline
 
-PRICING PRIORITY (v0.5.0):
-  1. Google Shopping (PRIMARY)
-     - No API key required — Playwright scrapes real retail + used prices
-     - Broad coverage across retailers, not just eBay sellers
-     - Fast with persistent browser (~0.3s after warm-up)
-     - Caveat: skews toward NEW retail prices, no completed/sold data
-     - Claude is told the source and adjusts confidence accordingly
+PRICING PRIORITY (v0.6.0):
+  1. eBay Browse API (PRIMARY — real sold prices)
+     - OAuth2 client credentials (EBAY_APP_ID + EBAY_CERT_ID)
+     - 5,000 calls/day on free tier
+     - Returns actual sold/completed listing prices (ground truth)
+     - Best accuracy for common consumer goods
 
-  2. eBay Finding API (FALLBACK — when Google returns < 3 prices)
-     - Best source for SOLD/completed listings (what people actually paid)
-     - Rate limit: 5,000 calls/day on free tier
-     - Requires EBAY_APP_ID in .env
-     - Falls back to mock data if rate limited (error 10001)
+  2. Google Shopping (FALLBACK #1 — when Browse API unavailable)
+     - No API key required — httpx scrapes real retail + used prices
+     - Broad coverage across retailers
+     - Caveat: skews toward NEW retail prices, no sold data
 
-  3. eBay Mock Data (LAST RESORT)
+  3. Claude AI with DuckDuckGo grounding (FALLBACK #2)
+     - DuckDuckGo web search finds current market prices
+     - Claude uses those prices as grounding data for estimate
+     - Falls back to training knowledge if web search fails
+
+  4. eBay Finding API (sidebar cards only, permanently rate-limited)
+     - Used exclusively for "Like Products" affiliate sidebar cards
+     - No longer used for pricing — circuit breaker active
+
+  5. eBay Mock Data (LAST RESORT)
      - Keyword-derived price range estimates
-     - Confidence is always "low" — Claude will flag this explicitly
-     - Better than returning 0 and crashing the scoring pipeline
+     - Confidence is always "low"
 
-WHY GOOGLE FIRST:
-  During POC, eBay rate-limits after ~50 calls/day in practice.
-  Google Shopping is available on every score with no quota.
-  eBay stays available as the high-quality fallback when we need
-  sold/completed data (better signal for unusual or niche items).
+WHY BROWSE API FIRST:
+  Real sold prices are ground truth — what buyers actually paid.
+  The Browse API has 5,000 calls/day free tier and structured JSON.
+  Other sources fill gaps when Browse API lacks data for niche items.
 
 THREE DATA POINTS WE PULL:
   1. sold_avg    — average price of recently COMPLETED sales (ground truth)
@@ -131,7 +136,7 @@ class MarketValue:
     active_items_sample: list = None  # top 4 currently active listings
     # Which pricing source produced this data — surfaced in sidebar and used
     # by Claude to calibrate how much to trust the market comps.
-    data_source: str = "claude_knowledge"  # "claude_knowledge" | "google_shopping" | "ebay_live" | "ebay_mock" | "correction_range"
+    data_source: str = "claude_knowledge"  # "ebay_browse" | "claude_knowledge" | "google_shopping" | "ebay_live" | "ebay_mock" | "correction_range"
     # Claude AI metadata — only populated when data_source is claude_knowledge/gemini_search.
     # item_id: the specific product Claude identified (e.g. "Celestron NexStar 6SE")
     # ai_notes: Claude's 1-sentence market context (e.g. "Prices vary by condition")
@@ -623,18 +628,19 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
     """
     Main entry point. Given a listing title, return a full MarketValue estimate.
 
-    FLOW (v0.26.6 — Claude first, multi-source rotation):
-      1. Try Claude AI pricing (fastest, highest confidence)
-      1b. If Claude fails → try Google Shopping scraper
-      2. Always fetch eBay (sold + active + new) in parallel for sidebar cards
+    FLOW (v0.6.0 — eBay Browse API first, multi-source fallback):
+      1. Try eBay Browse API (real sold prices — ground truth)
+      1b. If Browse fails → try Google Shopping scraper
+      1c. If Google fails → try Claude AI (DuckDuckGo-grounded then knowledge)
+      2. Always fetch eBay Finding API + Craigslist for sidebar cards
       3. Pick pricing from first successful source:
-         Claude → Google Shopping → eBay live → eBay mock
+         Browse API → Google Shopping → Claude AI → eBay Finding → Mock
       4. If all live sources fail → mock data, then correction_range override
 
-    WHY CLAUDE FIRST:
-      Claude returns structured pricing in ~1s with high accuracy for
-      well-known products. Google Shopping and eBay provide fallback
-      breadth when Claude lacks knowledge of niche/uncommon items.
+    WHY BROWSE API FIRST:
+      Real sold prices are ground truth — what buyers actually paid.
+      Claude's training data can be stale and produces round-number estimates.
+      Browse API returns precise sold prices with high accuracy.
     """
     query       = build_search_query(listing_title)
     campaign_id = os.getenv("EBAY_CAMPAIGN_ID", "")
@@ -704,14 +710,20 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
             confidence="none", data_source="vehicle_not_applicable",
         )
 
-    # ── Step 1: Try Claude AI pricing first ─────────────────────────────────────
-    ai_pricing_stats = await _try_claude_ai_pricing(query, condition=listing_condition, listing_price=listing_price)
-    _ai_item_id = ai_pricing_stats.get("item_id", "") if ai_pricing_stats else ""
-    _ai_notes   = ai_pricing_stats.get("notes",   "") if ai_pricing_stats else ""
+    # ── Step 1: Try eBay Browse API first (best source — real sold prices) ────
+    _browse_result = None
+    try:
+        from scoring.ebay_browse import search_ebay_browse, browse_api_configured
+        if browse_api_configured():
+            _browse_result = await search_ebay_browse(query, sold=True, limit=20, condition=listing_condition)
+            if _browse_result:
+                log.info(f"[BrowseAPI PRIMARY] '{query}' → avg=${_browse_result['avg_price']:.0f} ({_browse_result['count']} sold)")
+    except Exception as e:
+        log.warning(f"[BrowseAPI PRIMARY] Failed for '{query}': {e}")
 
-    # ── Step 1b: If Claude failed, try Google Shopping as middle tier ─────────
+    # ── Step 1b: If Browse API failed, try Google Shopping ────────────────────
     _google_stats = None
-    if not ai_pricing_stats:
+    if not _browse_result:
         try:
             from scoring.google_pricer import get_google_shopping_prices, prices_to_market_stats
             goog_prices = await get_google_shopping_prices(query, max_results=12, min_price=listing_price)
@@ -721,7 +733,15 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         except Exception as e:
             log.warning(f"[GoogleFallback] Failed for '{query}': {e}")
 
-    # ── Step 2: Always fetch eBay + Craigslist in parallel ───────────────────
+    # ── Step 1c: If both failed, try Claude AI pricing (web-grounded then knowledge) ──
+    ai_pricing_stats = None
+    if not _browse_result and not _google_stats:
+        ai_pricing_stats = await _try_claude_ai_pricing(query, condition=listing_condition, listing_price=listing_price)
+
+    _ai_item_id = ai_pricing_stats.get("item_id", "") if ai_pricing_stats else ""
+    _ai_notes   = ai_pricing_stats.get("notes",   "") if ai_pricing_stats else ""
+
+    # ── Step 2: Always fetch eBay Finding API + Craigslist in parallel for sidebar cards ──
     sold_raw, active_raw, new_raw, _cl_result = await asyncio.gather(
         search_ebay(query, "findCompletedItems", max_results=20),
         search_ebay(query, "findItemsAdvanced",  max_results=20),
@@ -731,11 +751,6 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
 
     ebay_is_mock = any(item.get("_is_mock") for item in sold_raw + active_raw)
 
-    # Apply relevance filter to pricing data before calculating averages.
-    # WHY: eBay's BestMatch returns items that share keywords but are wrong
-    # products (e.g. "Ryobi battery" in "Ryobi chainsaw" results). Without
-    # filtering, those wrong prices pollute the average.
-    # Only filter live results — mock data is pre-seeded and internally consistent.
     if not ebay_is_mock and query:
         sold_raw_f   = _filter_by_relevance(sold_raw,   query, threshold=0.28, max_items=20)
         active_raw_f = _filter_by_relevance(active_raw, query, threshold=0.28, max_items=20)
@@ -744,10 +759,53 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
 
     sold_items   = _remove_price_outliers(parse_ebay_items(sold_raw_f,   sold=True))
     active_items = _remove_price_outliers(parse_ebay_items(active_raw_f, sold=False))
-    new_items    = parse_ebay_items(new_raw, sold=False)  # no outlier removal — want lowest new price
+    new_items    = parse_ebay_items(new_raw, sold=False)
 
     # ── Step 3: Build market stats from whichever source won ──────────────────
-    if ai_pricing_stats:
+    # Priority: eBay Browse API → Google Shopping → Claude AI → eBay Finding → Mock
+    if _browse_result:
+        sold_avg        = _browse_result["avg_price"]
+        sold_low        = _browse_result["low_price"]
+        sold_high       = _browse_result["high_price"]
+        sold_count      = _browse_result["count"]
+        if active_items and not ebay_is_mock:
+            active_prices = [p.price for p in active_items]
+            active_avg    = statistics.mean(active_prices)
+            active_low    = min(active_prices)
+            active_count  = len(active_items)
+        else:
+            active_avg   = round(_browse_result["avg_price"] * 1.05, 2)
+            active_low   = _browse_result["low_price"]
+            active_count = 0
+        new_price       = (
+            min(p.price for p in new_items)
+            if (new_items and not ebay_is_mock)
+            else 0.0
+        )
+        estimated_value = _browse_result["avg_price"]
+        confidence      = "high" if _browse_result["count"] >= 8 else "medium" if _browse_result["count"] >= 3 else "low"
+        data_source     = "ebay_browse"
+
+    elif _google_stats:
+        sold_avg        = _google_stats["avg"]
+        sold_low        = _google_stats["low"]
+        sold_high       = _google_stats["high"]
+        sold_count      = _google_stats["count"]
+        if active_items and not ebay_is_mock:
+            active_prices = [p.price for p in active_items]
+            active_avg    = statistics.mean(active_prices)
+            active_low    = min(active_prices)
+            active_count  = len(active_items)
+        else:
+            active_avg   = round(_google_stats["avg"] * 1.05, 2)
+            active_low   = _google_stats["low"]
+            active_count = 0
+        new_price       = min(p.price for p in new_items) if (new_items and not ebay_is_mock) else 0.0
+        estimated_value = _google_stats["avg"]
+        confidence      = "medium" if _google_stats["count"] >= 5 else "low"
+        data_source     = "google_shopping"
+
+    elif ai_pricing_stats:
         sold_avg        = ai_pricing_stats["avg"]
         sold_low        = ai_pricing_stats["low"]
         sold_high       = ai_pricing_stats["high"]
@@ -771,40 +829,7 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         confidence      = ai_pricing_stats["confidence"]
         data_source     = ai_pricing_stats["data_source"]
 
-    elif _google_stats and not ebay_is_mock:
-        sold_avg        = _google_stats["avg"]
-        sold_low        = _google_stats["low"]
-        sold_high       = _google_stats["high"]
-        sold_count      = _google_stats["count"]
-        if active_items:
-            active_prices = [p.price for p in active_items]
-            active_avg    = statistics.mean(active_prices)
-            active_low    = min(active_prices)
-            active_count  = len(active_items)
-        else:
-            active_avg   = round(_google_stats["avg"] * 1.05, 2)
-            active_low   = _google_stats["low"]
-            active_count = 0
-        new_price       = min(p.price for p in new_items) if new_items else 0.0
-        estimated_value = _google_stats["avg"]
-        confidence      = "medium" if _google_stats["count"] >= 5 else "low"
-        data_source     = "google_shopping"
-
-    elif _google_stats and ebay_is_mock:
-        sold_avg        = _google_stats["avg"]
-        sold_low        = _google_stats["low"]
-        sold_high       = _google_stats["high"]
-        sold_count      = _google_stats["count"]
-        active_avg      = round(_google_stats["avg"] * 1.05, 2)
-        active_low      = _google_stats["low"]
-        active_count    = 0
-        new_price       = 0.0
-        estimated_value = _google_stats["avg"]
-        confidence      = "medium" if _google_stats["count"] >= 5 else "low"
-        data_source     = "google_shopping"
-
     else:
-        # eBay fallback — use its data directly
         sold_prices  = [p.price for p in sold_items]
         sold_avg     = statistics.mean(sold_prices) if sold_prices else 0.0
         sold_low     = min(sold_prices)             if sold_prices else 0.0
@@ -818,7 +843,6 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
 
         new_price = min(p.price for p in new_items) if new_items else 0.0
 
-        # Sold data weighted 2x — sold = reality, active = wishful thinking
         if sold_avg > 0 and active_avg > 0:
             estimated_value = (sold_avg * 2 + active_avg) / 3
         elif sold_avg > 0:

@@ -294,7 +294,7 @@ class DealScoreResponse(BaseModel):
     active_low:        float = 0.0   # Lowest active listing price
     new_price:         float
     market_confidence: str
-    data_source:       str = "ebay_live"  # "ebay_live" | "google_shopping" | "claude_knowledge" | "ebay_mock" | "correction_range" | "cargurus" | "craigslist"
+    data_source:       str = "ebay_live"  # "ebay_browse" | "ebay_live" | "google_shopping" | "claude_knowledge" | "ebay_mock" | "correction_range" | "cargurus" | "craigslist"
     query_used:        str = ""       # The actual eBay/Google search query used for comps
 
     # Like Products — real eBay items surfaced as affiliate cards
@@ -1708,6 +1708,7 @@ async def health():
         "version":       BACKEND_VERSION,
         "anthropic_key": "set" if os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL") else "missing",
         "ebay_key":      "set" if os.getenv("EBAY_APP_ID") and "your_ebay" not in os.getenv("EBAY_APP_ID", "") else "missing",
+        "ebay_browse":   "set" if os.getenv("EBAY_APP_ID") and os.getenv("EBAY_CERT_ID") else "missing",
     }
 
 
