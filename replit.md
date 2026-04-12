@@ -90,7 +90,7 @@ artifacts/deal-scout-api/
 ### 2. Analytics & Persistence (PostgreSQL)
 - `affiliate_events` table: records every affiliate click (program, category, price bucket, deal score, position, selection reason, commission status)
 - `query_corrections` table: stores user-submitted query corrections for improving eBay search queries
-- Daily Discord digest: background scheduler fires at midnight UTC, summarizes last 24h of affiliate clicks and corrections. Manual trigger at `GET /admin/daily-summary`. Requires `DISCORD_WEBHOOK_URL` env var.
+- Daily Discord digest: background scheduler fires at 9:00 AM PST daily, summarizes last 24h of scores, affiliate clicks, corrections, and user metrics (active/new/dropped/total). Manual trigger at `GET /admin/daily-summary`. Requires `DISCORD_WEBHOOK_URL` env var.
 - `corrections.py` is fully async with lazy table creation via `_ensure_table()`
 
 ### 3. Market Intelligence Data
@@ -128,7 +128,7 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 ## Extension Version
 
-Current: **v0.32.0** (extension) / **v0.33.0** (API)
+Current: **v0.34.0** (extension) / **v0.34.0** (API)
 
 ### v0.33.0 API Scoring Fixes
 - Security ≤3 unconditionally forces `should_buy=False` (not just score cap)
