@@ -216,7 +216,7 @@ app.add_middleware(
     allow_origins=cors_origins,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-DS-Key", "X-DS-Ext-Version",
-                    "Accept", "Accept-Language", "Content-Language"],
+                    "X-DS-Install-Id", "Accept", "Accept-Language", "Content-Language"],
 )
 
 
@@ -823,11 +823,12 @@ async def score_listing(listing: ListingRequest, request: Request):
                 for idx, c in enumerate(affiliate_dicts)
             ]
 
+            _install_id = request.headers.get("x-ds-install-id")
             row = await pool.fetchrow(
                 """INSERT INTO deal_scores
                    (platform, listing_url, listing_json, score_json, score,
-                    ebay_comps_json, affiliate_impressions_json)
-                   VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6::jsonb, $7::jsonb)
+                    ebay_comps_json, affiliate_impressions_json, install_id)
+                   VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6::jsonb, $7::jsonb, $8)
                    RETURNING id""",
                 listing.platform or "unknown",
                 listing.listing_url or "",
@@ -836,6 +837,7 @@ async def score_listing(listing: ListingRequest, request: Request):
                 deal_score.score,
                 _json.dumps(_ebay_comps),
                 _json.dumps(_affil_impressions),
+                _install_id,
             )
             if row:
                 score_id = row["id"]
@@ -1381,11 +1383,12 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                          "price_hint": c.get("price_hint","")}
                         for idx, c in enumerate(affiliate_dicts)
                     ]
+                    _install_id = request.headers.get("x-ds-install-id")
                     row = await pool.fetchrow(
                         """INSERT INTO deal_scores
                            (platform, listing_url, listing_json, score_json, score,
-                            ebay_comps_json, affiliate_impressions_json)
-                           VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6::jsonb, $7::jsonb)
+                            ebay_comps_json, affiliate_impressions_json, install_id)
+                           VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6::jsonb, $7::jsonb, $8)
                            RETURNING id""",
                         listing.platform or "unknown",
                         listing.listing_url or "",
@@ -1394,6 +1397,7 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                         deal_score.score,
                         _json.dumps(_ebay_comps),
                         _json.dumps(_affil_impr),
+                        _install_id,
                     )
                     if row:
                         score_id = row["id"]
@@ -3061,6 +3065,41 @@ async def _build_daily_summary() -> dict:
     except Exception as e:
         log.warning(f"[DailySummary] Categories query failed: {e}")
 
+    try:
+        user_row = await pool.fetchrow(
+            """SELECT
+                 COUNT(DISTINCT install_id) FILTER (WHERE created_at > now() - interval '24 hours') AS active_today,
+                 COUNT(DISTINCT install_id) FILTER (
+                     WHERE created_at > now() - interval '24 hours'
+                       AND install_id NOT IN (
+                           SELECT DISTINCT install_id FROM deal_scores
+                           WHERE install_id IS NOT NULL
+                             AND created_at <= now() - interval '24 hours'
+                       )
+                 ) AS new_today,
+                 COUNT(DISTINCT install_id) FILTER (
+                     WHERE created_at BETWEEN now() - interval '48 hours' AND now() - interval '24 hours'
+                       AND install_id NOT IN (
+                           SELECT DISTINCT install_id FROM deal_scores
+                           WHERE install_id IS NOT NULL
+                             AND created_at > now() - interval '24 hours'
+                       )
+                 ) AS dropped_today
+               FROM deal_scores
+               WHERE install_id IS NOT NULL"""
+        )
+        total_row = await pool.fetchrow(
+            "SELECT COUNT(DISTINCT install_id) AS total FROM deal_scores WHERE install_id IS NOT NULL"
+        )
+        summary["users"] = {
+            "active_today": user_row["active_today"] if user_row else 0,
+            "new_today": user_row["new_today"] if user_row else 0,
+            "dropped_today": user_row["dropped_today"] if user_row else 0,
+            "total_all_time": total_row["total"] if total_row else 0,
+        }
+    except Exception as e:
+        log.warning(f"[DailySummary] Users query failed: {e}")
+
     return summary
 
 
@@ -3078,6 +3117,7 @@ async def _send_daily_discord_summary():
     a = summary.get("affiliate", {})
     corr_count = summary.get("corrections", 0)
     cats = summary.get("top_categories", {})
+    u = summary.get("users", {})
 
     total = s.get("total", 0)
 
@@ -3103,7 +3143,14 @@ async def _send_daily_discord_summary():
 
     cat_line = " · ".join(f"{c}: {n}" for c, n in cats.items()) if cats else "—"
 
+    active = u.get("active_today", 0)
+    new_u = u.get("new_today", 0)
+    dropped = u.get("dropped_today", 0)
+    total_users = u.get("total_all_time", 0)
+    users_line = f"**{active}** active today · **{new_u}** new · **{dropped}** dropped\n**{total_users}** total all-time"
+
     fields = [
+        {"name": "👥 Users", "value": users_line, "inline": False},
         {"name": "📊 Scores", "value": f"**{total}** total  ·  avg **{s.get('avg_score', '—')}**/10\n{platform_line}", "inline": False},
         {"name": "👍 Feedback", "value": thumbs_line, "inline": True},
         {"name": "🔗 Affiliate", "value": "\n".join(aff_lines), "inline": False},
@@ -3118,7 +3165,7 @@ async def _send_daily_discord_summary():
             "title": "📈 Deal Scout — Daily Summary",
             "color": 0x6366f1,
             "fields": fields,
-            "footer": {"text": f"Period: last 24 hours · {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"},
+            "footer": {"text": f"Period: last 24 hours · {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')} · Daily at 9:00 AM PST"},
         }]
     }
 
@@ -3135,18 +3182,41 @@ async def _send_daily_discord_summary():
 
 
 async def _daily_summary_scheduler():
-    from datetime import timedelta
+    from datetime import timedelta, timezone
+    PST = timezone(timedelta(hours=-8))
+    TARGET_HOUR = 9
     while True:
         try:
-            now = datetime.utcnow()
-            next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-            wait_seconds = (next_midnight - now).total_seconds()
-            log.info(f"[DailySummary] Next summary in {wait_seconds/3600:.1f}h (midnight UTC)")
+            now_pst = datetime.now(PST)
+            target_today = now_pst.replace(hour=TARGET_HOUR, minute=0, second=0, microsecond=0)
+            if now_pst >= target_today:
+                target = target_today + timedelta(days=1)
+            else:
+                target = target_today
+            wait_seconds = (target - now_pst).total_seconds()
+            log.info(f"[DailySummary] Next summary at 9:00 AM PST in {wait_seconds/3600:.1f}h")
             await _asyncio.sleep(wait_seconds)
             await _send_daily_discord_summary()
         except Exception as e:
             log.error(f"[DailySummary] Scheduler error: {e}")
             await _asyncio.sleep(60)
+
+
+@app.on_event("startup")
+async def _migrate_install_id_column():
+    try:
+        from scoring.data_pipeline import _get_pool
+        pool = await _get_pool()
+        if pool:
+            await pool.execute(
+                "ALTER TABLE deal_scores ADD COLUMN IF NOT EXISTS install_id TEXT DEFAULT NULL"
+            )
+            await pool.execute(
+                "CREATE INDEX IF NOT EXISTS idx_deal_scores_install_id ON deal_scores (install_id)"
+            )
+            log.info("[Migration] install_id column ensured on deal_scores")
+    except Exception as e:
+        log.warning(f"[Migration] install_id column migration failed (non-fatal): {e}")
 
 
 @app.on_event("startup")
@@ -3174,7 +3244,7 @@ if _is_production:
         allow_origins=["*"],
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["Content-Type", "Authorization", "X-DS-Key", "X-DS-Ext-Version",
-                        "Accept", "Accept-Language", "Content-Language"],
+                        "X-DS-Install-Id", "Accept", "Accept-Language", "Content-Language"],
     )
     _root_app.mount("/api/ds", app)
     app = _root_app

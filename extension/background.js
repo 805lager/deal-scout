@@ -33,6 +33,18 @@ async function getApiBase() {
   }
 }
 
+async function getInstallId() {
+  try {
+    const stored = await chrome.storage.local.get("ds_install_id");
+    if (stored.ds_install_id) return stored.ds_install_id;
+    const id = crypto.randomUUID();
+    await chrome.storage.local.set({ ds_install_id: id });
+    return id;
+  } catch {
+    return "unknown";
+  }
+}
+
 const AFFILIATE = {
   ebay: {
     campaignId: "5339144027",
@@ -185,9 +197,10 @@ async function handleScoreListing(listing, tabId, listingId) {
 async function callScoringAPI(listing) {
   const API_BASE = await getApiBase();
   const extVersion = chrome.runtime.getManifest().version;
+  const installId = await getInstallId();
   const response = await fetch(`${API_BASE}/score/stream`, {
     method:  "POST",
-    headers: { "Content-Type": "application/json", "X-DS-Key": DS_API_KEY, "X-DS-Ext-Version": extVersion },
+    headers: { "Content-Type": "application/json", "X-DS-Key": DS_API_KEY, "X-DS-Ext-Version": extVersion, "X-DS-Install-Id": installId },
     body:    JSON.stringify(listing),
   });
 
