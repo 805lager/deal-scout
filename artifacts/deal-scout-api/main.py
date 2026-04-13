@@ -3247,6 +3247,14 @@ if _is_production:
                         "X-DS-Install-Id", "Accept", "Accept-Language", "Content-Language"],
     )
     _root_app.mount("/api/ds", app)
+
+    @_root_app.on_event("startup")
+    async def _prod_startup():
+        log.info("[Prod] Root app startup — running migrations and scheduler")
+        await _migrate_install_id_column()
+        _asyncio.create_task(_daily_summary_scheduler())
+        log.info("[Prod] Daily summary scheduler started (9:00 AM PST)")
+
     app = _root_app
 
 if __name__ == "__main__":
