@@ -674,7 +674,10 @@ async def _fetch_ddg_reviews(product_term: str) -> dict:
             if not ratings:
                 return {}
 
-            best = max(ratings, key=lambda x: x[1])
+            credible = [r for r in ratings if r[1] >= 5]
+            if not credible:
+                credible = ratings
+            best = max(credible, key=lambda x: x[1])
             log.info(f"[DDGReview] '{product_term}' -> {best[0]}/5 ({best[1]} reviews)")
             return {"rating": best[0], "count": best[1]}
     except Exception as e:
