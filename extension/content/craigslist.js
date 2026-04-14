@@ -283,15 +283,23 @@
     showPanel();
     renderLoading({});
 
-    const response = await fetch(`${API_BASE}/score/stream`, {
-      method:  "POST",
-      headers: { "Content-Type": "application/json", "X-DS-Key": DS_API_KEY, "X-DS-Ext-Version": VERSION },
-      body:    JSON.stringify(rawData),
-      signal:  abort.signal,
-    });
+    let response;
+    try {
+      response = await fetch(`${API_BASE}/score/stream`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json", "X-DS-Key": DS_API_KEY, "X-DS-Ext-Version": VERSION },
+        body:    JSON.stringify(rawData),
+        signal:  abort.signal,
+      });
+    } catch (fetchErr) {
+      if (abort.signal.aborted) return;
+      throw new Error("Can\u2019t reach Deal Scout servers \u2014 check your connection");
+    }
 
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
+      if (response.status === 429) throw new Error("Too many requests \u2014 please wait a moment");
+      if (response.status >= 500) throw new Error("Deal Scout servers are temporarily unavailable");
       throw new Error(err.detail || `API error ${response.status}`);
     }
 
