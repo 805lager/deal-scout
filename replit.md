@@ -128,7 +128,7 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 ## Extension Version
 
-Current: **v0.34.0** (extension) / **v0.34.0** (API)
+Current: **v0.35.0** (extension) / **v0.35.0** (API)
 
 ### v0.33.0 API Scoring Fixes
 - Security ≤3 unconditionally forces `should_buy=False` (not just score cap)
@@ -188,6 +188,7 @@ All four content scripts use `chrome.runtime.sendMessage({type: 'SCORE_LISTING',
   - Backend changes (main.py, scoring/*.py, requirements.txt) → push to **private** repo `805lager/deal-scout-api`
   - When both change in the same session, push both repos in the same step.
   - Rebuild `deal_scout_extension.zip` whenever any file under `extension/` changes, and push the new zip to the public repo.
+  - **Always create a Git tag** (`git tag -a vX.Y.Z -m "..."`) for every version bump and push it to both remotes (`git push origin vX.Y.Z && git push api vX.Y.Z`). This ensures releases appear on GitHub.
 
 ## TypeScript API Server (pre-existing)
 
