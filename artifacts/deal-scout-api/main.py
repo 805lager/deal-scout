@@ -224,6 +224,7 @@ cors_origins = ["*"] if _cors_raw.strip() == "*" else [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
+    allow_origin_regex=r"^chrome-extension://[a-z]{32}$",
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-DS-Key", "X-DS-Ext-Version",
                     "X-DS-Install-Id", "Accept", "Accept-Language", "Content-Language"],
@@ -1000,7 +1001,11 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                 return
 
             seller_trust = None
-            if extracted.get("seller_joined") or extracted.get("seller_rating") or extracted.get("seller_highly_rated"):
+            _has_trust = any(extracted.get(k) for k in (
+                "seller_joined", "seller_rating", "seller_highly_rated",
+                "seller_response_time", "seller_identity_verified", "seller_items_sold",
+            ))
+            if _has_trust:
                 seller_trust = {
                     "joined_date":       extracted.get("seller_joined"),
                     "rating":            extracted.get("seller_rating"),
