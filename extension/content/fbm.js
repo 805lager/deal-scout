@@ -25,7 +25,7 @@
 (function () {
   "use strict";
 
-  const VERSION  = '0.33.0';
+  const VERSION  = chrome.runtime.getManifest().version;
   const PANEL_ID  = "deal-scout-panel";
   let API_BASE = "https://deal-scout-805lager.replit.app/api/ds";
   const DS_API_KEY = "ds_live_098caae54340d797cb216856d0cffe50";
@@ -318,39 +318,43 @@
 
   function extractSellerTrust() {
     const bodyText = document.body.innerText || '';
-    const joinedIdx = bodyText.search(/joined\s+(?:facebook\s+)?in\s+\d{4}/i);
-    const text = joinedIdx >= 0
-      ? bodyText.slice(Math.max(0, joinedIdx - 400), joinedIdx + 200)
-      : bodyText.slice(0, 1500);
 
-    const joinedMatch = text.match(/joined\s+(?:facebook\s+)?in\s+(\w+\s+\d{4}|\d{4})/i);
+    const joinedIdx = bodyText.search(/(?:joined\s+(?:facebook\s+)?in|member\s+since|on\s+facebook\s+since)\s+\d{4}/i);
+    const nearText = joinedIdx >= 0
+      ? bodyText.slice(Math.max(0, joinedIdx - 400), joinedIdx + 300)
+      : bodyText.slice(0, 2000);
+
+    const joinedMatch = nearText.match(/(?:joined\s+(?:facebook\s+)?in|member\s+since|on\s+facebook\s+since)\s+(\w+\s+\d{4}|\d{4})/i);
+
     let rating = null, ratingCount = 0;
-    const ratingCombined = text.match(/([0-9]\.[0-9])\s*\((\d+)\s*ratings?\)/i);
+    const ratingCombined = nearText.match(/([0-9]\.[0-9])\s*\((\d+)\s*ratings?\)/i);
     if (ratingCombined) {
       rating = parseFloat(ratingCombined[1]);
       ratingCount = parseInt(ratingCombined[2]);
     } else {
-      const ratingVal = text.match(/\b([1-5]\.[0-9])\s*(?:stars?|ratings?|out\s+of\s+5)[\u2605\u2606]*/i);
+      const ratingVal = nearText.match(/\b([1-5]\.[0-9])\s*(?:stars?|ratings?|out\s+of\s+5)[\u2605\u2606]*/i);
       if (ratingVal) rating = parseFloat(ratingVal[1]);
-      const countMatch = text.match(/\((\d+)\)\s*\n/) ||
-                         text.match(/(\d+)\s*ratings?\b/i) ||
-                         text.match(/(\d+)\s*reviews?\b/i);
+      const countMatch = nearText.match(/\((\d+)\)\s*\n/) ||
+                         nearText.match(/(\d+)\s*ratings?\b/i) ||
+                         nearText.match(/(\d+)\s*reviews?\b/i);
       if (countMatch) ratingCount = parseInt(countMatch[1]);
     }
-    const highlyRated = /highly\s+rated\s+on\s+marketplace/i.test(text);
+
+    const highlyRated = /highly\s+rated/i.test(bodyText);
     if (highlyRated && rating === null) rating = 4.5;
-    const responseMatch = text.match(/(?:responds?|response)\s+(?:within\s+)?([^.\n,]{3,40})/i);
-    const verified = /identity\s+verified/i.test(text);
-    const soldMatch = text.match(/(\d+)\s+items?\s+sold/i);
+
+    const responseMatch = bodyText.match(/(?:responds?|response)\s+(?:within\s+)?([^.\n,]{3,40})/i);
+    const verified = /identity\s+verified/i.test(bodyText);
+    const soldMatch = bodyText.match(/(\d+)\s+items?\s+sold/i);
 
     return {
-      joined_date:      joinedMatch  ? joinedMatch[1]        : null,
-      rating:           rating,
-      rating_count:     ratingCount,
-      highly_rated:     highlyRated,
-      response_time:    responseMatch ? responseMatch[1].trim() : null,
+      joined_date:       joinedMatch ? joinedMatch[1] : null,
+      rating:            rating,
+      rating_count:      ratingCount,
+      highly_rated:      highlyRated,
+      response_time:     responseMatch ? responseMatch[1].trim() : null,
       identity_verified: verified,
-      items_sold:       soldMatch ? parseInt(soldMatch[1]) : 0,
+      items_sold:        soldMatch ? parseInt(soldMatch[1]) : 0,
     };
   }
 
@@ -1131,29 +1135,34 @@
 
   // ── Navigation Transition State ───────────────────────────────────────────────
 
+  function _addBarDrag(bar, closeBtn) {
+    bar.style.cursor = 'move';
+    bar.addEventListener('mousedown', function(e) {
+      if (e.target === closeBtn) return;
+      var p = document.getElementById(PANEL_ID);
+      if (p) {
+        var rect = p.getBoundingClientRect();
+        p._ds_drag = { on: true, ox: e.clientX - rect.left, oy: e.clientY - rect.top };
+      }
+    });
+  }
+
   function renderNavigating() {
     const panel = getPanel();
     panel.innerHTML = '';
 
     const bar = document.createElement('div');
     bar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;'
-      + 'padding:7px 10px;background:#13111f;border-bottom:1px solid #3d3660;border-radius:10px 10px 0 0';
-    bar.innerHTML = '<span style="font-weight:700;font-size:13px;color:#7c8cf8">📊 Deal Scout '
-      + '<span style="font-size:10px;color:#6b7280;font-weight:400">v' + VERSION + '</span></span>';
+      + 'padding:7px 10px;background:#13111f;border-radius:10px;';
+    bar.innerHTML = '<span style="font-weight:700;font-size:13px;color:#7c8cf8">\ud83d\udcca Deal Scout '
+      + '<span style="font-size:10px;color:#6b7280;font-weight:400">\u27f3 Loading\u2026</span></span>';
     const closeBtn = document.createElement('button');
-    closeBtn.textContent = '✕';
+    closeBtn.textContent = '\u2715';
     closeBtn.style.cssText = 'background:none;border:none;color:#6b7280;font-size:15px;cursor:pointer;padding:1px 4px';
     closeBtn.onclick = () => removePanel();
     bar.appendChild(closeBtn);
+    _addBarDrag(bar, closeBtn);
     panel.appendChild(bar);
-
-    const body = document.createElement('div');
-    body.style.cssText = 'padding:24px 12px;text-align:center;color:#6b7280';
-    body.innerHTML = `
-      <div style="font-size:24px;margin-bottom:8px;animation:ds-spin 1s linear infinite;display:inline-block">⟳</div>
-      <div style="font-size:12px">Loading next listing…</div>
-    `;
-    panel.appendChild(body);
 
     if (!document.getElementById('ds-spin-style')) {
       const style = document.createElement('style');
@@ -1172,42 +1181,24 @@
     const loadBar = document.createElement('div');
     loadBar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;'
       + 'padding:7px 10px;background:#13111f;border-bottom:1px solid #3d3660;border-radius:10px 10px 0 0';
-    loadBar.innerHTML = '<span style="font-weight:700;font-size:13px;color:#7c8cf8">\uD83D\uDCCA Deal Scout '
-      + '<span style="font-size:10px;color:#6b7280;font-weight:400">v' + VERSION + '</span></span>';
+    const titleText = (listing && listing.title) ? listing.title.slice(0, 30) : 'Scoring';
+    const priceText = (listing && listing.price) ? ' \xb7 $' + Number(listing.price).toLocaleString() : '';
+    loadBar.innerHTML = '<span style="font-weight:700;font-size:13px;color:#7c8cf8">\uD83D\uDCCA '
+      + '<span style="font-size:11px;color:#e0e0e0;font-weight:600">' + escHtml(titleText) + '</span>'
+      + '<span style="font-size:11px;color:#7c8cf8;font-weight:700">' + priceText + '</span></span>';
     const lClose = document.createElement('button');
     lClose.textContent = '\u2715';
     lClose.style.cssText = 'background:none;border:none;color:#6b7280;font-size:15px;cursor:pointer;padding:1px 4px';
     lClose.onclick = () => removePanel();
-    lClose.onmouseenter = () => lClose.style.color='#e0e0e0';
-    lClose.onmouseleave = () => lClose.style.color='#6b7280';
     loadBar.appendChild(lClose);
+    _addBarDrag(loadBar, lClose);
     panel.appendChild(loadBar);
+
     const lBody = document.createElement('div');
-    lBody.style.cssText = 'padding:12px';
+    lBody.style.cssText = 'padding:8px 10px;display:flex;align-items:center;gap:8px;color:#6b7280;font-size:12px';
+    lBody.innerHTML = '<span style="animation:ds-spin 1s linear infinite;display:inline-block;font-size:16px">\u27f3</span>'
+      + '<span id="ds-progress-label">Scoring deal\u2026</span>';
     panel.appendChild(lBody);
-
-    if (listing && listing.title) {
-      const titleEl = document.createElement('div');
-      titleEl.style.cssText = 'font-weight:600;color:#e0e0e0;font-size:13px;margin-bottom:4px;line-height:1.35';
-      titleEl.textContent = listing.title;
-      lBody.appendChild(titleEl);
-
-      if (listing.price) {
-        const priceEl = document.createElement('div');
-        priceEl.style.cssText = 'color:#7c8cf8;font-size:18px;font-weight:700;margin-bottom:10px';
-        priceEl.textContent = '$' + Number(listing.price).toLocaleString();
-        lBody.appendChild(priceEl);
-      }
-    }
-
-    const spinner = document.createElement('div');
-    spinner.style.cssText = 'text-align:center;padding:16px 0;color:#6b7280';
-    spinner.innerHTML = `
-      <div style="font-size:24px;margin-bottom:8px;animation:ds-spin 1s linear infinite;display:inline-block">&#x27F3;</div>
-      <div id="ds-progress-label" style="font-size:12px">Scoring deal&hellip;</div>
-      <div style="font-size:11px;margin-top:4px;color:#4b5563">eBay comps &middot; AI scoring &middot; market data</div>
-    `;
-    lBody.appendChild(spinner);
 
     if (!document.getElementById('ds-spin-style')) {
       const style = document.createElement('style');

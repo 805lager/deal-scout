@@ -30,7 +30,10 @@ async function checkAPIHealth() {
     } else { throw new Error(`HTTP ${resp.status}`); }
   } catch (e) {
     statusEl.className = "error";
-    statusTxt.textContent = `API offline · ${e.message}`;
+    const msg = (e.name === "TypeError" || e.message.includes("fetch"))
+      ? "Can\u2019t reach Deal Scout servers \u2014 check your connection"
+      : `API offline \xb7 ${e.message}`;
+    statusTxt.textContent = msg;
   }
 }
 
@@ -71,58 +74,106 @@ function renderDealPanel(r, panelId, apiBase, extVersion) {
   const score = r.score || 0;
   const sc = score >= 7 ? "#22c55e" : score >= 5 ? "#fbbf24" : "#ef4444";
   const esc = s => String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-  let cta = score <= 3 ? "⚠️ Better Options Below" : score <= 5 ? "💡 You Could Do Better" : score <= 7 ? "✅ Solid — Confirm Price" : "🔥 Great Deal";
-
-  let rows = "";
-  if (r.sold_avg)  rows += `<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.05)"><span style="color:#9ca3af;font-size:12px">Est. sold avg</span><span style="font-weight:700;font-size:14px">$${Math.round(r.sold_avg)}</span></div>`;
-  if (r.new_price) rows += `<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.05)"><span style="color:#9ca3af;font-size:12px">New retail</span><span style="font-size:13px">$${Math.round(r.new_price)}</span></div>`;
-  rows += `<div style="display:flex;justify-content:space-between;padding:3px 0"><span style="color:#9ca3af;font-size:12px">Listed price</span><span style="font-size:13px">$${Math.round(r.price||0)}</span></div>`;
-  if (r.sold_avg && r.price) {
-    const delta = r.price - r.sold_avg, pct = Math.abs(Math.round(delta/r.sold_avg*100));
-    rows += `<div style="margin-top:6px;font-size:12px;font-weight:600;color:${delta<0?"#22c55e":"#ef4444"}">● $${Math.abs(Math.round(delta))} ${delta<0?"below":"above"} market (${delta<0?"-":"+"}${pct}%)</div>`;
-  }
-
-  let flags = "";
-  for (const f of (r.green_flags||[]).slice(0,3)) flags += `<div style="font-size:11.5px;color:#6ee7b7;padding:2px 0">✓ ${esc(f)}</div>`;
-  for (const f of (r.red_flags||[]).slice(0,3))   flags += `<div style="font-size:11.5px;color:#fca5a5;padding:2px 0">⚠ ${esc(f)}</div>`;
+  let cta = score <= 3 ? "\u26a0\ufe0f Better Options Below" : score <= 5 ? "\ud83d\udca1 You Could Do Better" : score <= 7 ? "\u2705 Solid \u2014 Confirm Price" : "\ud83d\udd25 Great Deal";
 
   const panel = document.createElement("div");
   panel.id = panelId;
   panel.style.cssText = "position:fixed;top:80px;right:20px;width:320px;max-height:calc(100vh - 100px);overflow-y:auto;z-index:2147483647;background:#1e1b2e;border:1px solid #3d3660;border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,0.6);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:13px;color:#e0e0e0;line-height:1.5";
-  panel.innerHTML = `
-    <div style="background:#13111f;border-bottom:1px solid #3d3660;border-radius:10px 10px 0 0;padding:10px 12px">
-      <div style="display:flex;justify-content:space-between;margin-bottom:6px">
-        <span style="font-weight:700;font-size:13px;color:#7c8cf8">📊 Deal Scout</span>
-        <button onclick="document.getElementById('${panelId}').remove()" style="background:none;border:none;color:#6b7280;font-size:15px;cursor:pointer">✕</button>
-      </div>
-      <div style="display:flex;align-items:center;gap:10px">
-        <div style="width:52px;height:52px;border-radius:50%;border:3px solid ${sc};display:flex;align-items:center;justify-content:center;flex-shrink:0">
-          <span style="font-size:22px;font-weight:900;color:${sc}">${score}</span>
-        </div>
-        <div>
-          <div style="font-size:14px;font-weight:800;color:#e2e8f0">${esc(r.verdict||"")}</div>
-          <div style="font-size:11px;color:#94a3b8;margin-top:2px">${r.should_buy===false?"⛔ Skip":r.should_buy?"✅ Worth buying":""}</div>
-          <div style="font-size:10px;color:#6b7280;margin-top:1px">$${Math.round(r.price||0)}</div>
-        </div>
-      </div>
-    </div>
-    ${r.summary?`<div style="margin:10px 12px 0;font-size:12px;color:#c4b5fd;background:rgba(139,92,246,0.08);border:1px solid rgba(139,92,246,0.2);border-radius:8px;padding:9px 10px;line-height:1.5">${esc(r.summary)}</div>`:""}
-    <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:10px;padding:10px 12px;margin:8px 12px">
-      <div style="font-weight:600;font-size:11px;text-transform:uppercase;color:#9ca3af;margin-bottom:8px">📈 Market Comparison</div>
-      ${rows}
-    </div>
-    ${flags?`<div style="margin:0 12px 8px">${flags}</div>`:""}
-    <div style="border-top:1px solid rgba(255,255,255,0.06);margin-top:4px;padding:10px 12px">
-      ${r.score_id ? `
-      <div style="display:flex;flex-direction:column;align-items:center;gap:6px">
-        <div style="font-size:11px;color:#9ca3af">Was this score accurate?</div>
-        <div id="${panelId}-thumbs" style="display:flex;gap:8px">
-          <button onclick="(function(){fetch('${apiBase}/thumbs',{method:'POST',headers:{'Content-Type':'application/json','X-DS-Ext-Version':'${extVersion||""}'},body:JSON.stringify({score_id:${r.score_id},thumbs:1}),signal:AbortSignal.timeout(5000)}).catch(()=>{});document.getElementById('${panelId}-thumbs').innerHTML='<span style=\\'font-size:12px;color:#6ee7b7\\'>✓ Thanks for the feedback!</span>'})()" style="display:flex;align-items:center;gap:5px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:5px 12px;cursor:pointer;font-size:14px;color:#d1d5db">👍 <span style="font-size:11px">Yes, accurate</span></button>
-          <button onclick="(function(){fetch('${apiBase}/thumbs',{method:'POST',headers:{'Content-Type':'application/json','X-DS-Ext-Version':'${extVersion||""}'},body:JSON.stringify({score_id:${r.score_id},thumbs:-1}),signal:AbortSignal.timeout(5000)}).catch(()=>{});document.getElementById('${panelId}-thumbs').innerHTML='<span style=\\'font-size:12px;color:#6ee7b7\\'>✓ Thanks for the feedback!</span>'})()" style="display:flex;align-items:center;gap:5px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:5px 12px;cursor:pointer;font-size:14px;color:#d1d5db">👎 <span style="font-size:11px">No, off</span></button>
-        </div>
-      </div>` : ''}
-      <div style="text-align:center;font-size:10px;color:#374151;margin-top:${r.score_id ? '8' : '0'}px">${cta}</div>
-    </div>`;
+
+  var hdr = document.createElement("div");
+  hdr.style.cssText = "background:#13111f;border-bottom:1px solid #3d3660;border-radius:10px 10px 0 0;padding:10px 12px";
+  var topRow = document.createElement("div");
+  topRow.style.cssText = "display:flex;justify-content:space-between;margin-bottom:6px";
+  var titleSpan = document.createElement("span");
+  titleSpan.style.cssText = "font-weight:700;font-size:13px;color:#7c8cf8";
+  titleSpan.textContent = "\ud83d\udcca Deal Scout";
+  topRow.appendChild(titleSpan);
+  var closeBtn = document.createElement("button");
+  closeBtn.textContent = "\u2715";
+  closeBtn.style.cssText = "background:none;border:none;color:#6b7280;font-size:15px;cursor:pointer";
+  closeBtn.addEventListener("click", function() { document.getElementById(panelId).remove(); });
+  topRow.appendChild(closeBtn);
+  hdr.appendChild(topRow);
+
+  var scoreRow = document.createElement("div");
+  scoreRow.style.cssText = "display:flex;align-items:center;gap:10px";
+  scoreRow.innerHTML = '<div style="width:52px;height:52px;border-radius:50%;border:3px solid ' + sc + ';display:flex;align-items:center;justify-content:center;flex-shrink:0"><span style="font-size:22px;font-weight:900;color:' + sc + '">' + score + '</span></div><div><div style="font-size:14px;font-weight:800;color:#e2e8f0">' + esc(r.verdict||"") + '</div><div style="font-size:11px;color:#94a3b8;margin-top:2px">' + (r.should_buy===false?"\u26d4 Skip":r.should_buy?"\u2705 Worth buying":"") + '</div><div style="font-size:10px;color:#6b7280;margin-top:1px">$' + Math.round(r.price||0) + '</div></div>';
+  hdr.appendChild(scoreRow);
+  panel.appendChild(hdr);
+
+  if (r.summary) {
+    var sumDiv = document.createElement("div");
+    sumDiv.style.cssText = "margin:10px 12px 0;font-size:12px;color:#c4b5fd;background:rgba(139,92,246,0.08);border:1px solid rgba(139,92,246,0.2);border-radius:8px;padding:9px 10px;line-height:1.5";
+    sumDiv.textContent = r.summary;
+    panel.appendChild(sumDiv);
+  }
+
+  var rows = "";
+  if (r.sold_avg)  rows += '<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.05)"><span style="color:#9ca3af;font-size:12px">Est. sold avg</span><span style="font-weight:700;font-size:14px">$' + Math.round(r.sold_avg) + '</span></div>';
+  if (r.new_price) rows += '<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.05)"><span style="color:#9ca3af;font-size:12px">New retail</span><span style="font-size:13px">$' + Math.round(r.new_price) + '</span></div>';
+  rows += '<div style="display:flex;justify-content:space-between;padding:3px 0"><span style="color:#9ca3af;font-size:12px">Listed price</span><span style="font-size:13px">$' + Math.round(r.price||0) + '</span></div>';
+  if (r.sold_avg && r.price) {
+    var delta = r.price - r.sold_avg, pct = Math.abs(Math.round(delta/r.sold_avg*100));
+    rows += '<div style="margin-top:6px;font-size:12px;font-weight:600;color:' + (delta<0?"#22c55e":"#ef4444") + '">\u25cf $' + Math.abs(Math.round(delta)) + ' ' + (delta<0?"below":"above") + ' market (' + (delta<0?"-":"+") + pct + '%)</div>';
+  }
+  var mktDiv = document.createElement("div");
+  mktDiv.style.cssText = "background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:10px;padding:10px 12px;margin:8px 12px";
+  mktDiv.innerHTML = '<div style="font-weight:600;font-size:11px;text-transform:uppercase;color:#9ca3af;margin-bottom:8px">\ud83d\udcc8 Market Comparison</div>' + rows;
+  panel.appendChild(mktDiv);
+
+  var flagsHtml = "";
+  for (var i = 0; i < (r.green_flags||[]).slice(0,3).length; i++) flagsHtml += '<div style="font-size:11.5px;color:#6ee7b7;padding:2px 0">\u2713 ' + esc(r.green_flags[i]) + '</div>';
+  for (var j = 0; j < (r.red_flags||[]).slice(0,3).length; j++) flagsHtml += '<div style="font-size:11.5px;color:#fca5a5;padding:2px 0">\u26a0 ' + esc(r.red_flags[j]) + '</div>';
+  if (flagsHtml) {
+    var fDiv = document.createElement("div");
+    fDiv.style.cssText = "margin:0 12px 8px";
+    fDiv.innerHTML = flagsHtml;
+    panel.appendChild(fDiv);
+  }
+
+  var foot = document.createElement("div");
+  foot.style.cssText = "border-top:1px solid rgba(255,255,255,0.06);margin-top:4px;padding:10px 12px";
+
+  if (r.score_id) {
+    var fbWrap = document.createElement("div");
+    fbWrap.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:6px";
+    var fbLabel = document.createElement("div");
+    fbLabel.style.cssText = "font-size:11px;color:#9ca3af";
+    fbLabel.textContent = "Was this score accurate?";
+    fbWrap.appendChild(fbLabel);
+
+    var thumbsDiv = document.createElement("div");
+    thumbsDiv.id = panelId + "-thumbs";
+    thumbsDiv.style.cssText = "display:flex;gap:8px";
+
+    function makeThumbBtn(emoji, label, thumbsVal) {
+      var btn = document.createElement("button");
+      btn.style.cssText = "display:flex;align-items:center;gap:5px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:5px 12px;cursor:pointer;font-size:14px;color:#d1d5db";
+      btn.innerHTML = emoji + ' <span style="font-size:11px">' + label + '</span>';
+      btn.addEventListener("click", function() {
+        fetch(apiBase + "/thumbs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-DS-Ext-Version": extVersion || "" },
+          body: JSON.stringify({ score_id: r.score_id, thumbs: thumbsVal }),
+          signal: AbortSignal.timeout(5000)
+        }).catch(function(){});
+        var td = document.getElementById(panelId + "-thumbs");
+        if (td) { td.innerHTML = ""; var sp = document.createElement("span"); sp.style.cssText = "font-size:12px;color:#6ee7b7"; sp.textContent = "\u2713 Thanks for the feedback!"; td.appendChild(sp); }
+      });
+      return btn;
+    }
+    thumbsDiv.appendChild(makeThumbBtn("\ud83d\udc4d", "Yes, accurate", 1));
+    thumbsDiv.appendChild(makeThumbBtn("\ud83d\udc4e", "No, off", -1));
+    fbWrap.appendChild(thumbsDiv);
+    foot.appendChild(fbWrap);
+  }
+
+  var ctaDiv = document.createElement("div");
+  ctaDiv.style.cssText = "text-align:center;font-size:10px;color:#374151;margin-top:" + (r.score_id ? "8" : "0") + "px";
+  ctaDiv.textContent = cta;
+  foot.appendChild(ctaDiv);
+  panel.appendChild(foot);
+
   document.body.appendChild(panel);
 }
 
@@ -186,7 +237,10 @@ document.getElementById("score-current").addEventListener("click", async () => {
     });
     result = await resp.json();
   } catch (e) {
-    setStatus("error", `API error: ${e.message}`);
+    const msg = (e.name === "TypeError" || e.message.includes("fetch"))
+      ? "Can\u2019t reach Deal Scout servers \u2014 check your connection"
+      : `API error: ${e.message}`;
+    setStatus("error", msg);
     return;
   }
 
@@ -266,3 +320,4 @@ document.getElementById("settings-save").addEventListener("click", async () => {
 });
 
 checkAPIHealth();
+document.getElementById("version-label").textContent = "v" + EXT_VERSION;

@@ -17,7 +17,7 @@
 (function () {
   "use strict";
 
-  const VERSION  = "0.32.0";
+  const VERSION  = chrome.runtime.getManifest().version;
   const PANEL_ID = "deal-scout-ebay-panel";
   const PLATFORM = "ebay";
 
@@ -178,35 +178,42 @@
   }
 
   // ── Rendering ──────────────────────────────────────────────────────────────
+  function _addBarDrag(bar, closeBtn) {
+    bar.style.cursor = "move";
+    bar.addEventListener("mousedown", function(e) {
+      if (e.target === closeBtn) return;
+      var p = document.getElementById(PANEL_ID);
+      if (p) {
+        var rect = p.getBoundingClientRect();
+        p._ds_drag = { on: true, ox: e.clientX - rect.left, oy: e.clientY - rect.top };
+      }
+    });
+  }
+
   function renderLoading(listing) {
     const panel = getPanel();
     panel.innerHTML = "";
     const bar = document.createElement("div");
-    bar.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:#13111f;border-bottom:1px solid #3d3660;border-radius:10px 10px 0 0";
-    bar.innerHTML = '<span style="font-weight:700;font-size:13px;color:#7c8cf8">📊 Deal Scout <span style="font-size:10px;color:#6b7280;font-weight:400">v' + VERSION + " · eBay</span></span>";
+    bar.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:7px 10px;background:#13111f;border-bottom:1px solid #3d3660;border-radius:10px 10px 0 0";
+    const titleText = (listing && listing.title) ? listing.title.slice(0, 30) : "Scoring";
+    const priceText = (listing && listing.price) ? " \xb7 $" + Number(listing.price).toLocaleString() : "";
+    bar.innerHTML = '<span style="font-weight:700;font-size:13px;color:#7c8cf8">\ud83d\udcca ' +
+      '<span style="font-size:11px;color:#e0e0e0;font-weight:600">' + escHtml(titleText) + '</span>' +
+      '<span style="font-size:11px;color:#7c8cf8;font-weight:700">' + priceText + '</span></span>';
     const closeBtn = document.createElement("button");
-    closeBtn.textContent = "✕";
+    closeBtn.textContent = "\u2715";
     closeBtn.style.cssText = "background:none;border:none;color:#6b7280;font-size:15px;cursor:pointer;padding:1px 4px";
     closeBtn.onclick = removePanel;
     bar.appendChild(closeBtn);
+    _addBarDrag(bar, closeBtn);
     panel.appendChild(bar);
+
     const body = document.createElement("div");
-    body.style.cssText = "padding:14px 12px";
-
-    let headerHtml = "";
-    if (listing && listing.title) {
-      headerHtml += '<div style="font-weight:600;color:#e0e0e0;font-size:13px;margin-bottom:4px;line-height:1.35">' + escHtml(listing.title) + "</div>";
-      if (listing.price) {
-        headerHtml += '<div style="color:#7c8cf8;font-size:18px;font-weight:700;margin-bottom:10px">$' + Number(listing.price).toLocaleString() + "</div>";
-      }
-    }
-
-    body.innerHTML = headerHtml +
-      '<div style="text-align:center;padding:16px 0;color:#6b7280">' +
-      '<div style="font-size:24px;animation:ds-spin 1s linear infinite;display:inline-block">⟳</div>' +
-      '<div id="ds-progress-label" style="font-size:12px;margin-top:8px">Analyzing deal…</div>' +
-      '<div style="font-size:11px;margin-top:4px;color:#4b5563">eBay sold comps · AI scoring · Price check</div></div>';
+    body.style.cssText = "padding:8px 10px;display:flex;align-items:center;gap:8px;color:#6b7280;font-size:12px";
+    body.innerHTML = '<span style="animation:ds-spin 1s linear infinite;display:inline-block;font-size:16px">\u27f3</span>' +
+      '<span id="ds-progress-label">Analyzing deal\u2026</span>';
     panel.appendChild(body);
+
     if (!document.getElementById("ds-spin-style")) {
       const s = document.createElement("style"); s.id = "ds-spin-style";
       s.textContent = "@keyframes ds-spin{to{transform:rotate(360deg)}}";

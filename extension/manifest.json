@@ -23,9 +23,9 @@
     "https://www.ebay.es/*",
     "https://offerup.com/*",
     "https://www.offerup.com/*",
-    "https://*.replit.dev/*",
     "https://*.replit.app/*"
   ],
+  "homepage_url": "https://deal-scout-805lager.replit.app/api/ds/privacy",
   "background": {
     "service_worker": "background.js",
     "type": "module"

@@ -198,11 +198,16 @@ async function callScoringAPI(listing) {
   const API_BASE = await getApiBase();
   const extVersion = chrome.runtime.getManifest().version;
   const installId = await getInstallId();
-  const response = await fetch(`${API_BASE}/score/stream`, {
-    method:  "POST",
-    headers: { "Content-Type": "application/json", "X-DS-Key": DS_API_KEY, "X-DS-Ext-Version": extVersion, "X-DS-Install-Id": installId },
-    body:    JSON.stringify(listing),
-  });
+  let response;
+  try {
+    response = await fetch(`${API_BASE}/score/stream`, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json", "X-DS-Key": DS_API_KEY, "X-DS-Ext-Version": extVersion, "X-DS-Install-Id": installId },
+      body:    JSON.stringify(listing),
+    });
+  } catch (fetchErr) {
+    throw new Error("Can\u2019t reach Deal Scout servers \u2014 check your connection");
+  }
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
@@ -210,6 +215,8 @@ async function callScoringAPI(listing) {
     if (Array.isArray(detail)) {
       detail = detail.map(d => d.msg || d.message || JSON.stringify(d)).join('; ');
     }
+    if (response.status === 429) throw new Error("Too many requests \u2014 please wait a moment and try again");
+    if (response.status >= 500) throw new Error("Deal Scout servers are temporarily unavailable \u2014 try again shortly");
     throw new Error(detail || `API error ${response.status}`);
   }
 
