@@ -293,7 +293,7 @@ Apply vehicle-specific reasoning:
         shipping_line = "\nShipping:     Free / local pickup (no additional cost)"
 
     if photo_count > 1:
-        photos_line = f"\nPhotos:       {photo_count} available (you are analyzing up to 3 — do NOT flag limited photo count as a red flag)"
+        photos_line = f"\nPhotos:       {photo_count} available (you are analyzing up to 5 — do NOT flag limited photo count as a red flag)"
     elif photo_count == 1:
         photos_line = "\nPhotos:       1 extracted (listing may have more photos — DOM extraction is limited, do NOT flag photo count)"
     else:

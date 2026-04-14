@@ -425,15 +425,15 @@
       })
       .map(img => img.src)
       .filter(src => src && src.length > 10)
-      .slice(0, 3);
+      .slice(0, 5);
 
     let imageUrls =
       _pickImages(200).length       ? _pickImages(200)       :
       _pickImages(100).length       ? _pickImages(100)       :
       _pickImages(100, 1800).length ? _pickImages(100, 1800) :
-      _allScontent.map(i => i.src).filter(s => s).slice(0, 3);
+      _allScontent.map(i => i.src).filter(s => s).slice(0, 5);
     if (imageUrls.length === 0 && _videoPosterUrls.length > 0) {
-      imageUrls = _videoPosterUrls.slice(0, 3);
+      imageUrls = _videoPosterUrls.slice(0, 5);
     }
 
     const vehicleText = title + ' ' + description.slice(0, 300);
@@ -558,14 +558,14 @@
       })
       .map(img => img.src)
       .filter(src => src && src.length > 10)
-      .slice(0, 3);
+      .slice(0, 5);
     let imageUrls =
       _raw_pick(200).length       ? _raw_pick(200)       :
       _raw_pick(100).length       ? _raw_pick(100)       :
       _raw_pick(100, 1800).length ? _raw_pick(100, 1800) :
-      _raw_all.map(i => i.src).filter(s => s).slice(0, 3);
+      _raw_all.map(i => i.src).filter(s => s).slice(0, 5);
     if (imageUrls.length === 0 && _raw_vidPosters.length > 0) {
-      imageUrls = _raw_vidPosters.slice(0, 3);
+      imageUrls = _raw_vidPosters.slice(0, 5);
     }
 
     const _rh1 = (() => {
