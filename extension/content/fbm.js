@@ -1149,13 +1149,13 @@
 
   function renderNavigating() {
     const panel = getPanel();
-    panel.innerHTML = '';
+    panel.textContent = "";
 
     const bar = document.createElement('div');
     bar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;'
       + 'padding:7px 10px;background:#13111f;border-radius:10px;';
-    bar.innerHTML = '<span style="font-weight:700;font-size:13px;color:#7c8cf8">\ud83d\udcca Deal Scout '
-      + '<span style="font-size:10px;color:#6b7280;font-weight:400">\u27f3 Loading\u2026</span></span>';
+    bar.innerHTML = DOMPurify.sanitize('<span style="font-weight:700;font-size:13px;color:#7c8cf8">\ud83d\udcca Deal Scout '
+      + '<span style="font-size:10px;color:#6b7280;font-weight:400">\u27f3 Loading\u2026</span></span>');
     const closeBtn = document.createElement('button');
     closeBtn.textContent = '\u2715';
     closeBtn.style.cssText = 'background:none;border:none;color:#6b7280;font-size:15px;cursor:pointer;padding:1px 4px';
@@ -1176,16 +1176,16 @@
 
   function renderLoading(listing) {
     const panel = getPanel();
-    panel.innerHTML = '';
+    panel.textContent = "";
 
     const loadBar = document.createElement('div');
     loadBar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;'
       + 'padding:7px 10px;background:#13111f;border-bottom:1px solid #3d3660;border-radius:10px 10px 0 0';
     const titleText = (listing && listing.title) ? listing.title.slice(0, 30) : 'Scoring';
     const priceText = (listing && listing.price) ? ' \xb7 $' + Number(listing.price).toLocaleString() : '';
-    loadBar.innerHTML = '<span style="font-weight:700;font-size:13px;color:#7c8cf8">\uD83D\uDCCA '
+    loadBar.innerHTML = DOMPurify.sanitize('<span style="font-weight:700;font-size:13px;color:#7c8cf8">\uD83D\uDCCA '
       + '<span style="font-size:11px;color:#e0e0e0;font-weight:600">' + escHtml(titleText) + '</span>'
-      + '<span style="font-size:11px;color:#7c8cf8;font-weight:700">' + priceText + '</span></span>';
+      + '<span style="font-size:11px;color:#7c8cf8;font-weight:700">' + priceText + '</span></span>');
     const lClose = document.createElement('button');
     lClose.textContent = '\u2715';
     lClose.style.cssText = 'background:none;border:none;color:#6b7280;font-size:15px;cursor:pointer;padding:1px 4px';
@@ -1196,8 +1196,8 @@
 
     const lBody = document.createElement('div');
     lBody.style.cssText = 'padding:8px 10px;display:flex;align-items:center;gap:8px;color:#6b7280;font-size:12px';
-    lBody.innerHTML = '<span style="animation:ds-spin 1s linear infinite;display:inline-block;font-size:16px">\u27f3</span>'
-      + '<span id="ds-progress-label">Scoring deal\u2026</span>';
+    lBody.innerHTML = DOMPurify.sanitize('<span style="animation:ds-spin 1s linear infinite;display:inline-block;font-size:16px">\u27f3</span>'
+      + '<span id="ds-progress-label">Scoring deal\u2026</span>');
     panel.appendChild(lBody);
 
     if (!document.getElementById('ds-spin-style')) {
@@ -1212,10 +1212,10 @@
 
   function renderError(msg) {
     const panel = getPanel();
-    panel.innerHTML = '';
+    panel.textContent = "";
 
     const wrap = document.createElement('div');
-    wrap.innerHTML = `
+    wrap.innerHTML = DOMPurify.sanitize(`
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
         <span style="font-weight:700;font-size:15px;color:#7c8cf8">&#x1F50D; Deal Scout</span>
       </div>
@@ -1223,7 +1223,7 @@
         <div style="font-weight:600;margin-bottom:4px">&#x26A0;&#xFE0F; Scoring failed</div>
         <div style="font-size:12px">${escHtml(msg)}</div>
       </div>
-    `;
+    `);
     panel.appendChild(wrap);
 
     const btn = document.createElement('button');
@@ -1252,7 +1252,7 @@
 
   function renderScore(r) {
     const panel = getPanel();
-    panel.innerHTML = '';
+    panel.textContent = "";
 
     renderHeader(r, panel);
     renderAISummary(r, panel);
@@ -1283,8 +1283,8 @@
 
     const titleSpan = document.createElement('span');
     titleSpan.style.cssText = 'font-weight:700;font-size:13px;color:#7c8cf8;display:flex;align-items:center;gap:5px';
-    titleSpan.innerHTML = '&#x1F4CA; Deal Scout '
-      + '<span style="font-size:10px;color:#6b7280;font-weight:400">v' + VERSION + '</span>';
+    titleSpan.innerHTML = DOMPurify.sanitize('&#x1F4CA; Deal Scout '
+      + '<span style="font-size:10px;color:#6b7280;font-weight:400">v' + VERSION + '</span>');
     topBar.appendChild(titleSpan);
 
     const closeBtn = document.createElement('button');
@@ -1363,10 +1363,10 @@
         + ps + r.original_price.toFixed(0) + '</span> '
         + '<span style="font-weight:700;font-size:16px">' + ps + r.price.toFixed(0) + '</span>'
       : '<span style="font-weight:700;font-size:16px">' + ps + r.price.toFixed(0) + '</span>';
-    priceRow.innerHTML = '<div><span style="color:#9ca3af;font-size:12px">Asking price </span>'
+    priceRow.innerHTML = DOMPurify.sanitize('<div><span style="color:#9ca3af;font-size:12px">Asking price </span>'
       + priceHtml + '</div>'
       + '<div><span style="color:#9ca3af;font-size:12px">Rec. offer </span>'
-      + '<span style="font-weight:600;color:#7c8cf8">' + ps + r.recommended_offer.toFixed(0) + '</span></div>';
+      + '<span style="font-weight:600;color:#7c8cf8">' + ps + r.recommended_offer.toFixed(0) + '</span></div>');
     body.appendChild(priceRow);
 
     const metaRow = document.createElement('div');
@@ -1409,10 +1409,10 @@
 
     const sectionHdr = document.createElement('div');
     sectionHdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:8px';
-    sectionHdr.innerHTML = `
+    sectionHdr.innerHTML = DOMPurify.sanitize(`
       <span style="font-weight:600;font-size:11px;letter-spacing:0.5px;text-transform:uppercase;color:#9ca3af">\uD83D\uDCC8 Market Comparison</span>
       <span style="font-size:11px;font-weight:600;color:${sc.color};background:${sc.bg};border-radius:6px;padding:2px 7px">${sc.label}</span>
-    `;
+    `);
     section.appendChild(sectionHdr);
 
     const isGemini     = r.data_source === 'gemini_search' || r.data_source === 'gemini_knowledge' || r.data_source === 'claude_knowledge';
@@ -1459,10 +1459,10 @@
     for (const row of rows) {
       const rowEl = document.createElement('div');
       rowEl.style.cssText = 'display:flex;justify-content:space-between;align-items:baseline;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.05)';
-      rowEl.innerHTML = `
+      rowEl.innerHTML = DOMPurify.sanitize(`
         <span style="color:#9ca3af;font-size:12px">${escHtml(row.label)}${row.sub ? '<span style="color:#4b5563;font-size:10px;margin-left:4px">' + escHtml(row.sub) + '</span>' : ''}</span>
         <span style="font-weight:${row.bold ? '700' : '500'};font-size:${row.bold ? '14px' : '13px'};${row.color ? 'color:' + row.color + ';' : ''}${row.mono ? 'font-family:monospace;font-size:11px;color:#a78bfa' : ''}">${escHtml(row.value)}</span>
-      `;
+      `);
       section.appendChild(rowEl);
     }
 
@@ -1520,7 +1520,7 @@
 
     const form = document.createElement('div');
     form.style.cssText = 'display:none;margin-top:6px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:10px';
-    form.innerHTML = `
+    form.innerHTML = DOMPurify.sanitize(`
       <div style="font-size:12px;color:#9ca3af;margin-bottom:6px">Correct the search query:</div>
       <input id="ds-fix-query" type="text" placeholder="e.g. Gibson Les Paul Standard guitar"
         value="${escHtml(r.query_used || r.title || '')}"
@@ -1531,7 +1531,7 @@
       </div>
       <button id="ds-fix-save" style="margin-top:8px;width:100%;padding:6px;background:#6366f1;border:none;border-radius:4px;color:white;font-size:12px;cursor:pointer">Save correction</button>
       <div id="ds-fix-status" style="font-size:11px;margin-top:6px;color:#9ca3af"></div>
-    `;
+    `);
     wrap.appendChild(form);
 
     fixBtn.addEventListener('click', () => {
@@ -1832,10 +1832,10 @@
 
     const hdr = document.createElement('div');
     hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:6px';
-    hdr.innerHTML = `
+    hdr.innerHTML = DOMPurify.sanitize(`
       <span style="font-weight:600;font-size:11px;letter-spacing:0.5px;text-transform:uppercase;color:#9ca3af">\uD83D\uDD12 Security Check <span style="color:${riskColor};font-weight:700">${sec.score || ''}/10</span></span>
       <span style="font-size:11px;font-weight:600;color:${riskColor};background:${riskColor}22;border-radius:6px;padding:2px 7px">${sec.risk_level} risk</span>
-    `;
+    `);
     section.appendChild(hdr);
 
     if (sec.recommendation) {
@@ -1897,10 +1897,10 @@
 
     const hdr = document.createElement('div');
     hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:6px';
-    hdr.innerHTML = `
+    hdr.innerHTML = DOMPurify.sanitize(`
       <span style="font-weight:600;font-size:11px;letter-spacing:0.5px;text-transform:uppercase;color:#9ca3af">\u2B50 Product Reputation</span>
       <span style="font-size:11px;font-weight:600;color:${tierColor};background:${tierColor}22;border-radius:6px;padding:2px 7px">${pe.reliability_tier}</span>
-    `;
+    `);
     section.appendChild(hdr);
 
     if (pe.brand_reputation) {
@@ -1950,20 +1950,20 @@
     bb.items.forEach(item => {
       const row = document.createElement('div');
       row.style.cssText = 'display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.05);font-size:12px';
-      row.innerHTML = `
+      row.innerHTML = DOMPurify.sanitize(`
         <span style="color:#d1d5db">${escHtml(item.name)}</span>
         <span style="color:#7c8cf8;font-weight:600">${item.estimated_value ? ps + item.estimated_value.toFixed(0) : '?'}</span>
-      `;
+      `);
       section.appendChild(row);
     });
 
     if (bb.total_estimated_value) {
       const totalRow = document.createElement('div');
       totalRow.style.cssText = 'display:flex;justify-content:space-between;padding:5px 0;margin-top:4px;font-size:13px;font-weight:700';
-      totalRow.innerHTML = `
+      totalRow.innerHTML = DOMPurify.sanitize(`
         <span style="color:#e0e0e0">Total separate value</span>
         <span style="color:#22c55e">${ps}${bb.total_estimated_value.toFixed(0)}</span>
-      `;
+      `);
       section.appendChild(totalRow);
 
       if (r.price && bb.total_estimated_value > r.price) {
@@ -2045,7 +2045,7 @@
       const makeThumb = (emoji, label, val) => {
         const btn = document.createElement('button');
         btn.style.cssText = 'display:flex;align-items:center;gap:5px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:5px 12px;cursor:pointer;font-size:14px;color:#d1d5db';
-        btn.innerHTML = emoji + ' <span style="font-size:11px">' + label + '</span>';
+        btn.innerHTML = DOMPurify.sanitize(emoji + ' <span style="font-size:11px">' + label + '</span>');
         btn.addEventListener('click', () => {
           if (val === 1) {
             fetch(API_BASE + '/thumbs', {
@@ -2053,9 +2053,9 @@
               body: JSON.stringify({score_id: r.score_id, thumbs: 1, reason: ''}),
               signal: AbortSignal.timeout(5000),
             }).catch(() => {});
-            thumbWrap.innerHTML = '<span style="font-size:12px;color:#6ee7b7">\u2713 Thanks!</span>';
+            thumbWrap.innerHTML = DOMPurify.sanitize('<span style="font-size:12px;color:#6ee7b7">\u2713 Thanks!</span>');
           } else {
-            thumbWrap.innerHTML = '';
+            thumbWrap.textContent = "";
             const reasonRow = document.createElement('div');
             reasonRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;justify-content:center;max-width:230px';
             [['Score too high','score_too_high'],['Score too low','score_too_low'],
@@ -2071,7 +2071,7 @@
                   body: JSON.stringify({score_id: r.score_id, thumbs: -1, reason: key}),
                   signal: AbortSignal.timeout(5000),
                 }).catch(() => {});
-                thumbWrap.innerHTML = '<span style="font-size:12px;color:#6ee7b7">\u2713 Got it, thanks!</span>';
+                thumbWrap.innerHTML = DOMPurify.sanitize('<span style="font-size:12px;color:#6ee7b7">\u2713 Got it, thanks!</span>');
               });
               reasonRow.appendChild(pill);
             });

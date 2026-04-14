@@ -192,14 +192,14 @@
 
   function renderLoading(listing) {
     const panel = getPanel();
-    panel.innerHTML = "";
+    panel.textContent = "";
     const bar = document.createElement("div");
     bar.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:7px 10px;background:#13111f;border-bottom:1px solid #3d3660;border-radius:10px 10px 0 0";
     const titleText = (listing && listing.title) ? listing.title.slice(0, 30) : "Scoring";
     const priceText = (listing && listing.price) ? " \xb7 $" + Number(listing.price).toLocaleString() : "";
-    bar.innerHTML = '<span style="font-weight:700;font-size:13px;color:#7c8cf8">\ud83d\udcca ' +
+    bar.innerHTML = DOMPurify.sanitize('<span style="font-weight:700;font-size:13px;color:#7c8cf8">\ud83d\udcca ' +
       '<span style="font-size:11px;color:#e0e0e0;font-weight:600">' + escHtml(titleText) + '</span>' +
-      '<span style="font-size:11px;color:#7c8cf8;font-weight:700">' + priceText + '</span></span>';
+      '<span style="font-size:11px;color:#7c8cf8;font-weight:700">' + priceText + '</span></span>');
     const closeBtn = document.createElement("button");
     closeBtn.textContent = "\u2715";
     closeBtn.style.cssText = "background:none;border:none;color:#6b7280;font-size:15px;cursor:pointer;padding:1px 4px";
@@ -210,8 +210,8 @@
 
     const body = document.createElement("div");
     body.style.cssText = "padding:8px 10px;display:flex;align-items:center;gap:8px;color:#6b7280;font-size:12px";
-    body.innerHTML = '<span style="animation:ds-spin 1s linear infinite;display:inline-block;font-size:16px">\u27f3</span>' +
-      '<span id="ds-progress-label">Analyzing deal\u2026</span>';
+    body.innerHTML = DOMPurify.sanitize('<span style="animation:ds-spin 1s linear infinite;display:inline-block;font-size:16px">\u27f3</span>' +
+      '<span id="ds-progress-label">Analyzing deal\u2026</span>');
     panel.appendChild(body);
 
     if (!document.getElementById("ds-spin-style")) {
@@ -223,16 +223,16 @@
 
   function renderError(msg) {
     const panel = getPanel();
-    panel.innerHTML = '<div style="padding:14px 12px">' +
+    panel.innerHTML = DOMPurify.sanitize('<div style="padding:14px 12px">' +
       '<div style="font-weight:700;font-size:15px;color:#7c8cf8;margin-bottom:10px">🔍 Deal Scout</div>' +
       '<div style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);border-radius:8px;padding:12px;color:#fca5a5">' +
       '<div style="font-weight:600;margin-bottom:4px">⚠️ Scoring failed</div>' +
-      '<div style="font-size:12px">' + escHtml(msg) + "</div></div></div>";
+      '<div style="font-size:12px">' + escHtml(msg) + "</div></div></div>");
   }
 
   function renderScore(r) {
     const panel = getPanel();
-    panel.innerHTML = "";
+    panel.textContent = "";
     renderHeader(r, panel);
     renderSummary(r, panel);
     renderMarketData(r, panel);
@@ -254,7 +254,7 @@
 
     const topRow = document.createElement("div");
     topRow.style.cssText = "display:flex;align-items:center;justify-content:space-between;margin-bottom:6px";
-    topRow.innerHTML = '<span style="font-weight:700;font-size:13px;color:#7c8cf8">📊 Deal Scout</span>';
+    topRow.innerHTML = DOMPurify.sanitize('<span style="font-weight:700;font-size:13px;color:#7c8cf8">📊 Deal Scout</span>');
     const closeBtn = document.createElement("button");
     closeBtn.textContent = "✕";
     closeBtn.style.cssText = "background:none;border:none;color:#6b7280;font-size:15px;cursor:pointer;padding:1px 4px";
@@ -270,11 +270,11 @@
 
     const scoreRow = document.createElement("div");
     scoreRow.style.cssText = "display:flex;align-items:center;gap:10px";
-    scoreRow.innerHTML = '<div style="width:52px;height:52px;border-radius:50%;border:3px solid ' + scoreColor + ';display:flex;align-items:center;justify-content:center;flex-shrink:0">' +
+    scoreRow.innerHTML = DOMPurify.sanitize('<div style="width:52px;height:52px;border-radius:50%;border:3px solid ' + scoreColor + ';display:flex;align-items:center;justify-content:center;flex-shrink:0">' +
       '<span style="font-size:22px;font-weight:900;color:' + scoreColor + '">' + score + "</span></div>" +
       '<div><div style="font-size:14px;font-weight:800;color:#e2e8f0">' + escHtml(verdict) + "</div>" +
       '<div style="font-size:11px;color:#94a3b8;margin-top:2px">' + (r.should_buy === false ? "⛔ Skip" : r.should_buy ? "✅ Worth buying" : "") + "</div>" +
-      '<div style="font-size:10px;color:#6b7280;margin-top:1px">🏷 eBay listing · $' + (r.price || 0).toFixed(0) + "</div></div>";
+      '<div style="font-size:10px;color:#6b7280;margin-top:1px">🏷 eBay listing · $' + (r.price || 0).toFixed(0) + "</div></div>");
     hdr.appendChild(scoreRow);
     container.appendChild(hdr);
   }
@@ -306,8 +306,8 @@
     for (const row of rows) {
       const el = document.createElement("div");
       el.style.cssText = "display:flex;justify-content:space-between;align-items:baseline;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.05)";
-      el.innerHTML = '<span style="color:#9ca3af;font-size:12px">' + escHtml(row.label) + (row.note ? ' <span style="color:#6b7280;font-size:10px">' + escHtml(row.note) + "</span>" : "") + "</span>" +
-        '<span style="font-weight:' + (row.bold ? "700" : "500") + ';font-size:' + (row.bold ? "14px" : "13px") + '">' + escHtml(row.value) + "</span>";
+      el.innerHTML = DOMPurify.sanitize('<span style="color:#9ca3af;font-size:12px">' + escHtml(row.label) + (row.note ? ' <span style="color:#6b7280;font-size:10px">' + escHtml(row.note) + "</span>" : "") + "</span>" +
+        '<span style="font-weight:' + (row.bold ? "700" : "500") + ';font-size:' + (row.bold ? "14px" : "13px") + '">' + escHtml(row.value) + "</span>");
       section.appendChild(el);
     }
 
@@ -374,8 +374,8 @@
     const hdrWrap = document.createElement("div");
     hdrWrap.style.cssText = "display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:11px;margin-top:2px";
     const hdrLeft = document.createElement("div");
-    hdrLeft.innerHTML = '<div style="font-size:13px;font-weight:800;color:#e2e8f0">' + hdrIcon + " " + escHtml(hdrText) + "</div>" +
-      '<div style="font-size:11px;color:#94a3b8;margin-top:2px">' + escHtml(hdrSub) + "</div>";
+    hdrLeft.innerHTML = DOMPurify.sanitize('<div style="font-size:13px;font-weight:800;color:#e2e8f0">' + hdrIcon + " " + escHtml(hdrText) + "</div>" +
+      '<div style="font-size:11px;color:#94a3b8;margin-top:2px">' + escHtml(hdrSub) + "</div>");
     const disc = document.createElement("div");
     disc.style.cssText = "font-size:9px;color:#475569;background:rgba(71,85,105,0.18);border:1px solid rgba(71,85,105,0.3);border-radius:4px;padding:2px 6px;white-space:nowrap";
     disc.textContent = "Affiliate";
@@ -386,9 +386,9 @@
       const premium = r.new_price - r.price;
       const alertEl = document.createElement("div");
       alertEl.style.cssText = "display:flex;align-items:center;gap:8px;background:rgba(16,185,129,0.10);border:1px solid rgba(16,185,129,0.35);border-radius:8px;padding:8px 10px;margin-bottom:10px";
-      alertEl.innerHTML = '<span style="font-size:15px">🏷️</span><div><div style="font-size:11.5px;font-weight:700;color:#6ee7b7">' +
+      alertEl.innerHTML = DOMPurify.sanitize('<span style="font-size:15px">🏷️</span><div><div style="font-size:11.5px;font-weight:700;color:#6ee7b7">' +
         (premium > 0 ? "Only $" + premium.toFixed(0) + " more gets you new with warranty:" : "Used asking ≥ new retail:") +
-        '</div><div style="font-size:10.5px;color:#a7f3d0;margin-top:2px">Full warranty • Easy returns • Buyer protection</div></div>';
+        '</div><div style="font-size:10.5px;color:#a7f3d0;margin-top:2px">Full warranty • Easy returns • Buyer protection</div></div>');
       section.appendChild(alertEl);
     }
 
@@ -414,14 +414,14 @@
       cardEl.style.cssText = "display:block;text-decoration:none;background:rgba(15,23,42,0.55);border:1.5px solid rgba(255,255,255,0.08);border-left:4px solid " + color + ";border-radius:10px;padding:11px 12px 10px;margin-bottom:8px;cursor:pointer";
       cardEl.onmouseenter = () => { cardEl.style.background = "rgba(255,255,255,0.07)"; };
       cardEl.onmouseleave = () => { cardEl.style.background = "rgba(15,23,42,0.55)"; };
-      cardEl.innerHTML = '<div style="display:flex;align-items:center;gap:9px;margin-bottom:7px">' +
+      cardEl.innerHTML = DOMPurify.sanitize('<div style="display:flex;align-items:center;gap:9px;margin-bottom:7px">' +
         '<div style="width:38px;height:38px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0;background:' + color + '1a;border:1.5px solid ' + color + '55">' + icon + "</div>" +
         '<div style="flex:1;min-width:0"><div style="font-size:14px;font-weight:800;color:' + color + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(name) + "</div>" +
         '<div style="font-size:10.5px;color:#64748b;margin-top:2px">' + escHtml(trust) + "</div></div>" +
         (cardPrice > 0 ? '<div style="display:flex;flex-direction:column;align-items:flex-end;flex-shrink:0"><div style="font-size:18px;font-weight:900;color:#f1f5f9">$' + cardPrice.toFixed(0) + "</div>" +
         (saving > 2 ? '<div style="font-size:10px;font-weight:700;color:#6ee7b7;background:rgba(16,185,129,0.15);border:1px solid rgba(16,185,129,0.4);border-radius:5px;padding:1px 7px">$' + saving.toFixed(0) + " less</div>" : "") + "</div>" : "") + "</div>" +
         (card.subtitle ? '<div style="font-size:11px;color:#94a3b8;margin-bottom:8px">' + escHtml(card.subtitle) + "</div>" : "") +
-        '<div style="display:flex;align-items:center;justify-content:center;background:' + color + ';color:#fff;font-size:12px;font-weight:800;border-radius:7px;padding:8px 0">' + (cardPrice > 0 ? "Shop " : "Compare on ") + escHtml(name) + " →</div>";
+        '<div style="display:flex;align-items:center;justify-content:center;background:' + color + ';color:#fff;font-size:12px;font-weight:800;border-radius:7px;padding:8px 0">' + (cardPrice > 0 ? "Shop " : "Compare on ") + escHtml(name) + " →</div>");
       cardEl.addEventListener("click", () => {
         try { chrome.runtime.sendMessage({ type:"AFFILIATE_CLICK", program:key, category:r.category_detected||"", price_bucket:priceBucket(r.price), deal_score:score, position:idx+1, card_type:card.card_type||"", selection_reason:card.reason||"", commission_live:!!card.commission_live }); } catch(e) {}
       });
@@ -445,13 +445,13 @@
 
     const section = document.createElement("div");
     section.style.cssText = "background:" + cfg.bg + ";border:1px solid " + cfg.border + ";border-radius:10px;padding:10px 12px;margin:4px 12px 8px";
-    section.innerHTML =
+    section.innerHTML = DOMPurify.sanitize(
       '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">' +
         '<span style="font-size:16px">' + cfg.shield + "</span>" +
         '<span style="font-weight:700;font-size:13px;color:' + cfg.color + '">' + cfg.label + "</span>" +
         '<span style="margin-left:auto;font-size:11px;color:#6b7280">Security</span>' +
       "</div>" +
-      (sec.recommendation ? '<div style="font-size:12px;color:#d1d5db;margin-bottom:6px">' + escHtml(sec.recommendation) + "</div>" : "");
+      (sec.recommendation ? '<div style="font-size:12px;color:#d1d5db;margin-bottom:6px">' + escHtml(sec.recommendation) + "</div>" : ""));
 
     const allFlags = [...new Set([...(sec.flags || []), ...(sec.layer1_flags || [])])];
     allFlags.slice(0, 5).forEach(flag => {
@@ -547,7 +547,7 @@
       const makeThumb = (emoji, label, val) => {
         const btn = document.createElement("button");
         btn.style.cssText = "display:flex;align-items:center;gap:5px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:5px 12px;cursor:pointer;font-size:14px;color:#d1d5db";
-        btn.innerHTML = emoji + ' <span style="font-size:11px">' + label + "</span>";
+        btn.innerHTML = DOMPurify.sanitize(emoji + ' <span style="font-size:11px">' + label + "</span>");
         btn.addEventListener("click", () => {
           if (val === 1) {
             fetch(API_BASE + "/thumbs", {
@@ -555,9 +555,9 @@
               body: JSON.stringify({score_id: r.score_id, thumbs: 1, reason: ""}),
               signal: AbortSignal.timeout(5000),
             }).catch(() => {});
-            thumbWrap.innerHTML = '<span style="font-size:12px;color:#6ee7b7">✓ Thanks!</span>';
+            thumbWrap.innerHTML = DOMPurify.sanitize('<span style="font-size:12px;color:#6ee7b7">✓ Thanks!</span>');
           } else {
-            thumbWrap.innerHTML = "";
+            thumbWrap.textContent = "";
             const reasonRow = document.createElement("div");
             reasonRow.style.cssText = "display:flex;flex-wrap:wrap;gap:4px;justify-content:center;max-width:230px";
             [["Score too high","score_too_high"],["Score too low","score_too_low"],
@@ -573,7 +573,7 @@
                   body: JSON.stringify({score_id: r.score_id, thumbs: -1, reason: key}),
                   signal: AbortSignal.timeout(5000),
                 }).catch(() => {});
-                thumbWrap.innerHTML = '<span style="font-size:12px;color:#6ee7b7">✓ Got it, thanks!</span>';
+                thumbWrap.innerHTML = DOMPurify.sanitize('<span style="font-size:12px;color:#6ee7b7">✓ Got it, thanks!</span>');
               });
               reasonRow.appendChild(pill);
             });

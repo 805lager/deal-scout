@@ -97,7 +97,7 @@ function renderDealPanel(r, panelId, apiBase, extVersion) {
 
   var scoreRow = document.createElement("div");
   scoreRow.style.cssText = "display:flex;align-items:center;gap:10px";
-  scoreRow.innerHTML = '<div style="width:52px;height:52px;border-radius:50%;border:3px solid ' + sc + ';display:flex;align-items:center;justify-content:center;flex-shrink:0"><span style="font-size:22px;font-weight:900;color:' + sc + '">' + score + '</span></div><div><div style="font-size:14px;font-weight:800;color:#e2e8f0">' + esc(r.verdict||"") + '</div><div style="font-size:11px;color:#94a3b8;margin-top:2px">' + (r.should_buy===false?"\u26d4 Skip":r.should_buy?"\u2705 Worth buying":"") + '</div><div style="font-size:10px;color:#6b7280;margin-top:1px">$' + Math.round(r.price||0) + '</div></div>';
+  scoreRow.innerHTML = DOMPurify.sanitize('<div style="width:52px;height:52px;border-radius:50%;border:3px solid ' + sc + ';display:flex;align-items:center;justify-content:center;flex-shrink:0"><span style="font-size:22px;font-weight:900;color:' + sc + '">' + score + '</span></div><div><div style="font-size:14px;font-weight:800;color:#e2e8f0">' + esc(r.verdict||"") + '</div><div style="font-size:11px;color:#94a3b8;margin-top:2px">' + (r.should_buy===false?"\u26d4 Skip":r.should_buy?"\u2705 Worth buying":"") + '</div><div style="font-size:10px;color:#6b7280;margin-top:1px">$' + Math.round(r.price||0) + '</div></div>');
   hdr.appendChild(scoreRow);
   panel.appendChild(hdr);
 
@@ -118,7 +118,7 @@ function renderDealPanel(r, panelId, apiBase, extVersion) {
   }
   var mktDiv = document.createElement("div");
   mktDiv.style.cssText = "background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:10px;padding:10px 12px;margin:8px 12px";
-  mktDiv.innerHTML = '<div style="font-weight:600;font-size:11px;text-transform:uppercase;color:#9ca3af;margin-bottom:8px">\ud83d\udcc8 Market Comparison</div>' + rows;
+  mktDiv.innerHTML = DOMPurify.sanitize('<div style="font-weight:600;font-size:11px;text-transform:uppercase;color:#9ca3af;margin-bottom:8px">\ud83d\udcc8 Market Comparison</div>' + rows);
   panel.appendChild(mktDiv);
 
   var flagsHtml = "";
@@ -127,7 +127,7 @@ function renderDealPanel(r, panelId, apiBase, extVersion) {
   if (flagsHtml) {
     var fDiv = document.createElement("div");
     fDiv.style.cssText = "margin:0 12px 8px";
-    fDiv.innerHTML = flagsHtml;
+    fDiv.innerHTML = DOMPurify.sanitize(flagsHtml);
     panel.appendChild(fDiv);
   }
 
@@ -149,7 +149,7 @@ function renderDealPanel(r, panelId, apiBase, extVersion) {
     function makeThumbBtn(emoji, label, thumbsVal) {
       var btn = document.createElement("button");
       btn.style.cssText = "display:flex;align-items:center;gap:5px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:5px 12px;cursor:pointer;font-size:14px;color:#d1d5db";
-      btn.innerHTML = emoji + ' <span style="font-size:11px">' + label + '</span>';
+      btn.innerHTML = DOMPurify.sanitize(emoji + ' <span style="font-size:11px">' + label + '</span>');
       btn.addEventListener("click", function() {
         fetch(apiBase + "/thumbs", {
           method: "POST",
@@ -158,7 +158,7 @@ function renderDealPanel(r, panelId, apiBase, extVersion) {
           signal: AbortSignal.timeout(5000)
         }).catch(function(){});
         var td = document.getElementById(panelId + "-thumbs");
-        if (td) { td.innerHTML = ""; var sp = document.createElement("span"); sp.style.cssText = "font-size:12px;color:#6ee7b7"; sp.textContent = "\u2713 Thanks for the feedback!"; td.appendChild(sp); }
+        if (td) { td.textContent = ""; var sp = document.createElement("span"); sp.style.cssText = "font-size:12px;color:#6ee7b7"; sp.textContent = "\u2713 Thanks for the feedback!"; td.appendChild(sp); }
       });
       return btn;
     }
