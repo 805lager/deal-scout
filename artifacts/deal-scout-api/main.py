@@ -567,7 +567,8 @@ async def score_listing(listing: ListingRequest, request: Request):
     # is not meaningfully affected by general vs specific category.
     from scoring.affiliate_router import detect_category, CATEGORY_PROGRAMS
     _prelim_category = detect_category(product_info)
-    if listing.is_vehicle:
+    _SPECIFIC_VEHICLE_CATS = {"cars", "trucks", "rvs", "trailers", "boats"}
+    if listing.is_vehicle and _prelim_category not in _SPECIFIC_VEHICLE_CATS:
         _prelim_category = "vehicles"
 
     _security_task = asyncio.create_task(
@@ -645,12 +646,16 @@ async def score_listing(listing: ListingRequest, request: Request):
     #   2. is_vehicle override (content script explicitly flagged this as a vehicle)
     #   3. Keyword-based detect_category() (fast fallback for when Claude omits the field)
     _SOFT_CATS        = {"outdoor", "home", "sports", "camping"}
-    _valid_categories = set(CATEGORY_PROGRAMS.keys())   # "general" intentionally excluded
+    _BROAD_VEHICLE    = {"vehicles"}
+    _SPECIFIC_VEHICLE = {"cars", "trucks", "rvs", "trailers", "boats"}
+    _valid_categories = set(CATEGORY_PROGRAMS.keys())
     claude_category   = (deal_score.affiliate_category or "").strip().lower()
     if claude_category and claude_category in _valid_categories:
-        # Accept Claude's category unless it's soft AND keyword gives something better
         if claude_category in _SOFT_CATS and _prelim_category not in _SOFT_CATS and _prelim_category != "general":
             log.info(f"[Category] Claude soft '{claude_category}' overridden by keyword '{_prelim_category}'")
+            category_detected = _prelim_category
+        elif claude_category in _BROAD_VEHICLE and _prelim_category in _SPECIFIC_VEHICLE:
+            log.info(f"[Category] Claude broad '{claude_category}' overridden by keyword '{_prelim_category}'")
             category_detected = _prelim_category
         else:
             category_detected = claude_category
@@ -661,7 +666,8 @@ async def score_listing(listing: ListingRequest, request: Request):
         category_detected = _prelim_category
         log.info(f"[Category] Keyword → '{category_detected}'")
 
-    if listing.is_vehicle and category_detected not in ("vehicles", "cars", "trucks"):
+    _VEHICLE_CATS = {"vehicles", "cars", "trucks", "rvs", "trailers", "boats"}
+    if listing.is_vehicle and category_detected not in _VEHICLE_CATS:
         log.info(f"[Category] is_vehicle override: '{category_detected}' → 'vehicles'")
         category_detected = "vehicles"
 
@@ -1205,7 +1211,8 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
             all_image_urls = listing.image_urls or []
 
             _prelim_category = detect_category(product_info)
-            if listing.is_vehicle:
+            _SPECIFIC_VEHICLE_CATS_S = {"cars", "trucks", "rvs", "trailers", "boats"}
+            if listing.is_vehicle and _prelim_category not in _SPECIFIC_VEHICLE_CATS_S:
                 _prelim_category = "vehicles"
 
             _security_task = asyncio.create_task(
@@ -1254,16 +1261,21 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
 
             # ── Step 4: Affiliate + security ──────────────────────────────────
             _SOFT_CATS_s  = {"outdoor", "home", "sports", "camping"}
-            _valid_cats   = set(CATEGORY_PROGRAMS.keys())  # "general" excluded intentionally
+            _BROAD_VEHICLE_s = {"vehicles"}
+            _SPECIFIC_VEHICLE_s = {"cars", "trucks", "rvs", "trailers", "boats"}
+            _valid_cats   = set(CATEGORY_PROGRAMS.keys())
             claude_cat    = (deal_score.affiliate_category or "").strip().lower()
             if claude_cat and claude_cat in _valid_cats:
                 if claude_cat in _SOFT_CATS_s and _prelim_category not in _SOFT_CATS_s and _prelim_category != "general":
+                    category_detected = _prelim_category
+                elif claude_cat in _BROAD_VEHICLE_s and _prelim_category in _SPECIFIC_VEHICLE_s:
                     category_detected = _prelim_category
                 else:
                     category_detected = claude_cat
             else:
                 category_detected = _prelim_category
-            if listing.is_vehicle and category_detected not in ("vehicles", "cars", "trucks"):
+            _VEHICLE_CATS_S = {"vehicles", "cars", "trucks", "rvs", "trailers", "boats"}
+            if listing.is_vehicle and category_detected not in _VEHICLE_CATS_S:
                 category_detected = "vehicles"
 
             try:
