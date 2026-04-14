@@ -216,6 +216,7 @@ _CORS_DEFAULT = ",".join([
     "https://offerup.com",
     "https://www.offerup.com",
     "https://deal-scout-805lager.replit.app",
+    "chrome-extension://mbkhagpggkmefaompfjkbbnbmmameapk",
 ])
 _cors_raw = os.getenv("CORS_ORIGINS", _CORS_DEFAULT)
 cors_origins = ["*"] if _cors_raw.strip() == "*" else [
