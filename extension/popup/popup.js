@@ -1,4 +1,4 @@
-const API_BASE_DEFAULT = "https://74e2628f-3f35-45e7-a256-28e515813eca-00-1g6ldqrar1bea.spock.replit.dev/api/ds";
+const API_BASE_DEFAULT = "https://deal-scout-805lager.replit.app/api/ds";
 const EXT_VERSION = chrome.runtime.getManifest().version;
 
 async function getApiBase() {
