@@ -202,12 +202,13 @@ def _check_api_key(request: Request):
 # carries Origin: https://www.facebook.com. Popup requests carry the
 # chrome-extension:// origin. Both must be allowed.
 #
-# Local dev:   CORS_ORIGINS not set → defaults to "*" (allow all)
-# Production:  Set in Railway dashboard:
-#   CORS_ORIGINS=https://www.facebook.com,chrome-extension://YOUR_EXTENSION_ID
+# Default:     Restricted to marketplace domains + production app
+# Production:  Override via CORS_ORIGINS env var to add extension origin:
+#   CORS_ORIGINS=https://www.facebook.com,https://www.craigslist.org,https://www.ebay.com,https://offerup.com,https://www.offerup.com,https://deal-scout-805lager.replit.app,chrome-extension://YOUR_EXTENSION_ID
 #
 # Get your extension ID from chrome://extensions after loading the unpacked
 # extension. It stays stable once published to the Chrome Web Store.
+# IMPORTANT: Add chrome-extension://ID to CORS_ORIGINS in production.
 _CORS_DEFAULT = ",".join([
     "https://www.facebook.com",
     "https://www.craigslist.org",
@@ -224,7 +225,6 @@ cors_origins = ["*"] if _cors_raw.strip() == "*" else [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
-    allow_origin_regex=r"^chrome-extension://[a-z]{32}$",
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-DS-Key", "X-DS-Ext-Version",
                     "X-DS-Install-Id", "Accept", "Accept-Language", "Content-Language"],
