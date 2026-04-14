@@ -390,6 +390,8 @@ async def run_layer2(
         seller_rating = f"{float(raw_rating):.1f}/5 ({raw_count} reviews){suffix}"
     elif highly_rated:
         seller_rating = f"Highly rated on Marketplace ({raw_count} reviews)" if raw_count else "Highly rated on Marketplace"
+    elif seller_joined != "unknown":
+        seller_rating = f"not displayed (established member since {seller_joined})"
     else:
         seller_rating = "unknown"
 
