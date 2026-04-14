@@ -187,8 +187,15 @@ All four content scripts use `chrome.runtime.sendMessage({type: 'SCORE_LISTING',
   - Extension changes (content scripts, background.js, manifest, zip) → push to **public** repo `805lager/deal-scout`
   - Backend changes (main.py, scoring/*.py, requirements.txt) → push to **private** repo `805lager/deal-scout-api`
   - When both change in the same session, push both repos in the same step.
-  - Rebuild `deal_scout_extension.zip` whenever any file under `extension/` changes, and push the new zip to the public repo.
+  - Rebuild `deal_scout_extension.zip` at the project root whenever any file under `extension/` changes. **Exclude .zip files** when building (never nest a zip inside the zip). Only keep one zip: `deal_scout_extension.zip`. Delete any old versioned zips (e.g. `deal-scout-v0.28.0.zip`).
   - **Always create a Git tag** (`git tag -a vX.Y.Z -m "..."`) for every version bump and push it to both remotes (`git push origin vX.Y.Z && git push api vX.Y.Z`). This ensures releases appear on GitHub.
+  - **Extension zip contents** (only these files belong in the zip):
+    - `manifest.json`
+    - `background.js`
+    - `content/fbm.js`, `content/craigslist.js`, `content/ebay.js`, `content/offerup.js`
+    - `popup/popup.html`, `popup/popup.js`
+    - `lib/purify.min.js`
+    - `icons/icon16.png`, `icons/icon48.png`, `icons/icon128.png`
 
 ## TypeScript API Server (pre-existing)
 
