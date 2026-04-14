@@ -673,7 +673,19 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
     # vehicle_pricer.py scrapes CarGurus for real comps by year/make/model/zip,
     # falls back to Craigslist if CarGurus returns < 3 results, and falls back
     # to the stub below if scraping fails entirely — never blocks the pipeline.
-    if is_vehicle:
+    #
+    # EXCEPTION: RVs, trailers, and boats are flagged as is_vehicle by the
+    # content script but CarGurus only handles cars/trucks. For these categories
+    # we skip the vehicle pricer and fall through to the regular Browse API +
+    # Google Shopping pipeline which handles them correctly.
+    _rv_boat_kw = {"rv", "trailer", "travel trailer", "motorhome", "camper",
+                   "fifth wheel", "5th wheel", "toy hauler", "boat", "pontoon",
+                   "kayak", "canoe", "jet ski", "pwc", "waverunner",
+                   "keystone", "jayco", "winnebago", "airstream", "coachmen",
+                   "forest river", "fleetwood", "thor", "dutchmen"}
+    _title_lower = listing_title.lower()
+    _is_rv_boat = any(kw in _title_lower for kw in _rv_boat_kw)
+    if is_vehicle and not _is_rv_boat:
         try:
             from scoring.vehicle_pricer import get_vehicle_market_value
             vdata = await get_vehicle_market_value(
@@ -710,12 +722,18 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
 
     # ── Step 1: Try eBay Browse API first (best source — real sold prices) ────
     _browse_result = None
+    _browse_active_result = None
     try:
         from scoring.ebay_browse import search_ebay_browse, browse_api_configured
         if browse_api_configured():
-            _browse_result = await search_ebay_browse(query, sold=True, limit=20, condition=listing_condition)
+            _browse_result, _browse_active_result = await asyncio.gather(
+                search_ebay_browse(query, sold=True, limit=20, condition=listing_condition),
+                search_ebay_browse(query, sold=False, limit=20, condition=listing_condition),
+            )
             if _browse_result:
                 log.info(f"[BrowseAPI PRIMARY] '{query}' → avg=${_browse_result['avg_price']:.0f} ({_browse_result['count']} sold)")
+            if _browse_active_result:
+                log.info(f"[BrowseAPI ACTIVE] '{query}' → avg=${_browse_active_result['avg_price']:.0f} ({_browse_active_result['count']} active)")
     except Exception as e:
         log.warning(f"[BrowseAPI PRIMARY] Failed for '{query}': {e}")
 
@@ -732,10 +750,6 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
             log.warning(f"[GoogleFallback] Failed for '{query}': {e}")
 
     # ── Step 1c: If Browse failed, try Claude AI pricing ─────────────────────
-    # Claude calls DuckDuckGo for web grounding. If DDG returns prices, Claude
-    # uses them → data_source="claude_web_grounded" (real data, trusted).
-    # If DDG fails, Claude uses training knowledge → data_source="claude_knowledge"
-    # (AI guess, lower priority than Google Shopping real prices).
     ai_pricing_stats = None
     if not _browse_result:
         ai_pricing_stats = await _try_claude_ai_pricing(query, condition=listing_condition, listing_price=listing_price)
@@ -743,13 +757,21 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
     _ai_item_id = ai_pricing_stats.get("item_id", "") if ai_pricing_stats else ""
     _ai_notes   = ai_pricing_stats.get("notes",   "") if ai_pricing_stats else ""
 
-    # ── Step 2: Always fetch eBay Finding API + Craigslist in parallel for sidebar cards ──
-    sold_raw, active_raw, new_raw, _cl_result = await asyncio.gather(
-        search_ebay(query, "findCompletedItems", max_results=20),
-        search_ebay(query, "findItemsAdvanced",  max_results=20),
-        search_ebay(query, "findItemsAdvanced",  max_results=10, condition_filter=["1000"]),
-        _safe_craigslist(query),
-    )
+    # ── Step 2: Fetch Craigslist + eBay Finding API (only if Browse had no active data) ──
+    # Browse API (5,000/day) replaces Finding API for sidebar cards.
+    # Finding API is permanently rate-limited; only call it as last resort
+    # when Browse API returned nothing for active listings.
+    _need_finding_api = not _browse_active_result
+    if _need_finding_api:
+        sold_raw, active_raw, new_raw, _cl_result = await asyncio.gather(
+            search_ebay(query, "findCompletedItems", max_results=20),
+            search_ebay(query, "findItemsAdvanced",  max_results=20),
+            search_ebay(query, "findItemsAdvanced",  max_results=10, condition_filter=["1000"]),
+            _safe_craigslist(query),
+        )
+    else:
+        sold_raw, active_raw, new_raw = [], [], []
+        _cl_result = await _safe_craigslist(query)
 
     ebay_is_mock = any(item.get("_is_mock") for item in sold_raw + active_raw)
 
@@ -785,7 +807,11 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         sold_low        = _browse_result["low_price"]
         sold_high       = _browse_result["high_price"]
         sold_count      = _browse_result["count"]
-        if active_items and not ebay_is_mock:
+        if _browse_active_result:
+            active_avg   = _browse_active_result["avg_price"]
+            active_low   = _browse_active_result["low_price"]
+            active_count = _browse_active_result["count"]
+        elif active_items and not ebay_is_mock:
             active_prices = [p.price for p in active_items]
             active_avg    = statistics.mean(active_prices)
             active_low    = min(active_prices)
@@ -808,7 +834,11 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         sold_low        = ai_pricing_stats["low"]
         sold_high       = ai_pricing_stats["high"]
         sold_count      = ai_pricing_stats["count"]
-        if active_items and not ebay_is_mock:
+        if _browse_active_result:
+            active_avg   = _browse_active_result["avg_price"]
+            active_low   = _browse_active_result["low_price"]
+            active_count = _browse_active_result["count"]
+        elif active_items and not ebay_is_mock:
             active_prices = [p.price for p in active_items]
             active_avg    = statistics.mean(active_prices)
             active_low    = min(active_prices)
@@ -831,7 +861,11 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         sold_low        = _google_stats["low"]
         sold_high       = _google_stats["high"]
         sold_count      = _google_stats["count"]
-        if active_items and not ebay_is_mock:
+        if _browse_active_result:
+            active_avg   = _browse_active_result["avg_price"]
+            active_low   = _browse_active_result["low_price"]
+            active_count = _browse_active_result["count"]
+        elif active_items and not ebay_is_mock:
             active_prices = [p.price for p in active_items]
             active_avg    = statistics.mean(active_prices)
             active_low    = min(active_prices)
@@ -850,7 +884,11 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         sold_low        = ai_pricing_stats["low"]
         sold_high       = ai_pricing_stats["high"]
         sold_count      = ai_pricing_stats["count"]
-        if active_items and not ebay_is_mock:
+        if _browse_active_result:
+            active_avg   = _browse_active_result["avg_price"]
+            active_low   = _browse_active_result["low_price"]
+            active_count = _browse_active_result["count"]
+        elif active_items and not ebay_is_mock:
             active_prices = [p.price for p in active_items]
             active_avg    = statistics.mean(active_prices)
             active_low    = min(active_prices)
@@ -949,10 +987,15 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
             )
 
     # ── Step 4: Build sidebar affiliate cards from eBay items ─────────────────
-    # WHY pass search_query: filters out mismatched results (e.g. "Ryobi battery"
-    # appearing in results for "Ryobi 40V chainsaw") before building sidebar cards.
-    sold_items_sample   = parse_ebay_items_with_images(sold_raw,   sold=True,  campaign_id=campaign_id, max_items=4, search_query=query)
-    active_items_sample = parse_ebay_items_with_images(active_raw, sold=False, campaign_id=campaign_id, max_items=4, search_query=query)
+    # Prefer Browse API items for sidebar cards; fall back to Finding API raw items.
+    if _browse_result and _browse_result.get("items"):
+        sold_items_sample = _browse_result["items"][:4]
+    else:
+        sold_items_sample = parse_ebay_items_with_images(sold_raw, sold=True, campaign_id=campaign_id, max_items=4, search_query=query)
+    if _browse_active_result and _browse_active_result.get("items"):
+        active_items_sample = _browse_active_result["items"][:4]
+    else:
+        active_items_sample = parse_ebay_items_with_images(active_raw, sold=False, campaign_id=campaign_id, max_items=4, search_query=query)
 
     return MarketValue(
         query_used           = query,

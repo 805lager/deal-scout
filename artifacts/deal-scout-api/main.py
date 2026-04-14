@@ -747,8 +747,10 @@ async def score_listing(listing: ListingRequest, request: Request):
 
     # ── Step 5: Serialize ────────────────────────────────────────────────────
     from dataclasses import asdict as dc_asdict
-    sold_items_sample   = [dc_asdict(i) for i in (market_value.sold_items_sample   or [])]
-    active_items_sample = [dc_asdict(i) for i in (market_value.active_items_sample or [])]
+    def _to_dict(i):
+        return i if isinstance(i, dict) else dc_asdict(i)
+    sold_items_sample   = [_to_dict(i) for i in (market_value.sold_items_sample   or [])]
+    active_items_sample = [_to_dict(i) for i in (market_value.active_items_sample or [])]
     affiliate_dicts     = [dc_asdict(c) for c in affiliate_cards]
 
     response = DealScoreResponse(
@@ -1342,8 +1344,10 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                     log.info(f"[RatioAdj] Good discount {_price_ratio:.1f}x market — score {_old} → {deal_score.score}")
 
             # ── Step 5: Serialize ─────────────────────────────────────────────
-            sold_items_sample   = [_dc_asdict(i) for i in (market_value.sold_items_sample   or [])]
-            active_items_sample = [_dc_asdict(i) for i in (market_value.active_items_sample or [])]
+            def _to_dict_s(i):
+                return i if isinstance(i, dict) else _dc_asdict(i)
+            sold_items_sample   = [_to_dict_s(i) for i in (market_value.sold_items_sample   or [])]
+            active_items_sample = [_to_dict_s(i) for i in (market_value.active_items_sample or [])]
             affiliate_dicts     = [_dc_asdict(c) for c in affiliate_cards]
 
             response = DealScoreResponse(

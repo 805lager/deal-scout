@@ -34,7 +34,8 @@ FastAPI backend for the Deal Scout Chrome extension. Scores deals on Facebook Ma
 - **Language**: Python 3.11
 - **Framework**: FastAPI + Uvicorn
 - **AI**: Claude Haiku (via Replit AI integration — no API key needed)
-- **Pricing**: eBay Browse API (primary) → Google Shopping → Claude AI + DuckDuckGo grounding → eBay Finding API (sidebar only)
+- **Pricing**: eBay Browse API (primary, sold+active) → Google Shopping → Claude AI + DuckDuckGo grounding → eBay Finding API (last resort only)
+- **Deps**: brotli (Google Shopping decompression)
 - **Monorepo tool**: pnpm workspaces (Node.js side)
 
 ## Architecture
