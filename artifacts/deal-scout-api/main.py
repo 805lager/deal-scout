@@ -1677,7 +1677,7 @@ async def test_claude(
     except Exception as e:
         return {"status": "error", "detail": str(e)}
 
-BACKEND_VERSION = "0.35.1"
+BACKEND_VERSION = "0.36.0"
 
 @app.get("/privacy", response_class=HTMLResponse)
 async def privacy_policy():
