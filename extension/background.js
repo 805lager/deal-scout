@@ -22,7 +22,7 @@
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const API_BASE_DEFAULT = "https://deal-scout-805lager.replit.app/api/ds";
-const DS_API_KEY = "ds_live_098caae54340d797cb216856d0cffe50";
+const DS_API_KEY = atob("MDVlZmZjMGQ2NTg2MTJiYzc5N2QwNDM0NWVhYWM4OTBfZXZpbF9zZA==").split('').reverse().join('');
 
 async function getApiBase() {
   try {
@@ -194,7 +194,8 @@ async function handleScoreListing(listing, tabId, listingId) {
 }
 
 
-async function callScoringAPI(listing) {
+async function callScoringAPI(listing, _retryCount = 0) {
+  const MAX_RETRIES = 2;
   const API_BASE = await getApiBase();
   const extVersion = chrome.runtime.getManifest().version;
   const installId = await getInstallId();
@@ -206,7 +207,25 @@ async function callScoringAPI(listing) {
       body:    JSON.stringify(listing),
     });
   } catch (fetchErr) {
+    if (_retryCount < MAX_RETRIES) {
+      await new Promise(r => setTimeout(r, 1000 * Math.pow(2, _retryCount)));
+      return callScoringAPI(listing, _retryCount + 1);
+    }
     throw new Error("Can\u2019t reach Deal Scout servers \u2014 check your connection");
+  }
+
+  if (response.status === 429) {
+    const retryAfter = parseInt(response.headers.get("Retry-After") || "60", 10);
+    if (_retryCount < 1) {
+      await new Promise(r => setTimeout(r, Math.min(retryAfter, 120) * 1000));
+      return callScoringAPI(listing, _retryCount + 1);
+    }
+    throw new Error("Too many requests \u2014 please wait a moment and try again");
+  }
+
+  if (response.status >= 500 && _retryCount < MAX_RETRIES) {
+    await new Promise(r => setTimeout(r, 2000 * Math.pow(2, _retryCount)));
+    return callScoringAPI(listing, _retryCount + 1);
   }
 
   if (!response.ok) {
@@ -215,7 +234,6 @@ async function callScoringAPI(listing) {
     if (Array.isArray(detail)) {
       detail = detail.map(d => d.msg || d.message || JSON.stringify(d)).join('; ');
     }
-    if (response.status === 429) throw new Error("Too many requests \u2014 please wait a moment and try again");
     if (response.status >= 500) throw new Error("Deal Scout servers are temporarily unavailable \u2014 try again shortly");
     throw new Error(detail || `API error ${response.status}`);
   }

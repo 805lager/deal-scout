@@ -607,8 +607,8 @@ async def score_deal(
     all_urls = image_urls or ([image_url] if image_url else [])
     image_results = []
     if all_urls:
-        log.info(f"Fetching {min(len(all_urls), 3)} listing image(s) for vision analysis...")
-        image_results = await _fetch_multiple_images(all_urls, max_images=3)
+        log.info(f"Fetching {min(len(all_urls), 5)} listing image(s) for vision analysis...")
+        image_results = await _fetch_multiple_images(all_urls, max_images=5)
 
     image_analyzed = len(image_results) > 0
     num_images = len(image_results)

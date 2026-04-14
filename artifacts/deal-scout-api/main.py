@@ -175,9 +175,11 @@ def _check_rate_limit(client_ip: str):
         t for t in _rate_limit_store[client_ip] if t > window_start
     ]
     if len(_rate_limit_store[client_ip]) >= RATE_LIMIT_REQUESTS:
+        retry_after = int(RATE_LIMIT_WINDOW - (now - _rate_limit_store[client_ip][0])) + 1
         raise HTTPException(
             status_code=429,
-            detail=f"Rate limit: {RATE_LIMIT_REQUESTS} scores per day. Try again tomorrow."
+            detail=f"Rate limit: {RATE_LIMIT_REQUESTS} scores per day. Try again tomorrow.",
+            headers={"Retry-After": str(max(retry_after, 60))},
         )
     _rate_limit_store[client_ip].append(now)
 
@@ -206,7 +208,15 @@ def _check_api_key(request: Request):
 #
 # Get your extension ID from chrome://extensions after loading the unpacked
 # extension. It stays stable once published to the Chrome Web Store.
-_cors_raw = os.getenv("CORS_ORIGINS", "*")
+_CORS_DEFAULT = ",".join([
+    "https://www.facebook.com",
+    "https://www.craigslist.org",
+    "https://www.ebay.com",
+    "https://offerup.com",
+    "https://www.offerup.com",
+    "https://deal-scout-805lager.replit.app",
+])
+_cors_raw = os.getenv("CORS_ORIGINS", _CORS_DEFAULT)
 cors_origins = ["*"] if _cors_raw.strip() == "*" else [
     o.strip() for o in _cors_raw.split(",") if o.strip()
 ]
@@ -483,7 +493,7 @@ async def score_listing(listing: ListingRequest, request: Request):
             is_vehicle        = listing.is_vehicle,
             listing_price     = listing.price,
         )
-    if product_info.brand:
+    if product_info.brand or product_info.display_name:
         _eval_coro = evaluate_product(
             brand        = product_info.brand,
             model        = product_info.model,
@@ -989,13 +999,16 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                             "message": "Could not read listing — page may still be loading"})
                 return
 
-            # Build seller_trust from extracted seller fields
             seller_trust = None
-            if extracted.get("seller_joined") or extracted.get("seller_rating"):
+            if extracted.get("seller_joined") or extracted.get("seller_rating") or extracted.get("seller_highly_rated"):
                 seller_trust = {
-                    "joined_date":  extracted.get("seller_joined"),
-                    "rating":       extracted.get("seller_rating"),
-                    "rating_count": extracted.get("seller_rating_count", 0) or 0,
+                    "joined_date":       extracted.get("seller_joined"),
+                    "rating":            extracted.get("seller_rating"),
+                    "rating_count":      extracted.get("seller_rating_count", 0) or 0,
+                    "highly_rated":      extracted.get("seller_highly_rated", False),
+                    "response_time":     extracted.get("seller_response_time"),
+                    "identity_verified": extracted.get("seller_identity_verified", False),
+                    "items_sold":        extracted.get("seller_items_sold", 0) or 0,
                 }
 
             # Send extracted data immediately — panel shows title/price now
@@ -1108,7 +1121,7 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
             if _queries_similar and extracted_q != raw_q:
                 log.info(f"[Stream] Skipping market refinement — queries {_word_overlap:.0%} similar")
 
-            need_eval_refine = bool(product_info.brand)
+            need_eval_refine = bool(product_info.brand or product_info.display_name)
 
             if need_refine and need_eval_refine:
                 _refine_market_task = get_market_value(

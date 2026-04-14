@@ -121,11 +121,11 @@ async def evaluate_product(
     Results cached for 30 minutes — the same product appearing in multiple
     listings in a session costs one lookup, not one per listing.
     """
-    if not brand and not model:
-        log.debug("[Evaluator] No brand/model — skipping evaluation")
-        return _unknown_evaluation(display_name)
+    if not brand and not model and not display_name:
+        log.debug("[Evaluator] No brand/model/display_name — skipping evaluation")
+        return _unknown_evaluation(display_name or "Unknown")
 
-    cache_key = f"{brand.lower()} {model.lower()}".strip()
+    cache_key = f"{brand.lower()} {model.lower()}".strip() if (brand or model) else display_name.lower().strip()
     now = time.time()
 
     if cache_key in _cache:
@@ -139,10 +139,12 @@ async def evaluate_product(
     # Run Reddit search + Google Shopping rating + Gemini AI concurrently.
     # Gemini is the most reliable source — Reddit can rate-limit, Google HTML changes.
     # return_exceptions=True prevents one failure from cancelling the others.
-    reddit_data, google_rating, gemini_rep = await asyncio.gather(
+    _search_term = f"{brand} {model}".strip() if (brand or model) else display_name
+    reddit_data, google_rating, gemini_rep, ddg_rep = await asyncio.gather(
         _fetch_reddit_signals(brand, model, category),
         _fetch_google_rating(display_name),
-        _fetch_gemini_reputation(brand, model, category),
+        _fetch_gemini_reputation(brand or "", model or "", category, fallback_name=display_name),
+        _fetch_ddg_reviews(_search_term),
         return_exceptions=True,
     )
 
@@ -157,6 +159,13 @@ async def evaluate_product(
     if isinstance(gemini_rep, Exception):
         log.warning(f"[Evaluator] Gemini reputation failed: {gemini_rep}")
         gemini_rep = {}
+
+    if isinstance(ddg_rep, Exception):
+        log.warning(f"[Evaluator] DDG review search failed: {ddg_rep}")
+        ddg_rep = {}
+
+    if ddg_rep and ddg_rep.get("rating") and not google_rating.get("rating"):
+        google_rating = {"rating": ddg_rep["rating"], "count": ddg_rep.get("count", 0)}
 
     rating = google_rating.get("rating")
     count  = google_rating.get("count", 0)
@@ -188,7 +197,6 @@ async def evaluate_product(
         if rating: sources.append("google_shopping")
         log.info(f"[Evaluator] Gemini powered: tier={tier} conf={confidence} ai_issues={len(gemini_issues)} reddit_posts={len(posts)}")
     else:
-        # Gemini unavailable (no API key, quota, etc.) — fall back to Reddit/Google only
         tier            = _determine_tier(rating, count, issues, posts)
         confidence      = _determine_confidence(rating, count, posts)
         all_issues      = issues[:5]
@@ -197,6 +205,7 @@ async def evaluate_product(
         sources = []
         if posts:  sources.append("reddit")
         if rating: sources.append("google_shopping")
+        if ddg_rep and ddg_rep.get("rating"): sources.append("ddg_reviews")
 
     result = ProductEvaluation(
         product_name      = display_name,
@@ -222,7 +231,7 @@ async def evaluate_product(
 
 # ── Gemini AI Reputation Engine ─────────────────────────────────────────────
 
-async def _fetch_gemini_reputation(brand: str, model: str, category: str) -> dict:
+async def _fetch_gemini_reputation(brand: str, model: str, category: str, fallback_name: str = "") -> dict:
     """
     Use Claude AI to assess product reliability from training data.
     (Replaces original Gemini implementation — uses Replit AI integration.)
@@ -237,8 +246,8 @@ async def _fetch_gemini_reputation(brand: str, model: str, category: str) -> dic
         log.debug("[ClaudeReputation] AI integration not configured — skipping")
         return {}
 
-    product_term = f"{brand} {model}".strip()
-    if not product_term or product_term.lower() in ("unknown unknown", "unknown"):
+    product_term = f"{brand} {model}".strip() or fallback_name
+    if not product_term or product_term.lower() in ("unknown unknown", "unknown", ""):
         return {}
 
     prompt = f"""You are a product reliability expert. Based on consumer reviews, owner reports, and known quality data for the {product_term}, provide a reliability assessment.
@@ -626,6 +635,51 @@ def _determine_confidence(
 
 def _empty_reddit() -> dict:
     return {"posts": [], "issues": [], "strengths": [], "sentiment": None}
+
+
+async def _fetch_ddg_reviews(product_term: str) -> dict:
+    """
+    Search DuckDuckGo for product reviews on Amazon/BestBuy/Wirecutter.
+    Extracts star ratings from snippet text. Returns {rating, count} or {}.
+    """
+    if not product_term or len(product_term) < 3:
+        return {}
+
+    try:
+        import httpx
+        query = f"{product_term} review rating stars"
+        async with httpx.AsyncClient(
+            timeout=6.0,
+            follow_redirects=True,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept": "text/html",
+            }
+        ) as client:
+            resp = await client.get(
+                "https://lite.duckduckgo.com/lite/",
+                params={"q": query},
+            )
+            if resp.status_code != 200:
+                return {}
+
+            text = resp.text
+            ratings = []
+            for m in re.finditer(r'(\d\.\d)\s*(?:out of 5|/5|stars?)\s*(?:\((\d[\d,]*)\s*(?:reviews?|ratings?))?', text, re.IGNORECASE):
+                r = float(m.group(1))
+                if 1.0 <= r <= 5.0:
+                    c = int(m.group(2).replace(',', '')) if m.group(2) else 0
+                    ratings.append((r, c))
+
+            if not ratings:
+                return {}
+
+            best = max(ratings, key=lambda x: x[1])
+            log.info(f"[DDGReview] '{product_term}' -> {best[0]}/5 ({best[1]} reviews)")
+            return {"rating": best[0], "count": best[1]}
+    except Exception as e:
+        log.debug(f"[DDGReview] Failed for '{product_term}': {e}")
+        return {}
 
 
 def _unknown_evaluation(product_name: str) -> ProductEvaluation:

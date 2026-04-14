@@ -228,7 +228,7 @@ async def _try_claude_ai_pricing(query: str, condition: str, listing_price: floa
         avg = result["avg_used_price"]
 
         _is_web_grounded = result.get("data_source") == "claude_web_grounded"
-        _sanity_cap = 10.0 if _is_web_grounded else 4.0
+        _sanity_cap = 20.0 if _is_web_grounded else 4.0
         if listing_price > 20 and avg > listing_price * _sanity_cap:
             log.warning(
                 f"[Gemini PRIMARY] Sanity fail for '{query}': "
