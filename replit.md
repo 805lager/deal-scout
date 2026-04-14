@@ -128,7 +128,7 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 ## Extension Version
 
-Current: **v0.35.0** (extension) / **v0.35.0** (API)
+Current: **v0.35.1** (extension) / **v0.35.1** (API)
 
 ### v0.33.0 API Scoring Fixes
 - Security ≤3 unconditionally forces `should_buy=False` (not just score cap)
@@ -189,6 +189,11 @@ All four content scripts use `chrome.runtime.sendMessage({type: 'SCORE_LISTING',
   - When both change in the same session, push both repos in the same step.
   - Rebuild `deal_scout_extension.zip` at the project root whenever any file under `extension/` changes. **Exclude .zip files** when building (never nest a zip inside the zip). Only keep one zip: `deal_scout_extension.zip`. Delete any old versioned zips (e.g. `deal-scout-v0.28.0.zip`).
   - **Always create a Git tag** (`git tag -a vX.Y.Z -m "..."`) for every version bump and push it to both remotes (`git push origin vX.Y.Z && git push api vX.Y.Z`). This ensures releases appear on GitHub.
+  - **Sync ALL version numbers** on every version bump. Update all of these together:
+    1. `extension/manifest.json` → `"version": "X.Y.Z"`
+    2. `artifacts/deal-scout-api/main.py` → `BACKEND_VERSION = "X.Y.Z"`
+    3. `replit.md` → Extension Version section
+    4. Rebuild `deal_scout_extension.zip`
   - **Extension zip contents** (only these files belong in the zip):
     - `manifest.json`
     - `background.js`
