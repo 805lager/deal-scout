@@ -1,0 +1,747 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deal Scout — Score Audit</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f1117;color:#e0e0e0;padding:20px;line-height:1.5}
+a{color:#7c8cf8;text-decoration:none}
+h1{font-size:22px;color:#fff;margin-bottom:4px}
+.subtitle{color:#888;font-size:13px;margin-bottom:20px}
+.top-bar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:20px}
+.top-bar-left{display:flex;align-items:center;gap:16px}
+.badge{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:2px 10px;font-size:12px;color:#94a3b8}
+.badge.new{background:#10b981;color:#fff;border-color:#10b981;font-weight:600}
+.btn{padding:8px 18px;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;transition:all .15s}
+.btn-primary{background:#10b981;color:#fff}.btn-primary:hover{background:#059669}
+.btn-primary:disabled{background:#334155;color:#64748b;cursor:not-allowed}
+.btn-secondary{background:#1e293b;color:#94a3b8;border:1px solid #334155}.btn-secondary:hover{background:#334155}
+.btn-sm{padding:4px 12px;font-size:11px}
+.btn-danger{background:#dc2626;color:#fff}.btn-danger:hover{background:#b91c1c}
+
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:20px}
+.card{background:#1a1d27;border:1px solid #2a2d3a;border-radius:8px;padding:14px}
+.card-label{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.5px}
+.card-value{font-size:24px;font-weight:700;color:#fff;margin-top:2px}
+.card-sub{font-size:11px;color:#64748b;margin-top:2px}
+.card-value.green{color:#10b981}
+.card-value.red{color:#ef4444}
+.card-value.yellow{color:#f59e0b}
+
+.findings-panel{background:#1a1d27;border:1px solid #2a2d3a;border-radius:8px;padding:16px;margin-bottom:20px;display:none}
+.findings-panel.visible{display:block}
+.findings-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.findings-header h2{font-size:16px;color:#fff}
+.finding{background:#0f1117;border:1px solid #2a2d3a;border-radius:6px;padding:12px;margin-bottom:8px}
+.finding.critical{border-left:3px solid #ef4444}
+.finding.warning{border-left:3px solid #f59e0b}
+.finding.info{border-left:3px solid #3b82f6}
+.finding-title{font-weight:600;font-size:13px;color:#fff}
+.finding-meta{font-size:11px;color:#64748b;margin-top:2px}
+.finding-desc{font-size:12px;color:#cbd5e1;margin-top:6px}
+.finding-fix{font-size:11px;color:#10b981;margin-top:4px;font-style:italic}
+.sev-badge{display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:700;text-transform:uppercase;margin-left:8px}
+.sev-badge.critical{background:#dc262633;color:#ef4444}
+.sev-badge.warning{background:#f59e0b33;color:#f59e0b}
+.sev-badge.info{background:#3b82f633;color:#3b82f6}
+
+.filters{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:center}
+.filters select,.filters input{background:#1a1d27;border:1px solid #334155;color:#e0e0e0;padding:5px 8px;border-radius:4px;font-size:12px}
+.filters label{font-size:11px;color:#64748b}
+
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{background:#1a1d27;color:#64748b;text-align:left;padding:8px 6px;font-size:11px;text-transform:uppercase;letter-spacing:.3px;position:sticky;top:0;cursor:pointer;user-select:none;border-bottom:1px solid #2a2d3a}
+th:hover{color:#94a3b8}
+td{padding:6px;border-bottom:1px solid #1a1d27;vertical-align:top}
+tr.anomaly-critical{background:#dc262610}
+tr.anomaly-warning{background:#f59e0b08}
+tr:hover{background:#1e293b}
+tr.expanded{background:#1a1d27}
+.expand-row{display:none}
+.expand-row.visible{display:table-row}
+.expand-content{padding:16px;background:#0f1117;border-radius:6px}
+
+.score-pill{display:inline-block;padding:2px 8px;border-radius:10px;font-weight:700;font-size:11px}
+.score-pill.great{background:#10b98133;color:#10b981}
+.score-pill.good{background:#22c55e33;color:#22c55e}
+.score-pill.fair{background:#f59e0b33;color:#f59e0b}
+.score-pill.bad{background:#ef444433;color:#ef4444}
+
+.version-badge{display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;background:#1e293b;color:#64748b;border:1px solid #334155}
+.version-badge.current{background:#10b98122;color:#10b981;border-color:#10b981}
+
+.anomaly-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}
+.anomaly-dot.critical{background:#ef4444}
+.anomaly-dot.warning{background:#f59e0b}
+
+.detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.detail-section{background:#1a1d27;border-radius:6px;padding:12px}
+.detail-section h4{font-size:12px;color:#64748b;text-transform:uppercase;margin-bottom:8px;letter-spacing:.3px}
+.detail-row{display:flex;justify-content:space-between;padding:3px 0;font-size:12px;border-bottom:1px solid #1a1d2780}
+.detail-row .label{color:#64748b}.detail-row .value{color:#e0e0e0;font-weight:500}
+.flag-list{list-style:none;padding:0}.flag-list li{padding:2px 0;font-size:12px}
+.green-flag{color:#10b981}.red-flag{color:#ef4444}
+
+.rescore-panel{margin-top:12px;padding:12px;background:#1e293b;border-radius:6px;display:none}
+.rescore-panel.visible{display:block}
+.diff-row{display:flex;justify-content:space-between;padding:4px 0;font-size:12px;border-bottom:1px solid #2a2d3a}
+.diff-old{color:#ef4444;text-decoration:line-through}.diff-new{color:#10b981;font-weight:600}
+.diff-same{color:#64748b}
+
+.loading{display:inline-block;width:16px;height:16px;border:2px solid #334155;border-top-color:#10b981;border-radius:50%;animation:spin .6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.telemetry{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px;margin-bottom:20px}
+.telem-card{background:#1a1d27;border:1px solid #2a2d3a;border-radius:8px;padding:14px}
+.telem-card h3{font-size:12px;color:#64748b;text-transform:uppercase;margin-bottom:8px;letter-spacing:.3px}
+.telem-bar{display:flex;align-items:center;gap:8px;margin:3px 0;font-size:12px}
+.telem-bar-fill{height:6px;border-radius:3px;background:#10b981}
+.telem-bar-label{min-width:100px;color:#94a3b8}
+.telem-bar-val{color:#fff;font-weight:600;min-width:30px;text-align:right}
+
+.empty-state{text-align:center;padding:40px;color:#64748b;font-size:14px}
+.table-wrap{overflow-x:auto;max-height:70vh;overflow-y:auto;border:1px solid #2a2d3a;border-radius:8px}
+</style>
+</head>
+<body>
+<div class="top-bar">
+  <div class="top-bar-left">
+    <div>
+      <h1>Score Audit Dashboard</h1>
+      <div class="subtitle">Review scoring quality, spot issues, verify fixes</div>
+    </div>
+    <span class="badge" id="newBadge">loading...</span>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center">
+    <select id="versionFilter" title="Backend version filter">
+      <option value="">All versions</option>
+    </select>
+    <label style="font-size:12px;color:#64748b">
+      <input type="checkbox" id="reviewAll" style="margin-right:4px">Review all
+    </label>
+    <button class="btn btn-primary" id="checkBtn" onclick="runCheck()">
+      Check Scores Now
+    </button>
+  </div>
+</div>
+
+<div class="cards" id="summaryCards"></div>
+
+<div class="findings-panel" id="findingsPanel">
+  <div class="findings-header">
+    <h2>Audit Findings</h2>
+    <span id="findingsCount" style="font-size:12px;color:#64748b"></span>
+  </div>
+  <div id="findingsList"></div>
+</div>
+
+<div class="telemetry" id="telemetryPanel"></div>
+
+<div class="filters">
+  <label>Platform:
+    <select id="fPlatform"><option value="">All</option></select>
+  </label>
+  <label>Data Source:
+    <select id="fSource"><option value="">All</option></select>
+  </label>
+  <label>Confidence:
+    <select id="fConf"><option value="">All</option>
+      <option value="high">high</option><option value="medium">medium</option>
+      <option value="low">low</option><option value="none">none</option>
+    </select>
+  </label>
+  <label>Score:
+    <input type="number" id="fScoreMin" placeholder="min" style="width:50px" min="1" max="10">
+    <span style="color:#64748b">-</span>
+    <input type="number" id="fScoreMax" placeholder="max" style="width:50px" min="1" max="10">
+  </label>
+  <label>
+    <input type="checkbox" id="fAnomalyOnly" style="margin-right:4px">Anomalies only
+  </label>
+  <label>
+    <select id="fThumbs"><option value="">All feedback</option>
+      <option value="up">Thumbs up</option><option value="down">Thumbs down</option>
+      <option value="none">Unrated</option>
+    </select>
+  </label>
+</div>
+
+<div class="table-wrap">
+<table id="scoreTable">
+<thead>
+<tr>
+  <th data-col="flags" style="width:30px"></th>
+  <th data-col="_server_ts">Time</th>
+  <th data-col="title">Title</th>
+  <th data-col="price">Price</th>
+  <th data-col="platform">Platform</th>
+  <th data-col="score">Score</th>
+  <th data-col="data_source">Source</th>
+  <th data-col="market_confidence">Conf</th>
+  <th data-col="estimated_value">Est Value</th>
+  <th data-col="sold_avg">Sold Avg</th>
+  <th data-col="sold_count">Sold#</th>
+  <th data-col="security_score">Sec</th>
+  <th data-col="photo_count">Photos</th>
+  <th data-col="category">Category</th>
+  <th data-col="total_ms">Time(ms)</th>
+  <th data-col="backend_version">Ver</th>
+</tr>
+</thead>
+<tbody id="scoreBody"></tbody>
+</table>
+</div>
+
+<script>
+const API_KEY = '{{API_KEY}}';
+const CURRENT_VERSION = '{{CURRENT_VERSION}}';
+const BASE = window.location.pathname.replace(/\/admin\/audit\/?$/, '');
+
+let allScorecards = [];
+let allReview = null;
+let sortCol = '_server_ts';
+let sortAsc = false;
+
+function headers() {
+  return {'Content-Type':'application/json','X-DS-Key':API_KEY};
+}
+
+function fmt$(v) {
+  if (v == null || v === 0) return '—';
+  return '$' + Number(v).toLocaleString(undefined, {maximumFractionDigits:0});
+}
+
+function esc(s) {
+  if (s == null) return '';
+  const d = document.createElement('div');
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+
+function fmtTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' ' +
+         d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
+}
+
+function scorePill(s) {
+  if (s == null) return '<span class="score-pill fair">—</span>';
+  const c = s >= 7 ? 'great' : s >= 5 ? 'good' : s >= 3 ? 'fair' : 'bad';
+  return `<span class="score-pill ${c}">${s}</span>`;
+}
+
+function versionBadge(v) {
+  const cls = v === CURRENT_VERSION ? 'current' : '';
+  return `<span class="version-badge ${cls}">${v||'?'}</span>`;
+}
+
+function detectAnomalies(sc) {
+  const flags = [];
+  const l = sc.listing||{}, ds = sc.deal_score||{}, pc = sc.price_comparison||{}, sec = sc.security||{}, aff = sc.affiliate_cards||[];
+  const price = l.price||0, score = ds.score||0, src = pc.data_source||'', conf = pc.market_confidence||'',
+        est = pc.estimated_value||0, sold = pc.sold_count||0, photos = l.photo_count||0,
+        secScore = typeof sec==='object' ? (sec.score??10) : 10;
+
+  if (src==='vehicle_not_applicable') flags.push({rule:'vehicle_stub',severity:'critical'});
+  if (sold===0 && !['claude_knowledge','claude_grounded','vehicle_not_applicable'].includes(src))
+    flags.push({rule:'no_comp_data',severity:'critical'});
+  if (conf==='none') flags.push({rule:'zero_confidence',severity:'warning'});
+  if (est===0 && price>20) flags.push({rule:'zero_value',severity:'warning'});
+  if (photos<=1 && price>50) flags.push({rule:'low_photos',severity:'warning'});
+  if (score>=7 && est>0 && price>est) flags.push({rule:'score_price_high',severity:'warning'});
+  if (score<=4 && est>0 && price<est*0.6) flags.push({rule:'score_price_low',severity:'warning'});
+  if (secScore<=3) flags.push({rule:'security_critical',severity:'critical'});
+  if (aff.length===0) flags.push({rule:'missing_affiliates',severity:'info'});
+  return flags;
+}
+
+function getFilteredScorecards() {
+  const pf = document.getElementById('fPlatform').value;
+  const sf = document.getElementById('fSource').value;
+  const cf = document.getElementById('fConf').value;
+  const sMin = parseInt(document.getElementById('fScoreMin').value) || 0;
+  const sMax = parseInt(document.getElementById('fScoreMax').value) || 99;
+  const ao = document.getElementById('fAnomalyOnly').checked;
+  const vf = document.getElementById('versionFilter').value;
+
+  return allScorecards.filter(sc => {
+    const l = sc.listing||{}, ds = sc.deal_score||{}, pc = sc.price_comparison||{}, meta = sc.metadata||{};
+    if (pf && l.platform !== pf) return false;
+    if (sf && pc.data_source !== sf) return false;
+    if (cf && pc.market_confidence !== cf) return false;
+    if (vf && meta.backend_version !== vf) return false;
+    const score = ds.score || 0;
+    if (score < sMin || score > sMax) return false;
+    if (ao && detectAnomalies(sc).length === 0) return false;
+    return true;
+  });
+}
+
+function renderTable() {
+  const filtered = getFilteredScorecards();
+
+  filtered.sort((a,b) => {
+    let va, vb;
+    if (sortCol === '_server_ts') { va = a._server_ts||''; vb = b._server_ts||''; }
+    else if (sortCol === 'title') { va = (a.listing||{}).title||''; vb = (b.listing||{}).title||''; }
+    else if (sortCol === 'price') { va = (a.listing||{}).price||0; vb = (b.listing||{}).price||0; }
+    else if (sortCol === 'platform') { va = (a.listing||{}).platform||''; vb = (b.listing||{}).platform||''; }
+    else if (sortCol === 'score') { va = (a.deal_score||{}).score||0; vb = (b.deal_score||{}).score||0; }
+    else if (sortCol === 'data_source') { va = (a.price_comparison||{}).data_source||''; vb = (b.price_comparison||{}).data_source||''; }
+    else if (sortCol === 'market_confidence') { va = (a.price_comparison||{}).market_confidence||''; vb = (b.price_comparison||{}).market_confidence||''; }
+    else if (sortCol === 'estimated_value') { va = (a.price_comparison||{}).estimated_value||0; vb = (b.price_comparison||{}).estimated_value||0; }
+    else if (sortCol === 'sold_avg') { va = (a.price_comparison||{}).sold_avg||0; vb = (b.price_comparison||{}).sold_avg||0; }
+    else if (sortCol === 'sold_count') { va = (a.price_comparison||{}).sold_count||0; vb = (b.price_comparison||{}).sold_count||0; }
+    else if (sortCol === 'security_score') {
+      const sa = a.security||{}; va = typeof sa==='object'?(sa.score??0):0;
+      const sb = b.security||{}; vb = typeof sb==='object'?(sb.score??0):0;
+    }
+    else if (sortCol === 'photo_count') { va = (a.listing||{}).photo_count||0; vb = (b.listing||{}).photo_count||0; }
+    else if (sortCol === 'category') { va = ((a.product_info||{}).category)||''; vb = ((b.product_info||{}).category)||''; }
+    else if (sortCol === 'total_ms') { va = (a.metadata||{}).total_ms||0; vb = (b.metadata||{}).total_ms||0; }
+    else if (sortCol === 'backend_version') { va = (a.metadata||{}).backend_version||''; vb = (b.metadata||{}).backend_version||''; }
+    else { va = 0; vb = 0; }
+    if (typeof va === 'string') return sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+    return sortAsc ? va - vb : vb - va;
+  });
+
+  const body = document.getElementById('scoreBody');
+  body.innerHTML = '';
+
+  if (filtered.length === 0) {
+    body.innerHTML = '<tr><td colspan="16" class="empty-state">No scores match filters</td></tr>';
+    return;
+  }
+
+  filtered.forEach(sc => {
+    const l = sc.listing||{}, ds = sc.deal_score||{}, pc = sc.price_comparison||{},
+          sec = sc.security||{}, meta = sc.metadata||{}, pi = sc.product_info||{},
+          pe = sc.product_evaluation||{}, aff = sc.affiliate_cards||[];
+    const flags = detectAnomalies(sc);
+    const worstSev = flags.find(f=>f.severity==='critical') ? 'critical' : (flags.length ? 'warning' : '');
+    const secScore = typeof sec==='object' ? sec.score : null;
+    const category = typeof pi==='object' ? pi.category : '';
+    const id = sc._id;
+
+    const tr = document.createElement('tr');
+    tr.className = worstSev ? `anomaly-${worstSev}` : '';
+    tr.style.cursor = 'pointer';
+    tr.onclick = () => toggleExpand(id);
+    tr.id = `row-${id}`;
+
+    const flagDots = flags.filter(f=>f.severity!=='info').map(f=>`<span class="anomaly-dot ${f.severity}" title="${f.rule}"></span>`).join('');
+
+    tr.innerHTML = `
+      <td>${flagDots}</td>
+      <td style="white-space:nowrap;font-size:11px">${fmtTime(sc._server_ts)}</td>
+      <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(l.title)}">${esc(l.title)||'—'}</td>
+      <td style="font-weight:600">${fmt$(l.price)}</td>
+      <td><span style="font-size:11px;color:#94a3b8">${esc((l.platform||'').replace('facebook_marketplace','FBM').replace('craigslist','CL'))}</span></td>
+      <td>${scorePill(ds.score)}</td>
+      <td style="font-size:11px">${esc(pc.data_source)||'—'}</td>
+      <td style="font-size:11px;color:${pc.market_confidence==='high'?'#10b981':pc.market_confidence==='medium'?'#f59e0b':'#ef4444'}">${esc(pc.market_confidence)||'—'}</td>
+      <td>${fmt$(pc.estimated_value)}</td>
+      <td>${fmt$(pc.sold_avg)}</td>
+      <td>${pc.sold_count||0}</td>
+      <td>${secScore!=null?scorePill(secScore):'—'}</td>
+      <td>${l.photo_count||'?'}</td>
+      <td style="font-size:11px">${esc(category)||'—'}</td>
+      <td style="font-size:11px;color:#64748b">${meta.total_ms ? meta.total_ms+'ms' : '—'}</td>
+      <td>${versionBadge(meta.backend_version)}</td>
+    `;
+    body.appendChild(tr);
+
+    const expandTr = document.createElement('tr');
+    expandTr.className = 'expand-row';
+    expandTr.id = `expand-${id}`;
+    expandTr.innerHTML = `<td colspan="16">${buildExpandContent(sc, flags)}</td>`;
+    body.appendChild(expandTr);
+  });
+}
+
+function buildExpandContent(sc, flags) {
+  const l = sc.listing||{}, ds = sc.deal_score||{}, pc = sc.price_comparison||{},
+        sec = sc.security||{}, meta = sc.metadata||{}, pi = sc.product_info||{},
+        pe = sc.product_evaluation||{}, aff = sc.affiliate_cards||[];
+  const secScore = typeof sec==='object' ? sec.score : null;
+
+  let anomalyHtml = '';
+  if (flags.length) {
+    anomalyHtml = '<div style="margin-bottom:12px"><strong style="color:#ef4444;font-size:12px">ANOMALIES:</strong> ' +
+      flags.map(f => `<span class="sev-badge ${f.severity}">${f.rule}</span>`).join(' ') + '</div>';
+  }
+
+  const greenFlags = (ds.green_flags||[]).map(f=>`<li class="green-flag">✓ ${esc(f)}</li>`).join('');
+  const redFlags = (ds.red_flags||[]).map(f=>`<li class="red-flag">⚠ ${esc(f)}</li>`).join('');
+  const secWarnings = (typeof sec==='object' && sec.warnings||[]).map(w=>`<li class="red-flag">⚠ ${esc(w)}</li>`).join('');
+  const secPositives = (typeof sec==='object' && sec.positives||[]).map(p=>`<li class="green-flag">✓ ${esc(p)}</li>`).join('');
+  const affCards = aff.map(c=>`<div style="font-size:11px;padding:2px 0;color:#7c8cf8">${esc(c.program_key||c.program||'?')} (${esc(c.badge_label||'')})</div>`).join('');
+
+  const soldItems = (pc.sold_items_sample||[]).map(i=>`<div style="font-size:11px;padding:2px 0">${fmt$(i.price||i.sold_price)} — ${esc((i.title||'').substring(0,50))}</div>`).join('');
+  const activeItems = (pc.active_items_sample||[]).map(i=>`<div style="font-size:11px;padding:2px 0">${fmt$(i.price||i.current_price)} — ${esc((i.title||'').substring(0,50))}</div>`).join('');
+
+  return `<div class="expand-content">
+    ${anomalyHtml}
+    <div class="detail-grid">
+      <div class="detail-section">
+        <h4>Deal Score</h4>
+        <div class="detail-row"><span class="label">Score</span><span class="value">${ds.score||'—'} / 10</span></div>
+        <div class="detail-row"><span class="label">Verdict</span><span class="value">${esc(ds.verdict)||'—'}</span></div>
+        <div class="detail-row"><span class="label">Should Buy</span><span class="value">${ds.should_buy??'—'}</span></div>
+        <div class="detail-row"><span class="label">AI Confidence</span><span class="value">${esc(ds.ai_confidence)||'—'}</span></div>
+        <div class="detail-row"><span class="label">Rec. Offer</span><span class="value">${fmt$(ds.recommended_offer)}</span></div>
+        <div class="detail-row"><span class="label">Category</span><span class="value">${esc(ds.affiliate_category)||'—'}</span></div>
+        <div class="detail-row"><span class="label">Image Analyzed</span><span class="value">${ds.image_analyzed?'Yes':'No'}</span></div>
+        <div style="margin-top:8px"><strong style="font-size:11px;color:#64748b">Summary:</strong><div style="font-size:12px;color:#cbd5e1;margin-top:4px">${esc(ds.summary)||'—'}</div></div>
+        <div style="margin-top:8px"><strong style="font-size:11px;color:#64748b">Negotiation:</strong><div style="font-size:12px;color:#cbd5e1;margin-top:4px">${esc(ds.negotiation_message)||'—'}</div></div>
+      </div>
+      <div class="detail-section">
+        <h4>Price Comparison</h4>
+        <div class="detail-row"><span class="label">Data Source</span><span class="value">${pc.data_source||'—'}</span></div>
+        <div class="detail-row"><span class="label">Confidence</span><span class="value">${pc.market_confidence||'—'}</span></div>
+        <div class="detail-row"><span class="label">Query Used</span><span class="value" style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis" title="${esc(pc.query_used)}">${esc(pc.query_used)||'—'}</span></div>
+        <div class="detail-row"><span class="label">Estimated Value</span><span class="value">${fmt$(pc.estimated_value)}</span></div>
+        <div class="detail-row"><span class="label">Sold Avg</span><span class="value">${fmt$(pc.sold_avg)} (${pc.sold_count||0} sold)</span></div>
+        <div class="detail-row"><span class="label">Sold Range</span><span class="value">${fmt$(pc.sold_low)} — ${fmt$(pc.sold_high)}</span></div>
+        <div class="detail-row"><span class="label">Active Avg</span><span class="value">${fmt$(pc.active_avg)} (${pc.active_count||0} active)</span></div>
+        <div class="detail-row"><span class="label">New Price</span><span class="value">${fmt$(pc.new_price)}</span></div>
+        <div class="detail-row"><span class="label">Craigslist</span><span class="value">${fmt$(pc.craigslist_asking_avg)} (${pc.craigslist_count||0})</span></div>
+        <div class="detail-row"><span class="label">Buy New?</span><span class="value">${pc.buy_new_trigger?'Yes':'No'}</span></div>
+        ${soldItems?`<div style="margin-top:8px"><strong style="font-size:11px;color:#64748b">Sold Comps:</strong>${soldItems}</div>`:''}
+        ${activeItems?`<div style="margin-top:8px"><strong style="font-size:11px;color:#64748b">Active Comps:</strong>${activeItems}</div>`:''}
+      </div>
+      <div class="detail-section">
+        <h4>Flags</h4>
+        <ul class="flag-list">${greenFlags||'<li style="color:#64748b">No green flags</li>'}</ul>
+        <ul class="flag-list" style="margin-top:8px">${redFlags||'<li style="color:#64748b">No red flags</li>'}</ul>
+      </div>
+      <div class="detail-section">
+        <h4>Security (Score: ${secScore??'—'})</h4>
+        <div class="detail-row"><span class="label">Risk Level</span><span class="value">${(typeof sec==='object'?sec.risk_level:null)||'—'}</span></div>
+        <div style="margin-top:4px"><strong style="font-size:11px;color:#64748b">Warnings:</strong>
+          <ul class="flag-list">${secWarnings||'<li style="color:#64748b">None</li>'}</ul>
+        </div>
+        <div style="margin-top:4px"><strong style="font-size:11px;color:#64748b">Positives:</strong>
+          <ul class="flag-list">${secPositives||'<li style="color:#64748b">None</li>'}</ul>
+        </div>
+      </div>
+      <div class="detail-section">
+        <h4>Product Info</h4>
+        <div class="detail-row"><span class="label">Brand</span><span class="value">${(typeof pi==='object'?pi.brand:null)||'—'}</span></div>
+        <div class="detail-row"><span class="label">Model</span><span class="value">${(typeof pi==='object'?pi.model:null)||'—'}</span></div>
+        <div class="detail-row"><span class="label">Category</span><span class="value">${(typeof pi==='object'?pi.category:null)||'—'}</span></div>
+        <div class="detail-row"><span class="label">Display Name</span><span class="value">${(typeof pi==='object'?pi.display_name:null)||'—'}</span></div>
+        <div class="detail-row"><span class="label">Reliability</span><span class="value">${(typeof pe==='object'?pe.reliability_tier:null)||'—'}</span></div>
+      </div>
+      <div class="detail-section">
+        <h4>Affiliate Cards (${aff.length})</h4>
+        ${affCards||'<div style="font-size:12px;color:#64748b">None</div>'}
+      </div>
+    </div>
+    <div style="margin-top:12px">
+      <h4 style="font-size:12px;color:#64748b;margin-bottom:4px">Listing Details</h4>
+      <div class="detail-row"><span class="label">Platform</span><span class="value">${l.platform||'—'}</span></div>
+      <div class="detail-row"><span class="label">Condition</span><span class="value">${l.condition||'—'}</span></div>
+      <div class="detail-row"><span class="label">Photos</span><span class="value">${l.photo_count||'?'} (${(l.image_urls||[]).length} URLs sent)</span></div>
+      <div class="detail-row"><span class="label">Vehicle</span><span class="value">${l.is_vehicle?'Yes':'No'}</span></div>
+      <div class="detail-row"><span class="label">Multi-item</span><span class="value">${l.is_multi_item?'Yes':'No'}</span></div>
+      <div class="detail-row"><span class="label">Seller</span><span class="value">${esc(l.seller_name)||'—'}</span></div>
+      <div class="detail-row"><span class="label">Location</span><span class="value">${esc(l.location)||'—'}</span></div>
+      <div class="detail-row"><span class="label">Description</span><span class="value" style="font-size:11px;max-width:400px">${esc(l.description_snippet)||'—'}</span></div>
+      <div class="detail-row"><span class="label">Backend</span><span class="value">${meta.backend_version||'—'}</span></div>
+      <div class="detail-row"><span class="label">Extension</span><span class="value">${meta.extension_version||'—'}</span></div>
+      <div class="detail-row"><span class="label">Response Time</span><span class="value">${meta.total_ms?meta.total_ms+'ms':'—'}</span></div>
+    </div>
+    <div style="margin-top:12px">
+      <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();rescore(${sc._id})">Re-score This Listing</button>
+      <div class="rescore-panel" id="rescore-${sc._id}"></div>
+    </div>
+  </div>`;
+}
+
+function toggleExpand(id) {
+  const el = document.getElementById(`expand-${id}`);
+  if (!el) return;
+  const isVisible = el.classList.contains('visible');
+  document.querySelectorAll('.expand-row.visible').forEach(e => e.classList.remove('visible'));
+  document.querySelectorAll('tr.expanded').forEach(e => e.classList.remove('expanded'));
+  if (!isVisible) {
+    el.classList.add('visible');
+    const row = document.getElementById(`row-${id}`);
+    if (row) row.classList.add('expanded');
+  }
+}
+
+async function rescore(id) {
+  const panel = document.getElementById(`rescore-${id}`);
+  if (!panel) return;
+  panel.className = 'rescore-panel visible';
+  panel.innerHTML = '<div style="display:flex;align-items:center;gap:8px"><div class="loading"></div> Re-scoring through current pipeline...</div>';
+
+  try {
+    const resp = await fetch(`${BASE}/admin/audit/rescore`, {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify({score_log_id: id}),
+    });
+    const data = await resp.json();
+    if (data.error) {
+      panel.innerHTML = `<div style="color:#ef4444">Error: ${data.error}</div>`;
+      return;
+    }
+
+    const diff = data.diff || {};
+    const newR = data.new_response || {};
+    const changes = diff.field_changes || [];
+    const hasFlags = diff.green_flags || diff.red_flags;
+
+    if (changes.length === 0 && !hasFlags) {
+      panel.innerHTML = '<div style="color:#10b981;font-weight:600">✓ No changes — current pipeline produces the same result</div>';
+      return;
+    }
+
+    let html = `<div style="margin-bottom:8px;font-weight:600;color:#f59e0b">Score: ${diff.score_old??'—'} → ${diff.score_new??'—'} | Source: ${esc(diff.data_source_old)||'—'} → ${esc(diff.data_source_new)||'—'}</div>`;
+    for (const fc of changes) {
+      html += `<div class="diff-row"><span style="color:#94a3b8">${esc(fc.field)}</span><span><span class="diff-old">${esc(String(fc.old??'—'))}</span> → <span class="diff-new">${esc(String(fc.new??'—'))}</span></span></div>`;
+    }
+    if (diff.green_flags) {
+      html += `<div style="padding:4px 0;font-size:12px"><strong style="color:#94a3b8">green_flags:</strong>`;
+      (diff.green_flags.removed||[]).forEach(f => { html += `<div style="color:#ef4444;margin-left:12px">− ${esc(f)}</div>`; });
+      (diff.green_flags.added||[]).forEach(f => { html += `<div style="color:#10b981;margin-left:12px">+ ${esc(f)}</div>`; });
+      html += '</div>';
+    }
+    if (diff.red_flags) {
+      html += `<div style="padding:4px 0;font-size:12px"><strong style="color:#94a3b8">red_flags:</strong>`;
+      (diff.red_flags.removed||[]).forEach(f => { html += `<div style="color:#ef4444;margin-left:12px">− ${esc(f)}</div>`; });
+      (diff.red_flags.added||[]).forEach(f => { html += `<div style="color:#10b981;margin-left:12px">+ ${esc(f)}</div>`; });
+      html += '</div>';
+    }
+    html += `<div style="margin-top:8px;font-size:11px;color:#64748b">New score: ${scorePill(newR.score)} | Source: ${esc(newR.data_source)||'—'} | Confidence: ${esc(newR.market_confidence)||'—'}</div>`;
+    panel.innerHTML = html;
+  } catch(e) {
+    panel.innerHTML = `<div style="color:#ef4444">Error: ${e.message}</div>`;
+  }
+}
+
+async function runCheck() {
+  const btn = document.getElementById('checkBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="loading" style="display:inline-block;vertical-align:middle;margin-right:6px"></div>Checking...';
+
+  const version = document.getElementById('versionFilter').value || CURRENT_VERSION;
+  const reviewAll = document.getElementById('reviewAll').checked;
+  const sinceId = reviewAll ? 0 : undefined;
+
+  try {
+    const resp = await fetch(`${BASE}/admin/audit/check`, {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify({version: version, review_all: reviewAll, limit: 50}),
+    });
+    const data = await resp.json();
+
+    if (data.error) {
+      alert(data.error);
+      btn.disabled = false;
+      btn.textContent = 'Check Scores Now';
+      return;
+    }
+
+    const panel = document.getElementById('findingsPanel');
+    const list = document.getElementById('findingsList');
+    const count = document.getElementById('findingsCount');
+
+    panel.classList.add('visible');
+    count.textContent = `${data.findings.length} issue(s) found in ${data.reviewed_count} scores`;
+
+    if (data.findings.length === 0) {
+      list.innerHTML = '<div class="empty-state" style="padding:20px">No issues found — all reviewed scores look correct.</div>';
+    } else {
+      list.innerHTML = data.findings.map(f => `
+        <div class="finding ${esc(f.severity)}">
+          <div class="finding-title">${esc(f.title)||'Unknown'} — ${fmt$(f.price)}<span class="sev-badge ${esc(f.severity)}">${esc(f.severity)}</span></div>
+          <div class="finding-meta">${esc(f.issue_type)} | Score Log #${f.id}</div>
+          <div class="finding-desc">${esc(f.description)}</div>
+          ${f.suggested_fix ? `<div class="finding-fix">Fix: ${esc(f.suggested_fix)}</div>` : ''}
+        </div>
+      `).join('');
+    }
+
+    loadData();
+  } catch(e) {
+    alert('Check failed: ' + e.message);
+  }
+
+  btn.disabled = false;
+  btn.textContent = 'Check Scores Now';
+}
+
+function renderTelemetry(telem) {
+  const panel = document.getElementById('telemetryPanel');
+  const ds = telem.deal_scores || {};
+  const timing = telem.timing || {};
+  const cache = telem.price_cache || {};
+  const versions = telem.versions || [];
+
+  function barChart(data, maxVal) {
+    if (!maxVal) maxVal = Math.max(...Object.values(data), 1);
+    return Object.entries(data).map(([k,v]) =>
+      `<div class="telem-bar">
+        <span class="telem-bar-label">${k||'unknown'}</span>
+        <div style="flex:1;background:#1e293b;border-radius:3px;height:6px">
+          <div class="telem-bar-fill" style="width:${Math.round(v/maxVal*100)}%"></div>
+        </div>
+        <span class="telem-bar-val">${v}</span>
+      </div>`
+    ).join('');
+  }
+
+  panel.innerHTML = `
+    <div class="telem-card">
+      <h3>Data Sources</h3>
+      ${barChart(telem.data_sources || {})}
+    </div>
+    <div class="telem-card">
+      <h3>Confidence</h3>
+      ${barChart(telem.confidence || {})}
+    </div>
+    <div class="telem-card">
+      <h3>Platforms</h3>
+      ${barChart(telem.platforms || {})}
+    </div>
+    <div class="telem-card">
+      <h3>Pipeline Timing</h3>
+      <div class="detail-row"><span class="label">Avg</span><span class="value">${timing.avg_ms?timing.avg_ms+'ms':'—'}</span></div>
+      <div class="detail-row"><span class="label">P95</span><span class="value">${timing.p95_ms?timing.p95_ms+'ms':'—'}</span></div>
+      <div class="detail-row"><span class="label">Max</span><span class="value">${timing.max_ms?timing.max_ms+'ms':'—'}</span></div>
+    </div>
+    <div class="telem-card">
+      <h3>Feedback</h3>
+      <div class="detail-row"><span class="label">Total Scored</span><span class="value">${ds.total||0}</span></div>
+      <div class="detail-row"><span class="label">Avg Score</span><span class="value">${ds.avg_score??'—'}</span></div>
+      <div class="detail-row"><span class="label">👍 Thumbs Up</span><span class="value" style="color:#10b981">${ds.thumbs_up||0}</span></div>
+      <div class="detail-row"><span class="label">👎 Thumbs Down</span><span class="value" style="color:#ef4444">${ds.thumbs_down||0}</span></div>
+      <div class="detail-row"><span class="label">Unrated</span><span class="value">${ds.unrated||0}</span></div>
+    </div>
+    <div class="telem-card">
+      <h3>Versions</h3>
+      ${versions.map(v => `
+        <div class="detail-row">
+          <span class="label">${versionBadge(v.version)}</span>
+          <span class="value">${v.count} scores (avg ${v.avg_score??'—'})</span>
+        </div>
+      `).join('')}
+      <div class="detail-row" style="margin-top:8px"><span class="label">Price Cache</span><span class="value">${cache.count||0} entries</span></div>
+      <div class="detail-row"><span class="label">Market Signals</span><span class="value">${telem.market_signals_count||0}</span></div>
+    </div>
+  `;
+}
+
+function renderSummaryCards(review) {
+  const s = review.stats || {};
+  const anomalyRate = s.anomaly_rate || '0%';
+  const anomalyColor = parseFloat(anomalyRate) > 30 ? 'red' : parseFloat(anomalyRate) > 15 ? 'yellow' : 'green';
+
+  document.getElementById('summaryCards').innerHTML = `
+    <div class="card"><div class="card-label">Total Reviewed</div><div class="card-value">${s.total_reviewed||0}</div></div>
+    <div class="card"><div class="card-label">Anomalies</div><div class="card-value ${anomalyColor}">${s.anomaly_count||0}</div><div class="card-sub">${anomalyRate} of scores</div></div>
+    <div class="card"><div class="card-label">Avg Score</div><div class="card-value">${s.avg_score??'—'}</div></div>
+    <div class="card"><div class="card-label">Data Sources</div><div class="card-value">${Object.keys(s.by_data_source||{}).length}</div><div class="card-sub">${Object.entries(s.by_data_source||{}).slice(0,3).map(([k,v])=>`${k}: ${v}`).join(', ')}</div></div>
+  `;
+}
+
+async function loadData() {
+  try {
+    const [scoreResp, telemResp] = await Promise.all([
+      fetch(`${BASE}/score-log`, {headers: headers()}),
+      fetch(`${BASE}/admin/audit/telemetry`, {headers: headers()}),
+    ]);
+    const scoreData = await scoreResp.json();
+    const telemData = await telemResp.json();
+
+    allScorecards = scoreData.scorecards || [];
+
+    const versions = new Set();
+    const platforms = new Set();
+    const sources = new Set();
+    allScorecards.forEach(sc => {
+      const v = (sc.metadata||{}).backend_version;
+      if (v) versions.add(v);
+      const p = (sc.listing||{}).platform;
+      if (p) platforms.add(p);
+      const s = (sc.price_comparison||{}).data_source;
+      if (s) sources.add(s);
+    });
+
+    const vSel = document.getElementById('versionFilter');
+    const currentOpts = vSel.innerHTML;
+    vSel.innerHTML = '<option value="">All versions</option>';
+    [...versions].sort().reverse().forEach(v => {
+      const sel = v === CURRENT_VERSION ? 'selected' : '';
+      vSel.innerHTML += `<option value="${v}" ${sel}>${v}${v===CURRENT_VERSION?' (current)':''}</option>`;
+    });
+
+    const pSel = document.getElementById('fPlatform');
+    pSel.innerHTML = '<option value="">All</option>';
+    [...platforms].sort().forEach(p => { pSel.innerHTML += `<option value="${p}">${p}</option>`; });
+
+    const sSel = document.getElementById('fSource');
+    sSel.innerHTML = '<option value="">All</option>';
+    [...sources].sort().forEach(s => { sSel.innerHTML += `<option value="${s}">${s}</option>`; });
+
+    const vf = document.getElementById('versionFilter').value;
+    const filtered = allScorecards.filter(sc => !vf || (sc.metadata||{}).backend_version === vf);
+    const reviewPacket = {stats:{total_reviewed: filtered.length, anomaly_count:0, avg_score:null, by_data_source:{}, anomaly_rate:'0%'}};
+    let totalScore = 0, scoreN = 0;
+    filtered.forEach(sc => {
+      const flags = detectAnomalies(sc);
+      if (flags.length) reviewPacket.stats.anomaly_count++;
+      const src = (sc.price_comparison||{}).data_source||'unknown';
+      reviewPacket.stats.by_data_source[src] = (reviewPacket.stats.by_data_source[src]||0) + 1;
+      const s = (sc.deal_score||{}).score;
+      if (s != null) { totalScore += s; scoreN++; }
+    });
+    reviewPacket.stats.avg_score = scoreN ? Math.round(totalScore/scoreN*10)/10 : null;
+    reviewPacket.stats.anomaly_rate = filtered.length ? (reviewPacket.stats.anomaly_count/filtered.length*100).toFixed(1)+'%' : '0%';
+
+    renderSummaryCards(reviewPacket);
+    renderTelemetry(telemData);
+    renderTable();
+
+    const lastId = telemData.last_reviewed_id || 0;
+    const newCount = allScorecards.filter(sc => sc._id > lastId && (!vf || (sc.metadata||{}).backend_version === vf)).length;
+    const badge = document.getElementById('newBadge');
+    if (newCount > 0) {
+      badge.className = 'badge new';
+      badge.textContent = `${newCount} new since last review`;
+    } else {
+      badge.className = 'badge';
+      badge.textContent = 'All reviewed';
+    }
+  } catch(e) {
+    console.error('Load failed:', e);
+    document.getElementById('summaryCards').innerHTML = `<div class="card"><div class="card-label">Error</div><div class="card-value red">${e.message}</div></div>`;
+  }
+}
+
+document.querySelectorAll('th[data-col]').forEach(th => {
+  th.addEventListener('click', () => {
+    const col = th.dataset.col;
+    if (col === 'flags') return;
+    if (sortCol === col) sortAsc = !sortAsc;
+    else { sortCol = col; sortAsc = false; }
+    renderTable();
+  });
+});
+
+document.querySelectorAll('.filters select, .filters input').forEach(el => {
+  el.addEventListener('change', renderTable);
+});
+
+loadData();
+</script>
+</body>
+</html>

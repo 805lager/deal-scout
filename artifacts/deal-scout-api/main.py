@@ -2894,6 +2894,157 @@ async def clear_score_log():
         return {"ok": False, "error": str(e)}
 
 
+@app.get("/admin/audit", response_class=HTMLResponse)
+async def audit_dashboard(request: Request):
+    _check_admin_auth(request)
+    from pathlib import Path as _P
+    html = (_P(__file__).parent / "templates" / "audit_dashboard.html").read_text()
+    html = html.replace("{{API_KEY}}", _DS_API_KEY or "")
+    html = html.replace("{{CURRENT_VERSION}}", BACKEND_VERSION)
+    return HTMLResponse(html)
+
+
+@app.get("/admin/audit/telemetry")
+async def audit_telemetry(request: Request):
+    _check_admin_auth(request)
+    try:
+        from scoring.data_pipeline import _get_pool
+        from scoring.audit import get_telemetry
+        await _ensure_score_log_table()
+        pool = await _get_pool()
+        return await get_telemetry(pool)
+    except Exception as e:
+        log.warning(f"[audit/telemetry] failed: {e}")
+        return {"error": str(e)}
+
+
+@app.get("/admin/audit/review")
+async def audit_review(request: Request, version: str = None, since_id: int = 0):
+    _check_admin_auth(request)
+    try:
+        import json as _json
+        from scoring.data_pipeline import _get_pool
+        from scoring.audit import build_review_packet
+        await _ensure_score_log_table()
+        pool = await _get_pool()
+        rows = await pool.fetch(
+            "SELECT id, server_ts, payload FROM score_log ORDER BY server_ts DESC LIMIT 500"
+        )
+        scorecards = []
+        for r in rows:
+            raw = r["payload"]
+            p = _json.loads(raw) if isinstance(raw, str) else raw
+            p["_id"] = r["id"]
+            p["_server_ts"] = r["server_ts"].isoformat()
+            scorecards.append(p)
+        return build_review_packet(scorecards, version_filter=version, since_id=since_id)
+    except Exception as e:
+        log.warning(f"[audit/review] failed: {e}")
+        return {"error": str(e)}
+
+
+@app.post("/admin/audit/check")
+async def audit_check(request: Request):
+    _check_admin_auth(request)
+    try:
+        import json as _json
+        from scoring.data_pipeline import _get_pool
+        from scoring.audit import run_llm_check
+        await _ensure_score_log_table()
+        pool = await _get_pool()
+
+        body = await request.json()
+        limit = body.get("limit", 50)
+        version = body.get("version", BACKEND_VERSION)
+        review_all = body.get("review_all", False)
+
+        rows = await pool.fetch(
+            "SELECT id, server_ts, payload FROM score_log ORDER BY server_ts DESC LIMIT 500"
+        )
+        scorecards = []
+        for r in rows:
+            raw = r["payload"]
+            p = _json.loads(raw) if isinstance(raw, str) else raw
+            p["_id"] = r["id"]
+            p["_server_ts"] = r["server_ts"].isoformat()
+            scorecards.append(p)
+
+        from scoring.audit import _last_reviewed_id
+        since_id = 0 if review_all else _last_reviewed_id
+
+        return await run_llm_check(scorecards, version_filter=version, since_id=since_id, limit=limit)
+    except Exception as e:
+        log.error(f"[audit/check] failed: {e}")
+        return {"error": str(e), "findings": []}
+
+
+@app.post("/admin/audit/rescore")
+async def audit_rescore(request: Request):
+    _check_admin_auth(request)
+    try:
+        import json as _json
+        from scoring.data_pipeline import _get_pool
+        from scoring.audit import build_rescore_diff
+        await _ensure_score_log_table()
+        pool = await _get_pool()
+
+        body = await request.json()
+        score_log_id = body.get("score_log_id")
+        if not score_log_id:
+            return {"error": "score_log_id required"}
+
+        row = await pool.fetchrow(
+            "SELECT payload FROM score_log WHERE id = $1", score_log_id
+        )
+        if not row:
+            return {"error": f"Score log entry {score_log_id} not found"}
+
+        old_scorecard = _json.loads(row["payload"]) if isinstance(row["payload"], str) else row["payload"]
+        old_listing = old_scorecard.get("listing", {})
+
+        listing_req = ListingRequest(
+            title=old_listing.get("title", ""),
+            price=float(old_listing.get("price", 0)),
+            raw_price_text=old_listing.get("raw_price_text", ""),
+            description=old_listing.get("description_snippet", ""),
+            location=old_listing.get("location", ""),
+            condition=old_listing.get("condition", "Unknown"),
+            seller_name=old_listing.get("seller_name", ""),
+            listing_url=old_listing.get("listing_url", ""),
+            is_multi_item=old_listing.get("is_multi_item", False),
+            is_vehicle=old_listing.get("is_vehicle", False),
+            vehicle_details=old_listing.get("vehicle_details"),
+            seller_trust=old_listing.get("seller_trust"),
+            original_price=float(old_listing.get("original_price", 0) or 0),
+            shipping_cost=float(old_listing.get("shipping_cost", 0) or 0),
+            image_urls=old_listing.get("image_urls", []),
+            photo_count=old_listing.get("photo_count", 0),
+            platform=old_listing.get("platform", "facebook_marketplace"),
+        )
+
+        import httpx
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                "http://localhost:8000/score",
+                json=listing_req.model_dump(),
+                headers={"X-DS-Key": _DS_API_KEY or ""},
+            )
+            if resp.status_code != 200:
+                return {"error": f"Re-score failed with status {resp.status_code}: {resp.text[:200]}"}
+            new_response = resp.json()
+
+        diff = build_rescore_diff(old_scorecard, new_response)
+
+        return {
+            "old_scorecard_id": score_log_id,
+            "new_response": new_response,
+            "diff": diff,
+        }
+    except Exception as e:
+        log.error(f"[audit/rescore] failed: {e}")
+        return {"error": str(e)}
+
+
 from fastapi.responses import HTMLResponse
 
 @app.get("/fbm-test", response_class=HTMLResponse)

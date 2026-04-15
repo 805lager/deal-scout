@@ -59,7 +59,8 @@ artifacts/deal-scout-api/
     ├── suggestion_engine.py   # Deal card generation
     ├── corrections.py         # Manual query corrections
     ├── web_pricer.py          # DuckDuckGo Lite web search (4 queries, real-time price grounding)
-    └── google_pricer.py       # Google Shopping price scraper (4 extraction strategies)
+    ├── google_pricer.py       # Google Shopping price scraper (4 extraction strategies)
+    └── audit.py               # Score audit: anomaly detection, telemetry aggregation, LLM quality review, rescore diff
 ```
 
 ## API Endpoints
@@ -77,6 +78,11 @@ artifacts/deal-scout-api/
 - `GET /admin/dashboard` — data pipeline summary stats
 - `GET /score-log` — comprehensive scoring history (last 500 scorecards); each entry has listing info, deal score, security check, affiliate cards, price comparison, product evaluation, product info — for post-browse audit of every feature
 - `DELETE /score-log` — clears scoring history
+- `GET /admin/audit` — score audit dashboard (SPA with telemetry cards, anomaly detection, LLM review, rescore comparison)
+- `GET /admin/audit/telemetry` — aggregated scoring telemetry (deal scores, data sources, confidence, platforms, timing, versions)
+- `GET /admin/audit/review` — anomaly detection review packet (flagged scorecards with rule-based checks)
+- `POST /admin/audit/check` — LLM-powered score quality review (Claude analyzes scorecards for accuracy issues)
+- `POST /admin/audit/rescore` — re-scores a logged listing and returns old vs new diff
 - `GET /docs` — FastAPI auto-generated API docs
 
 ## Revenue Streams
