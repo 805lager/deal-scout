@@ -1029,6 +1029,28 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
                     "count":      len(_verified_prices),
                 }
 
+    if _browse_active_result and _browse_active_result.get("items") and os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"):
+        _raw_active_items = _browse_active_result["items"]
+        try:
+            _verified_active = await asyncio.wait_for(
+                _verify_comps_with_llm(_raw_active_items, listing_title, query),
+                timeout=8.0,
+            )
+        except asyncio.TimeoutError:
+            log.warning("[CompVerifier] Active comps timed out — using unverified")
+            _verified_active = _raw_active_items
+        if len(_verified_active) < len(_raw_active_items):
+            _vactive_prices = [it["price"] for it in _verified_active if it.get("price", 0) >= 5]
+            if _vactive_prices:
+                _browse_active_result = {
+                    **_browse_active_result,
+                    "items":      _verified_active,
+                    "avg_price":  round(statistics.mean(_vactive_prices), 2),
+                    "low_price":  round(min(_vactive_prices), 2),
+                    "high_price": round(max(_vactive_prices), 2),
+                    "count":      len(_vactive_prices),
+                }
+
     if _browse_result:
         sold_avg        = _browse_result["avg_price"]
         sold_low        = _browse_result["low_price"]
@@ -1216,6 +1238,12 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
                     _old_est = estimated_value
                     estimated_value = round(_sanity_result["adjusted_value"], 2)
                     log.info(f"[SanityCheck] Adjusted estimate: ${_old_est:.0f} → ${estimated_value:.0f}")
+                    if _old_est > 0 and estimated_value < _old_est * 0.7:
+                        _adj_ratio = estimated_value / _old_est
+                        sold_avg = round(sold_avg * _adj_ratio, 2)
+                        active_avg = round(active_avg * _adj_ratio, 2)
+                        sold_high = round(sold_high * _adj_ratio, 2)
+                        log.info(f"[SanityCheck] Adjusted displayed avgs by {_adj_ratio:.2f}x to match estimate")
                 if _sanity_result.get("adjusted_confidence"):
                     confidence = _sanity_result["adjusted_confidence"]
         except Exception as e:

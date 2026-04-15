@@ -648,9 +648,13 @@ async def score_deal(
             "If you see multiple objects, the item matching the listing title is the one being sold.\n\n"
             f"Analyze the primary item across ALL {num_images} provided photo(s):\n"
             "- Is the visible condition consistent with the seller's claimed condition?\n"
-            "- Are there signs of damage, wear, or missing parts visible in ANY photo?\n"
+            "- Look CAREFULLY at EVERY photo for: scratches, scuffs, dents, tears, stains, "
+            "cracks, peeling, discoloration, rust, missing parts, broken components. "
+            "Even minor damage matters — report it.\n"
             "- Are any included accessories visible?\n"
-            "- Do different photos reveal issues not visible in the first one?\n"
+            "- Do later photos reveal issues not visible in earlier ones? Examine each photo independently.\n"
+            "- If you see damage in ANY photo, you MUST mention it in condition_notes and add a red flag. "
+            "Do NOT say 'no visible damage' if ANY photo shows wear, scratches, or defects.\n"
             "In your verdict and condition_notes, describe what you ACTUALLY observed — never fabricate.\n\n"
         )
 
