@@ -266,10 +266,15 @@ async def get_claude_market_price(
     now = time.time()
     if cache_key in _cache and now - _cache[cache_key]["ts"] < _CACHE_TTL:
         log.debug(f"[ClaudePricer] Memory cache hit: {query}")
-        return _cache[cache_key]["result"]
+        cached = _cache[cache_key]["result"].copy()
+        if cached.get("data_source") != "claude_web_grounded":
+            cached["confidence"] = "low"
+        return cached
 
     db_cached = await _db_cache_get(query, condition)
     if db_cached:
+        if db_cached.get("data_source") != "claude_web_grounded":
+            db_cached["confidence"] = "low"
         _cache[cache_key] = {"result": db_cached, "ts": now}
         return db_cached
 

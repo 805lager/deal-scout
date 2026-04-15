@@ -711,7 +711,7 @@ async def _llm_sanity_check(
     Returns None to keep current values, or dict with adjusted_value/adjusted_confidence.
     """
     ratio = listing_price / estimated_value if estimated_value > 0 else 1.0
-    if 0.3 <= ratio <= 3.0:
+    if 0.5 <= ratio <= 2.0:
         return None
 
     try:
@@ -739,7 +739,7 @@ SELLER ASKING: ${listing_price:.0f}
 OUR PIPELINE ESTIMATE: ${estimated_value:.0f} (source: {data_source}, confidence: {confidence})
 PRICE RATIO: {ratio:.2f}x (listing/estimate){comps_block}
 
-The ratio is unusual (outside 0.3x-3.0x). Is our estimate reasonable for this specific item?
+The ratio is unusual (outside 0.5x-2.0x). Is our estimate reasonable for this specific item?
 Consider whether the sold comps actually match this listing. If the comps are for a different variant, size, or model, the estimate may be wrong.
 
 Respond ONLY with JSON:
@@ -905,6 +905,7 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
     # ── Step 1: Try eBay Browse API first (best source — real sold prices) ────
     _browse_result = None
     _browse_active_result = None
+    _browse_outcome = "skip"
     try:
         from scoring.ebay_browse import search_ebay_browse, browse_api_configured
         if browse_api_configured():
@@ -914,10 +915,12 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
             )
             if _browse_result:
                 log.info(f"[BrowseAPI PRIMARY] '{query}' → avg=${_browse_result['avg_price']:.0f} ({_browse_result['count']} sold)")
+                _browse_outcome = "hit"
             if _browse_active_result:
                 log.info(f"[BrowseAPI ACTIVE] '{query}' → avg=${_browse_active_result['avg_price']:.0f} ({_browse_active_result['count']} active)")
 
             if not _browse_result:
+                _browse_outcome = "miss"
                 short_query = _build_short_query(query)
                 if short_query and short_query.lower() != query.lower():
                     log.info(f"[BrowseAPI RETRY] Full query '{query}' returned 0 — retrying with '{short_query}'")
@@ -927,11 +930,17 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
                     )
                     if _browse_result:
                         log.info(f"[BrowseAPI RETRY] '{short_query}' → avg=${_browse_result['avg_price']:.0f} ({_browse_result['count']} sold)")
+                        _browse_outcome = "retry_hit"
                         query = short_query
+                    else:
+                        _browse_outcome = "retry_miss"
                     if _retry_active and not _browse_active_result:
                         _browse_active_result = _retry_active
+        log.info(f"[Telemetry] browse_outcome={_browse_outcome} query='{query}'")
     except Exception as e:
+        _browse_outcome = "error"
         log.warning(f"[BrowseAPI PRIMARY] Failed for '{query}': {e}")
+        log.info(f"[Telemetry] browse_outcome=error query='{query}'")
 
     # ── Step 1b: If Browse API failed, try Google Shopping ────────────────────
     _google_stats = None
