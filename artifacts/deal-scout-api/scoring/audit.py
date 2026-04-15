@@ -77,6 +77,24 @@ def detect_anomalies(scorecard: dict) -> list[dict]:
         flags.append({"rule": "missing_affiliates", "severity": "info",
                        "detail": "no affiliate cards returned"})
 
+    category = ds.get("category", "").lower()
+    if category and len(aff) > 0:
+        aff_titles = " ".join(c.get("title", "") for c in aff).lower()
+        aff_queries = " ".join(c.get("search_query", "") for c in aff).lower()
+        aff_text = aff_titles + " " + aff_queries
+        mismatch_pairs = [
+            (["vehicle", "car", "truck", "rv", "trailer", "motorcycle"], ["electronics", "phone", "laptop", "camera"]),
+            (["electronics", "phone", "laptop", "computer", "tablet"], ["vehicle", "car", "truck", "furniture"]),
+            (["furniture", "couch", "sofa", "table", "chair"], ["electronics", "phone", "laptop", "vehicle"]),
+        ]
+        for cat_keywords, bad_keywords in mismatch_pairs:
+            if any(k in category for k in cat_keywords):
+                mismatches = [k for k in bad_keywords if k in aff_text]
+                if mismatches:
+                    flags.append({"rule": "category_affiliate_mismatch", "severity": "warning",
+                                   "detail": f"category='{category}' but affiliates mention: {', '.join(mismatches)}"})
+                break
+
     return flags
 
 

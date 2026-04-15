@@ -813,128 +813,112 @@ async def score_listing(listing: ListingRequest, request: Request):
         craigslist_count        = market_value.craigslist_count,
     )
 
-    # ── Step 6: Save full score to deal_scores for feedback/replay ───────────
-    score_id = 0
-    try:
-        from scoring.data_pipeline import _get_pool
-        pool = await _get_pool()
-        if pool:
-            # eBay comps: sold items used to calculate the market average —
-            # stored in their own column so training queries can join on them
-            # without parsing the entire score_json blob.
-            _ebay_comps = {
-                "sold":   sold_items_sample,
-                "active": active_items_sample,
-                "query":  market_value.search_query if hasattr(market_value, "search_query") else "",
-                "data_source": market_value.data_source if hasattr(market_value, "data_source") else "",
-            }
-
-            # Affiliate impressions: each card shown, in display order.
-            # Captures what was offered (not just what was clicked) for CTR training.
-            _affil_impressions = [
-                {
-                    "position":        idx + 1,
-                    "program_key":     c.get("program_key", ""),
-                    "card_type":       c.get("card_type", ""),
-                    "selection_reason": c.get("reason", ""),
-                    "commission_live": c.get("commission_live", False),
-                    "estimated_revenue": c.get("estimated_revenue", 0.0),
-                    "price_hint":      c.get("price_hint", ""),
-                }
-                for idx, c in enumerate(affiliate_dicts)
-            ]
-
-            _install_id = request.headers.get("x-ds-install-id")
-            row = await pool.fetchrow(
-                """INSERT INTO deal_scores
-                   (platform, listing_url, listing_json, score_json, score,
-                    ebay_comps_json, affiliate_impressions_json, install_id)
-                   VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6::jsonb, $7::jsonb, $8)
-                   RETURNING id""",
-                listing.platform or "unknown",
-                listing.listing_url or "",
-                _json.dumps(listing.model_dump()),
-                _json.dumps(response.model_dump()),
-                deal_score.score,
-                _json.dumps(_ebay_comps),
-                _json.dumps(_affil_impressions),
-                _install_id,
-            )
-            if row:
-                score_id = row["id"]
-                response = response.model_copy(update={"score_id": score_id})
-    except Exception as _db_err:
-        log.warning(f"[deal_scores] save failed (non-fatal): {_db_err}")
-
-    # ── Step 6b: Save full scorecard to score_log (non-blocking) ────────────
-    try:
-        _ext_ver = request.headers.get("x-ds-ext-version") or request.headers.get("x-extension-version")
-        _scorecard = _build_scorecard(
-            listing=listing, deal_score=deal_score, market_value=market_value,
-            security=security, product_info=product_info, product_eval=product_eval,
-            affiliate_dicts=affiliate_dicts, category_detected=category_detected,
-            buy_new=buy_new, buy_new_msg=buy_new_msg,
-            sold_items_sample=sold_items_sample, active_items_sample=active_items_sample,
-            scoring_start_ts=_scoring_start_ts,
-            extension_version=_ext_ver,
-        )
-        asyncio.create_task(_save_score_log(_scorecard))
-    except Exception:
-        pass
-
-    # ── Step 7: Record anonymized market signal (non-blocking) ────────────────
-    # Fires as a background task — API response is returned immediately.
-    # Any DB error is swallowed inside record_signal; it never affects the user.
-    try:
-        from scoring.data_pipeline import record_signal
-        _loc_parts  = [p.strip() for p in (listing.location or "").split(",")]
-        _city       = _loc_parts[0] if _loc_parts else ""
-        _state      = _loc_parts[1][:2].upper() if len(_loc_parts) > 1 else ""
-        _gap_pct    = 0.0
-        if market_value.sold_avg and market_value.sold_avg > 0:
-            _gap_pct = round((listing.price - market_value.sold_avg) / market_value.sold_avg * 100, 1)
-        _affil_shown = ",".join(c.get("program_key", "") for c in affiliate_dicts)
-        asyncio.create_task(record_signal(
-            category         = category_detected or "",
-            item_label       = (market_value.ai_item_id or listing.title or "")[:120],
-            condition        = listing.condition or "",
-            city             = _city,
-            state_code       = _state,
-            asking_price     = listing.price,
-            ebay_sold_avg    = market_value.sold_avg,
-            ebay_active_avg  = market_value.active_avg,
-            new_price        = market_value.new_price,
-            cl_asking_avg    = market_value.craigslist_avg,
-            price_gap_pct    = _gap_pct,
-            deal_score       = deal_score.score,
-            buy_new_trigger  = bool(buy_new),
-            affiliate_programs = _affil_shown,
-            platform         = listing.platform or "facebook_marketplace",
-        ))
-    except Exception:
-        pass  # Signal recording must never affect the API response
-
-    # ── Step 8: Background query validation (Task 4 — zero latency) ──────────
-    # After the response is returned, Claude checks whether the eBay results
-    # were actually relevant to this listing. If not, it auto-saves a correction
-    # so NEXT TIME this type of listing is scored it uses the better query.
-    # WHY asyncio.create_task: the result doesn't affect the current response —
-    # this is purely a learning signal for future accuracy. Zero user wait time.
-    try:
-        _sample_titles = [s.get("title", "") for s in sold_items_sample[:3] if s.get("title")]
-        _qused = market_value.query_used if market_value else ""
-        if _qused and _sample_titles:
-            asyncio.create_task(
-                _validate_query_background(
-                    listing_title  = listing.title,
-                    query_used     = _qused,
-                    sample_titles  = _sample_titles,
-                )
-            )
-    except Exception:
-        pass  # Validator must never block or crash the response
-
     if not _is_audit_rescore:
+        score_id = 0
+        try:
+            from scoring.data_pipeline import _get_pool
+            pool = await _get_pool()
+            if pool:
+                _ebay_comps = {
+                    "sold":   sold_items_sample,
+                    "active": active_items_sample,
+                    "query":  market_value.search_query if hasattr(market_value, "search_query") else "",
+                    "data_source": market_value.data_source if hasattr(market_value, "data_source") else "",
+                }
+
+                _affil_impressions = [
+                    {
+                        "position":        idx + 1,
+                        "program_key":     c.get("program_key", ""),
+                        "card_type":       c.get("card_type", ""),
+                        "selection_reason": c.get("reason", ""),
+                        "commission_live": c.get("commission_live", False),
+                        "estimated_revenue": c.get("estimated_revenue", 0.0),
+                        "price_hint":      c.get("price_hint", ""),
+                    }
+                    for idx, c in enumerate(affiliate_dicts)
+                ]
+
+                _install_id = request.headers.get("x-ds-install-id")
+                row = await pool.fetchrow(
+                    """INSERT INTO deal_scores
+                       (platform, listing_url, listing_json, score_json, score,
+                        ebay_comps_json, affiliate_impressions_json, install_id)
+                       VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6::jsonb, $7::jsonb, $8)
+                       RETURNING id""",
+                    listing.platform or "unknown",
+                    listing.listing_url or "",
+                    _json.dumps(listing.model_dump()),
+                    _json.dumps(response.model_dump()),
+                    deal_score.score,
+                    _json.dumps(_ebay_comps),
+                    _json.dumps(_affil_impressions),
+                    _install_id,
+                )
+                if row:
+                    score_id = row["id"]
+                    response = response.model_copy(update={"score_id": score_id})
+        except Exception as _db_err:
+            log.warning(f"[deal_scores] save failed (non-fatal): {_db_err}")
+
+        try:
+            _ext_ver = request.headers.get("x-ds-ext-version") or request.headers.get("x-extension-version")
+            _scorecard = _build_scorecard(
+                listing=listing, deal_score=deal_score, market_value=market_value,
+                security=security, product_info=product_info, product_eval=product_eval,
+                affiliate_dicts=affiliate_dicts, category_detected=category_detected,
+                buy_new=buy_new, buy_new_msg=buy_new_msg,
+                sold_items_sample=sold_items_sample, active_items_sample=active_items_sample,
+                scoring_start_ts=_scoring_start_ts,
+                extension_version=_ext_ver,
+            )
+            asyncio.create_task(_save_score_log(_scorecard))
+        except Exception:
+            pass
+
+        try:
+            from scoring.data_pipeline import record_signal
+            _loc_parts  = [p.strip() for p in (listing.location or "").split(",")]
+            _city       = _loc_parts[0] if _loc_parts else ""
+            _state      = _loc_parts[1][:2].upper() if len(_loc_parts) > 1 else ""
+            _gap_pct    = 0.0
+            if market_value.sold_avg and market_value.sold_avg > 0:
+                _gap_pct = round((listing.price - market_value.sold_avg) / market_value.sold_avg * 100, 1)
+            _affil_shown = ",".join(c.get("program_key", "") for c in affiliate_dicts)
+            asyncio.create_task(record_signal(
+                category         = category_detected or "",
+                item_label       = (market_value.ai_item_id or listing.title or "")[:120],
+                condition        = listing.condition or "",
+                city             = _city,
+                state_code       = _state,
+                asking_price     = listing.price,
+                ebay_sold_avg    = market_value.sold_avg,
+                ebay_active_avg  = market_value.active_avg,
+                new_price        = market_value.new_price,
+                cl_asking_avg    = market_value.craigslist_avg,
+                price_gap_pct    = _gap_pct,
+                deal_score       = deal_score.score,
+                buy_new_trigger  = bool(buy_new),
+                affiliate_programs = _affil_shown,
+                platform         = listing.platform or "facebook_marketplace",
+            ))
+        except Exception:
+            pass
+
+        try:
+            _sample_titles = [s.get("title", "") for s in sold_items_sample[:3] if s.get("title")]
+            _qused = market_value.query_used if market_value else ""
+            if _qused and _sample_titles:
+                asyncio.create_task(
+                    _validate_query_background(
+                        listing_title  = listing.title,
+                        query_used     = _qused,
+                        sample_titles  = _sample_titles,
+                    )
+                )
+        except Exception:
+            pass
+
         _cache_set(_ck, response, url_keyed=_url_keyed)
 
     return response
@@ -2975,7 +2959,7 @@ async def audit_check(request: Request):
 
         body = await request.json()
         limit = body.get("limit", 50)
-        version = body.get("version", BACKEND_VERSION)
+        version = body.get("version") or None
         review_all = body.get("review_all", False)
         explicit_since_id = body.get("since_id")
 

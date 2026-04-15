@@ -115,7 +115,7 @@ tr.expanded{background:#1a1d27}
     <span class="badge" id="newBadge">loading...</span>
   </div>
   <div style="display:flex;gap:8px;align-items:center">
-    <select id="versionFilter" title="Backend version filter">
+    <select id="versionFilter" title="Backend version filter" onchange="loadData()">
       <option value="">All versions</option>
     </select>
     <label style="font-size:12px;color:#64748b">
@@ -571,7 +571,7 @@ async function runCheck() {
   btn.disabled = true;
   btn.innerHTML = '<div class="loading" style="display:inline-block;vertical-align:middle;margin-right:6px"></div>Checking...';
 
-  const version = document.getElementById('versionFilter').value || CURRENT_VERSION;
+  const version = document.getElementById('versionFilter').value || null;
   const reviewAll = document.getElementById('reviewAll').checked;
   const sinceId = reviewAll ? 0 : undefined;
 
