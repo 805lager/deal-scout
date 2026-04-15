@@ -289,6 +289,41 @@ async def get_telemetry(pool) -> dict:
     except Exception as e:
         result["market_signals_count"] = 0
 
+    try:
+        daily_rows = await pool.fetch("""
+            SELECT DATE(server_ts) AS day,
+                   COUNT(*) AS cnt,
+                   AVG((payload->'deal_score'->>'score')::float) AS avg_score
+            FROM score_log
+            WHERE server_ts > NOW() - INTERVAL '14 days'
+            GROUP BY DATE(server_ts)
+            ORDER BY day
+        """)
+        result["daily_trend"] = [
+            {"date": r["day"].isoformat(), "count": r["cnt"],
+             "avg_score": round(float(r["avg_score"]), 1) if r["avg_score"] else None}
+            for r in daily_rows
+        ]
+    except Exception as e:
+        log.warning(f"[audit/telemetry] daily_trend: {e}")
+        result["daily_trend"] = []
+
+    try:
+        cache_health = await pool.fetchrow("""
+            SELECT COUNT(*) AS total,
+                   COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours') AS fresh_24h,
+                   COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '48 hours') AS fresh_48h,
+                   AVG(EXTRACT(EPOCH FROM (NOW() - created_at)) / 3600) AS avg_age_hours
+            FROM price_cache
+        """)
+        if cache_health:
+            result["price_cache"]["total"] = cache_health["total"]
+            result["price_cache"]["fresh_24h"] = cache_health["fresh_24h"]
+            result["price_cache"]["fresh_48h"] = cache_health["fresh_48h"]
+            result["price_cache"]["avg_age_hours"] = round(float(cache_health["avg_age_hours"]), 1) if cache_health["avg_age_hours"] else None
+    except Exception as e:
+        log.warning(f"[audit/telemetry] cache_health: {e}")
+
     result["last_reviewed_id"] = _last_reviewed_id
 
     return result

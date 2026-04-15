@@ -693,8 +693,21 @@ function renderTelemetry(telem) {
           <div class="detail-row"><span class="label">Anomaly Rate Δ</span><span class="value" style="color:${(telem.version_comparison.anomaly_rate_delta||0)<=0?'#10b981':'#ef4444'}">${telem.version_comparison.anomaly_rate_delta>0?'+':''}${telem.version_comparison.anomaly_rate_delta??'—'}%</span></div>
         </div>
       ` : ''}
-      <div class="detail-row" style="margin-top:8px"><span class="label">Price Cache</span><span class="value">${cache.count||0} entries</span></div>
+      <div class="detail-row" style="margin-top:8px"><span class="label">Price Cache</span><span class="value">${cache.total||cache.count||0} entries</span></div>
       <div class="detail-row"><span class="label">Market Signals</span><span class="value">${telem.market_signals_count||0}</span></div>
+    </div>
+    <div class="telem-card">
+      <h3>Price Cache Health</h3>
+      <div class="detail-row"><span class="label">Total Entries</span><span class="value">${cache.total||cache.count||0}</span></div>
+      <div class="detail-row"><span class="label">Fresh (&lt;24h)</span><span class="value" style="color:#10b981">${cache.fresh_24h||0}</span></div>
+      <div class="detail-row"><span class="label">Fresh (&lt;48h)</span><span class="value" style="color:#22d3ee">${cache.fresh_48h||0}</span></div>
+      <div class="detail-row"><span class="label">Avg Age</span><span class="value">${cache.avg_age_hours ? cache.avg_age_hours+'h' : '—'}</span></div>
+    </div>
+    <div class="telem-card">
+      <h3>Scores / Day (14d)</h3>
+      ${(telem.daily_trend||[]).length ? telem.daily_trend.map(d =>
+        `<div class="detail-row"><span class="label">${d.date}</span><span class="value">${d.count} scores · avg ${d.avg_score??'—'}</span></div>`
+      ).join('') : '<div style="color:#64748b">No data yet</div>'}
     </div>
   `;
 }
@@ -726,6 +739,24 @@ async function loadData() {
     const scoreLogResp = await fetch(`${BASE}/score-log`, {headers: headers()});
     const scoreLogData = await scoreLogResp.json();
     allScorecards = scoreLogData.scorecards || [];
+
+    const feedbackById = {};
+    const feedbackByUrl = {};
+    (reviewData.anomalies || []).forEach(a => {
+      const sc = a.scorecard;
+      if (sc && sc.metadata && sc.metadata.user_feedback) {
+        if (sc._id) feedbackById[sc._id] = sc.metadata.user_feedback;
+        const url = (sc.listing||{}).listing_url;
+        if (url) feedbackByUrl[url] = sc.metadata.user_feedback;
+      }
+    });
+    allScorecards.forEach(sc => {
+      const fb = feedbackById[sc._id] || feedbackByUrl[(sc.listing||{}).listing_url];
+      if (fb) {
+        if (!sc.metadata) sc.metadata = {};
+        sc.metadata.user_feedback = fb;
+      }
+    });
 
     const versions = new Set();
     const platforms = new Set();

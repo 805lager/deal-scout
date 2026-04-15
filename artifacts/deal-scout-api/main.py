@@ -378,21 +378,22 @@ async def score_listing(listing: ListingRequest, request: Request):
     Step 4: Suggestion engine — affiliate buy cards (same_cheaper / better_model / amazon)
     Step 5: Serialize and return
     """
-    # Auth + rate limit — protects Claude API credits from abuse
-    _check_api_key(request)
-    client_ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown").split(",")[0].strip()
-    _check_rate_limit(client_ip)
+    _is_audit_rescore = getattr(request.state, '_audit_rescore', False)
+    if not _is_audit_rescore:
+        _check_api_key(request)
+        client_ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown").split(",")[0].strip()
+        _check_rate_limit(client_ip)
 
-    log.info(f"Scoring request: '{listing.title}' @ ${listing.price}")
+    log.info(f"Scoring request: '{listing.title}' @ ${listing.price}{' [AUDIT RESCORE]' if _is_audit_rescore else ''}")
     _scoring_start_ts = _time.time()
 
-    # ── Cache check ────────────────────────────────────────────────────────────
-    _url_keyed = bool(listing.listing_url and listing.listing_url.startswith("http"))
-    _ck = _cache_key(listing.title, listing.price, listing.listing_url)
-    _cached = _cache_get(_ck)
-    if _cached:
-        log.info(f"[Cache] HIT for '{listing.title}' @ ${listing.price} — returning cached score")
-        return _cached  # intentionally not logged to score_log — only fresh scores are auditable
+    if not _is_audit_rescore:
+        _url_keyed = bool(listing.listing_url and listing.listing_url.startswith("http"))
+        _ck = _cache_key(listing.title, listing.price, listing.listing_url)
+        _cached = _cache_get(_ck)
+        if _cached:
+            log.info(f"[Cache] HIT for '{listing.title}' @ ${listing.price} — returning cached score")
+            return _cached
 
     # Guard: reject obviously bad titles that indicate a broken extraction
     _generic_titles = {"marketplace", "facebook marketplace", "facebook", "craigslist", "offerup", ""}
@@ -3035,7 +3036,7 @@ async def audit_rescore(request: Request):
             location=old_listing.get("location", ""),
             condition=old_listing.get("condition", "Unknown"),
             seller_name=old_listing.get("seller_name", ""),
-            listing_url=old_listing.get("listing_url", ""),
+            listing_url="",
             is_multi_item=old_listing.get("is_multi_item", False),
             is_vehicle=old_listing.get("is_vehicle", False),
             vehicle_details=old_listing.get("vehicle_details"),
@@ -3047,6 +3048,7 @@ async def audit_rescore(request: Request):
             platform=old_listing.get("platform", "facebook_marketplace"),
         )
 
+        request.state._audit_rescore = True
         new_response = await score_listing(listing_req, request)
         if isinstance(new_response, dict):
             new_response_dict = new_response
