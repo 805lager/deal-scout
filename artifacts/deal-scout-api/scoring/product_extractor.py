@@ -138,6 +138,11 @@ Extract the product identity. Rules:
   use your knowledge of the product to substitute the correct searchable term.
 - PRODUCT TYPE IS CRITICAL: search_query MUST include the product type (e.g. "massage chair",
   "desk lamp", "bicycle").
+- CONDITION/SPEC NUMBERS are NOT model identifiers: battery health percentages (85%, 92%),
+  storage sizes (256GB, 512GB), cycle counts, cosmetic ratings — these describe condition or
+  specs, NOT the product identity. NEVER include bare percentages or condition metrics in
+  search_query or display_name. "MacBook Air 85" is WRONG — "Apple M1 MacBook Air" is correct.
+  Storage/RAM specs (256GB, 8GB) may be included ONLY if they help distinguish the SKU.
 - BRAND vs LICENSE in search_query — three cases:
   1. MANUFACTURER brand (Milwaukee, Canon, Sony, KitchenAid) → KEEP in search_query.
      These brands make the product and define its value. "Milwaukee M18 drill" needs "Milwaukee".
@@ -339,6 +344,7 @@ _CHILD_SIZE_RE = re.compile(
     |   (?:youth|kids?|girls?|boys?)\s+(?:size[s]?\s+)?([xXsSmMlL]{1,2}|\d{1,2})
     |   (?:newborn|infant|toddler)
     )\b
+    (?!\s*%)                              # exclude percentages like "85%"
     """,
     re.IGNORECASE
 )
@@ -351,7 +357,9 @@ def _inject_clothing_size(info: ProductInfo, description: str) -> ProductInfo:
     """
     query_lower = info.search_query.lower()
     category_lower = info.category.lower()
-    is_clothing = any(kw in query_lower or kw in category_lower for kw in _CLOTHING_KEYWORDS)
+    _words_q = set(re.findall(r'\b\w+\b', query_lower))
+    _words_c = set(re.findall(r'\b\w+\b', category_lower))
+    is_clothing = bool((_words_q | _words_c) & _CLOTHING_KEYWORDS)
     if not is_clothing:
         return info
 
