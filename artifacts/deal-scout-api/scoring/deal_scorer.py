@@ -612,14 +612,13 @@ async def score_deal(
 
     all_urls = image_urls or ([image_url] if image_url else [])
     if all_urls:
+        import re as _re
         from urllib.parse import urlparse
         seen_stems = set()
         deduped = []
         for u in all_urls:
             try:
-                stem = urlparse(u).path
-                import re as _re
-                stem = _re.sub(r'/[spc]\d+x\d+/', '/_/', stem)
+                stem = _re.sub(r'/[spc]\d+x\d+/', '/_/', urlparse(u).path)
                 if stem not in seen_stems:
                     seen_stems.add(stem)
                     deduped.append(u)
