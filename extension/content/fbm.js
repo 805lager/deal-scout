@@ -1758,6 +1758,23 @@
       });
       section.appendChild(cardEl);
     }
+
+    if (!hasCards && r.affiliateLinks) {
+      Object.keys(r.affiliateLinks).forEach(function(lk) {
+        const link = r.affiliateLinks[lk];
+        const linkEl = document.createElement('a');
+        linkEl.href = link.url; linkEl.target = '_blank';
+        linkEl.style.cssText = 'display:block;padding:6px 8px;margin-bottom:4px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:#93c5fd;font-size:12px;text-decoration:none;cursor:pointer';
+        linkEl.textContent = link.label;
+        linkEl.onmouseenter = function(){ this.style.background = 'rgba(99,102,241,0.12)'; };
+        linkEl.onmouseleave = function(){ this.style.background = 'rgba(255,255,255,0.04)'; };
+        linkEl.addEventListener('click', function() {
+          try { chrome.runtime.sendMessage({type:'AFFILIATE_CLICK',program:lk,category:'',price_bucket:priceBucket(r.price),card_type:'fallback_link',deal_score:r.score}).catch(function(){}); } catch(_e){}
+        });
+        section.appendChild(linkEl);
+      });
+    }
+
     container.appendChild(section);
   }
 
