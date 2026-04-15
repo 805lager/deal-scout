@@ -272,9 +272,7 @@ async def get_claude_market_price(
         return cached
 
     db_cached = await _db_cache_get(query, condition)
-    if db_cached:
-        if db_cached.get("data_source") != "claude_web_grounded":
-            db_cached["confidence"] = "low"
+    if db_cached and db_cached.get("data_source") == "claude_web_grounded":
         _cache[cache_key] = {"result": db_cached, "ts": now}
         return db_cached
 

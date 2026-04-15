@@ -711,8 +711,6 @@ async def _llm_sanity_check(
     Returns None to keep current values, or dict with adjusted_value/adjusted_confidence.
     """
     ratio = listing_price / estimated_value if estimated_value > 0 else 1.0
-    if 0.5 <= ratio <= 2.0:
-        return None
 
     try:
         import anthropic
@@ -739,8 +737,10 @@ SELLER ASKING: ${listing_price:.0f}
 OUR PIPELINE ESTIMATE: ${estimated_value:.0f} (source: {data_source}, confidence: {confidence})
 PRICE RATIO: {ratio:.2f}x (listing/estimate){comps_block}
 
-The ratio is unusual (outside 0.5x-2.0x). Is our estimate reasonable for this specific item?
-Consider whether the sold comps actually match this listing. If the comps are for a different variant, size, or model, the estimate may be wrong.
+Does our estimate look reasonable for this specific item? Consider:
+- Whether the sold comps actually match this listing (different variant, size, or model = wrong estimate)
+- Whether the price ratio makes sense given market conditions
+- If the estimate seems wildly off, provide an adjusted value
 
 Respond ONLY with JSON:
 {{
