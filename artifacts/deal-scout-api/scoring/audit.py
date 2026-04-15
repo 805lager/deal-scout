@@ -246,16 +246,39 @@ async def get_telemetry(pool) -> dict:
         ver_rows = await pool.fetch("""
             SELECT payload->'metadata'->>'backend_version' AS ver,
                    COUNT(*) AS cnt,
-                   AVG((payload->'deal_score'->>'score')::float) AS avg_score
+                   AVG((payload->'deal_score'->>'score')::float) AS avg_score,
+                   AVG(CASE WHEN (payload->'price_comparison'->>'market_confidence') = 'high' THEN 1
+                            WHEN (payload->'price_comparison'->>'market_confidence') = 'medium' THEN 0.5
+                            ELSE 0 END) AS confidence_quality,
+                   COUNT(*) FILTER (WHERE (payload->'price_comparison'->>'data_source') = 'vehicle_not_applicable'
+                                      OR (payload->'price_comparison'->>'market_confidence') = 'none'
+                                      OR (payload->'price_comparison'->>'sold_count')::int = 0) AS anomaly_count
             FROM score_log
             WHERE payload->'metadata'->>'backend_version' IS NOT NULL
             GROUP BY ver ORDER BY ver DESC
         """)
-        result["versions"] = [
-            {"version": r["ver"], "count": r["cnt"],
-             "avg_score": round(float(r["avg_score"]), 1) if r["avg_score"] else None}
-            for r in ver_rows
-        ]
+        versions = []
+        for r in ver_rows:
+            cnt = r["cnt"]
+            versions.append({
+                "version": r["ver"],
+                "count": cnt,
+                "avg_score": round(float(r["avg_score"]), 1) if r["avg_score"] else None,
+                "confidence_quality": round(float(r["confidence_quality"]) * 100, 1) if r["confidence_quality"] else 0,
+                "anomaly_rate": round(r["anomaly_count"] / cnt * 100, 1) if cnt else 0,
+            })
+        result["versions"] = versions
+
+        if len(versions) >= 2:
+            cur = versions[0]
+            prev = versions[1]
+            result["version_comparison"] = {
+                "current": cur["version"],
+                "previous": prev["version"],
+                "score_delta": round(cur["avg_score"] - prev["avg_score"], 1) if cur["avg_score"] and prev["avg_score"] else None,
+                "confidence_delta": round(cur["confidence_quality"] - prev["confidence_quality"], 1),
+                "anomaly_rate_delta": round(cur["anomaly_rate"] - prev["anomaly_rate"], 1),
+            }
     except Exception as e:
         log.warning(f"[audit/telemetry] versions: {e}")
         result["versions"] = []

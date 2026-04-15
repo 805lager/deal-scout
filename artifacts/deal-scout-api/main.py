@@ -2937,6 +2937,25 @@ async def audit_review(request: Request, version: str = None, since_id: int = 0)
             p["_id"] = r["id"]
             p["_server_ts"] = r["server_ts"].isoformat()
             scorecards.append(p)
+
+        try:
+            thumbs_rows = await pool.fetch(
+                "SELECT listing_url, thumbs, created_at FROM deal_scores WHERE thumbs IS NOT NULL ORDER BY created_at DESC LIMIT 200"
+            )
+            thumbs_map = {}
+            for tr in thumbs_rows:
+                url = tr["listing_url"]
+                if url:
+                    thumbs_map[url] = tr["thumbs"]
+            for sc in scorecards:
+                listing_url = sc.get("listing", {}).get("listing_url", "")
+                if listing_url and listing_url in thumbs_map:
+                    if not sc.get("metadata"):
+                        sc["metadata"] = {}
+                    sc["metadata"]["user_feedback"] = "up" if thumbs_map[listing_url] == 1 else "down"
+        except Exception:
+            pass
+
         return build_review_packet(scorecards, version_filter=version, since_id=since_id)
     except Exception as e:
         log.warning(f"[audit/review] failed: {e}")
@@ -3028,23 +3047,20 @@ async def audit_rescore(request: Request):
             platform=old_listing.get("platform", "facebook_marketplace"),
         )
 
-        import httpx
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(
-                "http://localhost:8000/score",
-                json=listing_req.model_dump(),
-                headers={"X-DS-Key": _DS_API_KEY or ""},
-            )
-            if resp.status_code != 200:
-                return {"error": f"Re-score failed with status {resp.status_code}: {resp.text[:200]}"}
-            new_response = resp.json()
+        new_response = await score_listing(listing_req, request)
+        if isinstance(new_response, dict):
+            new_response_dict = new_response
+        else:
+            new_response_dict = new_response.model_dump() if hasattr(new_response, 'model_dump') else dict(new_response)
 
-        diff = build_rescore_diff(old_scorecard, new_response)
+        new_response_dict["backend_version"] = BACKEND_VERSION
+
+        diff = build_rescore_diff(old_scorecard, new_response_dict)
 
         return {
             "old_scorecard_id": score_log_id,
             "original_scorecard": old_scorecard,
-            "new_response": new_response,
+            "new_response": new_response_dict,
             "diff": diff,
         }
     except Exception as e:

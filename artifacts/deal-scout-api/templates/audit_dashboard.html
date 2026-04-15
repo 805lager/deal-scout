@@ -671,9 +671,17 @@ function renderTelemetry(telem) {
       ${versions.map(v => `
         <div class="detail-row">
           <span class="label">${versionBadge(v.version)}</span>
-          <span class="value">${v.count} scores (avg ${v.avg_score??'—'})</span>
+          <span class="value">${v.count} scores (avg ${v.avg_score??'—'}) · conf ${v.confidence_quality??0}% · anomaly ${v.anomaly_rate??0}%</span>
         </div>
       `).join('')}
+      ${telem.version_comparison ? `
+        <div style="margin-top:10px;padding:8px;background:#1e293b;border-radius:6px;font-size:12px">
+          <strong style="color:#f59e0b">Version Comparison: ${esc(telem.version_comparison.current)} vs ${esc(telem.version_comparison.previous)}</strong>
+          <div class="detail-row"><span class="label">Score Δ</span><span class="value" style="color:${(telem.version_comparison.score_delta||0)>=0?'#10b981':'#ef4444'}">${telem.version_comparison.score_delta>0?'+':''}${telem.version_comparison.score_delta??'—'}</span></div>
+          <div class="detail-row"><span class="label">Confidence Δ</span><span class="value" style="color:${(telem.version_comparison.confidence_delta||0)>=0?'#10b981':'#ef4444'}">${telem.version_comparison.confidence_delta>0?'+':''}${telem.version_comparison.confidence_delta??'—'}%</span></div>
+          <div class="detail-row"><span class="label">Anomaly Rate Δ</span><span class="value" style="color:${(telem.version_comparison.anomaly_rate_delta||0)<=0?'#10b981':'#ef4444'}">${telem.version_comparison.anomaly_rate_delta>0?'+':''}${telem.version_comparison.anomaly_rate_delta??'—'}%</span></div>
+        </div>
+      ` : ''}
       <div class="detail-row" style="margin-top:8px"><span class="label">Price Cache</span><span class="value">${cache.count||0} entries</span></div>
       <div class="detail-row"><span class="label">Market Signals</span><span class="value">${telem.market_signals_count||0}</span></div>
     </div>
