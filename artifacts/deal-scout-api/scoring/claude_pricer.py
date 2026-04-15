@@ -262,7 +262,7 @@ async def get_claude_market_price(
         log.debug("[ClaudePricer] AI integration not configured — skipping")
         return None
 
-    cache_key = f"{query}|{condition}"
+    cache_key = f"{query}|{condition}|{category}" if category else f"{query}|{condition}"
     now = time.time()
     if cache_key in _cache and now - _cache[cache_key]["ts"] < _CACHE_TTL:
         log.debug(f"[ClaudePricer] Memory cache hit: {query}")

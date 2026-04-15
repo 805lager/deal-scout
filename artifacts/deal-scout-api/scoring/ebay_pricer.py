@@ -991,7 +991,14 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
 
     if _browse_result and _browse_result.get("items") and os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"):
         _raw_browse_items = _browse_result["items"]
-        _verified_items = await _verify_comps_with_llm(_raw_browse_items, listing_title, query)
+        try:
+            _verified_items = await asyncio.wait_for(
+                _verify_comps_with_llm(_raw_browse_items, listing_title, query),
+                timeout=8.0,
+            )
+        except asyncio.TimeoutError:
+            log.warning("[CompVerifier] Timed out after 8s — using unverified comps")
+            _verified_items = _raw_browse_items
         if len(_verified_items) < len(_raw_browse_items):
             _verified_prices = [it["price"] for it in _verified_items if it.get("price", 0) >= 5]
             if _verified_prices:
@@ -1177,9 +1184,12 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
     # ── LLM Price Sanity Check ────────────────────────────────────────────────
     if estimated_value > 0 and listing_price > 0 and data_source not in ("insufficient_data", "correction_range") and os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"):
         try:
-            _sanity_result = await _llm_sanity_check(
-                listing_title, query, estimated_value, listing_price,
-                data_source, confidence, category, description,
+            _sanity_result = await asyncio.wait_for(
+                _llm_sanity_check(
+                    listing_title, query, estimated_value, listing_price,
+                    data_source, confidence, category, description,
+                ),
+                timeout=5.0,
             )
             if _sanity_result:
                 if _sanity_result.get("adjusted_value"):
