@@ -934,8 +934,8 @@ async def score_listing(listing: ListingRequest, request: Request):
     except Exception:
         pass  # Validator must never block or crash the response
 
-    # ── Cache the result ─────────────────────────────────────────────────────
-    _cache_set(_ck, response, url_keyed=_url_keyed)
+    if not _is_audit_rescore:
+        _cache_set(_ck, response, url_keyed=_url_keyed)
 
     return response
 
