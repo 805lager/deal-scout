@@ -2860,6 +2860,24 @@ async def get_score_log():
             p["_id"] = r["id"]
             p["_server_ts"] = r["server_ts"].isoformat()
             scorecards.append(p)
+        try:
+            thumbs_rows = await pool.fetch(
+                "SELECT listing_url, thumbs FROM deal_scores WHERE thumbs IS NOT NULL ORDER BY created_at DESC LIMIT 200"
+            )
+            thumbs_map = {}
+            for tr in thumbs_rows:
+                url = tr["listing_url"]
+                if url:
+                    thumbs_map[url] = "up" if tr["thumbs"] == 1 else "down"
+            for sc in scorecards:
+                listing_url = sc.get("listing", {}).get("listing_url", "")
+                if listing_url and listing_url in thumbs_map:
+                    if not sc.get("metadata"):
+                        sc["metadata"] = {}
+                    sc["metadata"]["user_feedback"] = thumbs_map[listing_url]
+        except Exception:
+            pass
+
         summary = [_score_log_summary(s) for s in scorecards]
         return {"count": len(scorecards), "summary": summary, "scorecards": scorecards}
     except Exception as e:

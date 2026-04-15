@@ -771,11 +771,20 @@ async function loadData() {
     });
 
     const vSel = document.getElementById('versionFilter');
+    const prevVal = vSel.value;
+    const isFirstLoad = vSel.options.length <= 1;
     vSel.innerHTML = '<option value="">All versions</option>';
     [...versions].sort().reverse().forEach(v => {
-      const sel = v === CURRENT_VERSION ? 'selected' : '';
-      vSel.innerHTML += `<option value="${v}" ${sel}>${v}${v===CURRENT_VERSION?' (current)':''}</option>`;
+      const opt = document.createElement('option');
+      opt.value = v;
+      opt.textContent = v + (v === CURRENT_VERSION ? ' (current)' : '');
+      vSel.appendChild(opt);
     });
+    if (isFirstLoad) {
+      vSel.value = CURRENT_VERSION;
+    } else {
+      vSel.value = prevVal;
+    }
 
     const pSel = document.getElementById('fPlatform');
     pSel.innerHTML = '<option value="">All</option>';
