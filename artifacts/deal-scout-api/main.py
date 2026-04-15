@@ -684,7 +684,9 @@ async def score_listing(listing: ListingRequest, request: Request):
             deal_score        = deal_score,
             market_value      = market_value,
             max_cards         = 3,
-            category_override = category_detected,  # pass pre-computed (may be vehicle override)
+            category_override = category_detected,
+            active_items_sample = market_value.active_items_sample or [],
+            google_prices     = getattr(market_value, '_google_prices', []),
         )
     except Exception as e:
         log.warning(f"Affiliate router failed ({e}) — returning empty cards")
@@ -1284,6 +1286,8 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                     market_value      = market_value,
                     max_cards         = 3,
                     category_override = category_detected,
+                    active_items_sample = market_value.active_items_sample or [],
+                    google_prices     = getattr(market_value, '_google_prices', []),
                 )
             except Exception:
                 affiliate_cards = []
@@ -1695,7 +1699,7 @@ async def test_claude(
     except Exception as e:
         return {"status": "error", "detail": str(e)}
 
-BACKEND_VERSION = "0.39.0"
+BACKEND_VERSION = "0.40.0"
 
 @app.get("/privacy", response_class=HTMLResponse)
 async def privacy_policy():

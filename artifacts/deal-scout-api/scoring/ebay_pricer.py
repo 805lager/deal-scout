@@ -147,6 +147,7 @@ class MarketValue:
     craigslist_avg:   float = 0.0
     craigslist_low:   float = 0.0
     craigslist_high:  float = 0.0
+    _google_prices:   list  = None
     craigslist_count: int   = 0
 
 
@@ -944,6 +945,7 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
 
     # ── Step 1b: If Browse API failed, try Google Shopping ────────────────────
     _google_stats = None
+    goog_prices = []
     if not _browse_result:
         try:
             from scoring.google_pricer import get_google_shopping_prices, prices_to_market_stats
@@ -1281,6 +1283,7 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         craigslist_low       = round(_cl_result["low"],   2) if _cl_result else 0.0,
         craigslist_high      = round(_cl_result["high"],  2) if _cl_result else 0.0,
         craigslist_count     = _cl_result["count"]           if _cl_result else 0,
+        _google_prices       = goog_prices if goog_prices else None,
     )
 
 

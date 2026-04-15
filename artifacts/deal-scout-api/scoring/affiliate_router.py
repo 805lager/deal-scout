@@ -1182,6 +1182,10 @@ class AffiliateCard:
     commission_live: True if this click earns real commission now
     estimated_revenue: commission_rate × item_price (for internal ranking)
     price_hint:   Display price if known ("From $152") or "" if unknown
+    deal_tier:    "better_deal" | "similar_price" | "compare" — drives visual treatment
+    image_url:    Product thumbnail URL (from eBay active listing or empty)
+    product_price: Real product price (float, 0 if unknown)
+    items:        Up to 2 real product matches [{title, price, image_url, url, condition}]
 """
     program_key:        str
     title:              str
@@ -1195,6 +1199,10 @@ class AffiliateCard:
     commission_live:    bool
     estimated_revenue:  float
     price_hint:         str = ""
+    deal_tier:          str = "compare"
+    image_url:          str = ""
+    product_price:      float = 0.0
+    items:              list = field(default_factory=list)
 
 
 # ── Link Generators ───────────────────────────────────────────────────────────
@@ -1349,9 +1357,9 @@ def get_affiliate_recommendations(
     deal_score=None,
     market_value=None,
     max_cards: int = 3,
-    category_override: str = "",  # When set, skips detect_category() — used by main.py to force
-                                   # "vehicles" when listing.is_vehicle=True, since product_info
-                                   # text for a BMW 328i won't contain the word "vehicle"
+    category_override: str = "",
+    active_items_sample: list = None,
+    google_prices: list = None,
 ) -> list:
     """
     Generate ranked affiliate recommendation cards for the sidebar.
@@ -1473,7 +1481,9 @@ def get_affiliate_recommendations(
 
         log.info(f"[AffiliateRouter]   {key}: query='{platform_q[:50]}' url={url[:80]}...")
 
-        # Build card copy based on program type and deal context
+        ebay_items = (active_items_sample or []) if key == "ebay" else []
+        goog_prices = (google_prices or []) if key != "ebay" else []
+
         card = _build_card(
             key            = key,
             p              = p,
@@ -1487,6 +1497,8 @@ def get_affiliate_recommendations(
             category       = category,
             new_price      = mv_new_price,
             display_name   = display_name,
+            ebay_active_items = ebay_items,
+            google_price_data = goog_prices,
         )
         cards.append(card)
 
@@ -1529,8 +1541,10 @@ def get_affiliate_recommendations(
 def _build_card(
     key, p, url, query, listing_price, true_cost,
     deal_score, commission_live, est_revenue, category,
-    new_price: float = 0.0,    # new retail price from market_value — enables price_hint on cards
-    display_name: str = "",    # Claude-extracted product name — used for specific card titles
+    new_price: float = 0.0,
+    display_name: str = "",
+    ebay_active_items: list = None,
+    google_price_data: list = None,
 ) -> AffiliateCard:
     """Build the display copy for a single affiliate card."""
 
@@ -1538,6 +1552,9 @@ def _build_card(
     is_bad_deal = score_val < 5
     is_vehicle  = category in ("vehicles", "cars", "trucks")
     is_refurb   = key in ("back_market",)
+
+    _ebay_items = ebay_active_items or []
+    _goog_prices = google_price_data or []
 
     # Card type
     if is_vehicle:
@@ -1625,6 +1642,70 @@ def _build_card(
         if 0.5 <= ratio_np <= 15:
             price_hint = f"From ~${new_price:.0f}"
 
+    if card_type == "new_retail" and not price_hint and _goog_prices:
+        valid_gp = [gp for gp in _goog_prices if gp.get("price", 0) > 0]
+        if valid_gp:
+            best_gp = min(valid_gp, key=lambda x: x["price"])
+            gp_price = best_gp["price"]
+            if listing_price > 0 and 0.5 <= (gp_price / listing_price) <= 15:
+                price_hint = f"From ~${gp_price:.0f}"
+                if not new_price:
+                    new_price = gp_price
+
+    deal_tier = "compare"
+    image_url = ""
+    product_price = 0.0
+    card_items = []
+
+    if key == "ebay" and _ebay_items and listing_price > 0:
+        for ei in _ebay_items[:2]:
+            ep = 0.0
+            if isinstance(ei, dict):
+                ep = ei.get("price", 0.0)
+                ei_title = ei.get("title", "")
+                ei_img = ei.get("image_url", "")
+                ei_url = ei.get("url", "")
+                ei_cond = ei.get("condition", "Used")
+            else:
+                ep = getattr(ei, "price", 0.0)
+                ei_title = getattr(ei, "title", "")
+                ei_img = getattr(ei, "image_url", "")
+                ei_url = getattr(ei, "url", "")
+                ei_cond = getattr(ei, "condition", "Used")
+            if ep > 0:
+                card_items.append({
+                    "title": ei_title[:80],
+                    "price": round(ep, 2),
+                    "image_url": ei_img,
+                    "url": ei_url,
+                    "condition": ei_cond,
+                })
+
+        if card_items:
+            best_item = min(card_items, key=lambda x: x["price"])
+            product_price = best_item["price"]
+            image_url = best_item.get("image_url", "")
+            price_hint = f"${product_price:.0f}"
+
+            if product_price < listing_price:
+                deal_tier = "better_deal"
+                savings = listing_price - product_price
+                subtitle = f"${product_price:.0f} on eBay · Save ${savings:.0f}"
+                reason = f"Better deal — ${savings:.0f} less than this listing"
+            elif product_price <= listing_price * 1.20:
+                deal_tier = "similar_price"
+                subtitle = f"${product_price:.0f} on eBay · Buyer protection included"
+                reason = "Similar price with eBay buyer protection"
+            else:
+                subtitle = f"From ${product_price:.0f} on eBay"
+
+    if key != "ebay" and new_price > 0 and listing_price > 0:
+        gap = new_price - listing_price
+        if gap <= 0:
+            deal_tier = "better_deal"
+        elif gap <= listing_price * 0.20:
+            deal_tier = "similar_price"
+
     return AffiliateCard(
         program_key     = key,
         title           = title,
@@ -1638,6 +1719,10 @@ def _build_card(
         commission_live = commission_live,
         estimated_revenue = est_revenue,
         price_hint      = price_hint,
+        deal_tier       = deal_tier,
+        image_url       = image_url,
+        product_price   = product_price,
+        items           = card_items,
     )
 
 

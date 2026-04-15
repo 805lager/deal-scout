@@ -403,67 +403,131 @@
     const score = r.score || 0;
     if (!hasCards && !trigger) return;
 
+    const hasBetterDeal = hasCards && r.affiliate_cards.some(c => c.deal_tier === "better_deal");
+    const hasSimilar = hasCards && r.affiliate_cards.some(c => c.deal_tier === "similar_price");
+
+    if (!document.getElementById("ds-aff-glow-anim")) {
+      const styleEl = document.createElement("style");
+      styleEl.id = "ds-aff-glow-anim";
+      styleEl.textContent = "@keyframes ds-glow-green{0%{box-shadow:0 0 4px rgba(34,197,94,0.0)}50%{box-shadow:0 0 12px rgba(34,197,94,0.35)}100%{box-shadow:0 0 4px rgba(34,197,94,0.0)}}@keyframes ds-glow-blue{0%{box-shadow:0 0 4px rgba(96,165,250,0.0)}50%{box-shadow:0 0 10px rgba(96,165,250,0.3)}100%{box-shadow:0 0 4px rgba(96,165,250,0.0)}}";
+      document.head.appendChild(styleEl);
+    }
+
     const section = document.createElement("div");
     section.style.cssText = "margin:4px 10px 12px;background:linear-gradient(160deg,rgba(99,102,241,0.12) 0%,rgba(15,23,42,0) 60%);border:1.5px solid rgba(139,92,246,0.35);border-radius:14px;padding:13px 13px 10px;position:relative;overflow:hidden";
     const glow = document.createElement("div");
     glow.style.cssText = "position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,#6366f1,#a855f7,#06b6d4);border-radius:14px 14px 0 0";
     section.appendChild(glow);
 
-    let hdrIcon = "💡", hdrText = "Compare Prices", hdrSub = "Check alternatives.";
-    if (score <= 3)      { hdrIcon = "⚠️"; hdrText = "Skip — Better Options Here"; hdrSub = "This OfferUp price is high."; }
-    else if (score <= 5) { hdrIcon = "💡"; hdrText = "You Could Do Better"; hdrSub = "Compare before buying."; }
-    else if (score <= 7) { hdrIcon = "✅"; hdrText = "Solid — Confirm Price"; hdrSub = "Double-check before committing."; }
-    else                 { hdrIcon = "🔥"; hdrText = "Great Deal — Verify"; hdrSub = "Make sure it's the best price."; }
+    let hdrIcon, hdrText, hdrSub;
+    if (hasBetterDeal)     { hdrIcon = "\uD83D\uDCA1"; hdrText = "Better Deals Found"; hdrSub = "We found lower prices available now."; }
+    else if (hasSimilar)   { hdrIcon = "\u2705"; hdrText = "Available Elsewhere"; hdrSub = "Similar prices with buyer protection."; }
+    else if (!hasCards)    { hdrIcon = "\uD83D\uDCA1"; hdrText = "Buy New Instead?"; hdrSub = "Asking price is close to retail."; }
+    else if (score <= 3)   { hdrIcon = "\u26A0\uFE0F"; hdrText = "Better Options Available"; hdrSub = "This OfferUp price is high \u2014 compare below."; }
+    else if (score <= 5)   { hdrIcon = "\uD83D\uDCA1"; hdrText = "Compare Before Buying"; hdrSub = "Check these alternatives first."; }
+    else if (score <= 7)   { hdrIcon = "\u2705"; hdrText = "Solid Deal \u2014 Verify Price"; hdrSub = "Double-check before committing."; }
+    else                   { hdrIcon = "\uD83D\uDD25"; hdrText = "Great Deal \u2014 Compare Here"; hdrSub = "Confirm it's the best price."; }
 
     const hdrWrap = document.createElement("div");
     hdrWrap.style.cssText = "display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:11px;margin-top:2px";
-    hdrWrap.innerHTML = DOMPurify.sanitize('<div><div style="font-size:13px;font-weight:800;color:#e2e8f0">' + hdrIcon + " " + escHtml(hdrText) + "</div>" +
-      '<div style="font-size:11px;color:#94a3b8;margin-top:2px">' + escHtml(hdrSub) + "</div></div>" +
-      '<div style="font-size:9px;color:#475569;background:rgba(71,85,105,0.18);border:1px solid rgba(71,85,105,0.3);border-radius:4px;padding:2px 6px;white-space:nowrap">Affiliate</div>');
+    const hdrLeft = document.createElement("div");
+    hdrLeft.innerHTML = DOMPurify.sanitize('<div style="font-size:13px;font-weight:800;color:#e2e8f0">' + hdrIcon + " " + escHtml(hdrText) + '</div><div style="font-size:11px;color:#94a3b8;margin-top:2px">' + escHtml(hdrSub) + "</div>");
+    const disc = document.createElement("div");
+    disc.style.cssText = "font-size:9px;color:#475569;background:rgba(71,85,105,0.18);border:1px solid rgba(71,85,105,0.3);border-radius:4px;padding:2px 6px;white-space:nowrap";
+    disc.textContent = "Affiliate";
+    hdrWrap.appendChild(hdrLeft); hdrWrap.appendChild(disc);
     section.appendChild(hdrWrap);
 
     if (trigger && hasNew) {
       const premium = r.new_price - r.price;
       const alertEl = document.createElement("div");
       alertEl.style.cssText = "display:flex;align-items:center;gap:8px;background:rgba(16,185,129,0.10);border:1px solid rgba(16,185,129,0.35);border-radius:8px;padding:8px 10px;margin-bottom:10px";
-      alertEl.innerHTML = DOMPurify.sanitize('<span style="font-size:15px">🏷️</span><div><div style="font-size:11.5px;font-weight:700;color:#6ee7b7">' +
-        (premium > 0 ? "Only $" + premium.toFixed(0) + " more gets you:" : "Used asking ≥ new retail:") +
-        '</div><div style="font-size:10.5px;color:#a7f3d0;margin-top:2px">Full warranty • Easy returns</div></div>');
+      alertEl.innerHTML = DOMPurify.sanitize('<span style="font-size:15px;flex-shrink:0">\uD83C\uDFF7\uFE0F</span><div><div style="font-size:11.5px;font-weight:700;color:#6ee7b7">' + (premium > 0 ? "Only $" + premium.toFixed(0) + " more gets you:" : "Used asking \u2265 new retail:") + '</div><div style="font-size:10.5px;color:#a7f3d0;margin-top:2px">Full warranty \u2022 Easy returns \u2022 Buyer protection</div></div>');
       section.appendChild(alertEl);
     }
 
     if (!hasCards) { container.appendChild(section); return; }
 
-    const COLORS = { amazon:"#f97316",ebay:"#22c55e",best_buy:"#0046be",target:"#ef4444",walmart:"#0071ce",home_depot:"#f96302",back_market:"#16a34a",autotrader:"#e8412c",cargurus:"#00968a" };
-    const ICONS  = { amazon:"📦",ebay:"🏪",best_buy:"💻",target:"🎯",walmart:"🛒",home_depot:"🏠",back_market:"♻️",autotrader:"🚗",cargurus:"🔍" };
-    const TRUST  = { amazon:"Prime eligible • Free returns",ebay:"Money-back guarantee",best_buy:"Geek Squad warranty",back_market:"Certified refurb • 1-yr warranty",autotrader:"Dealer-verified",cargurus:"Price analysis" };
+    const COLORS = {amazon:"#f97316",ebay:"#22c55e",best_buy:"#0046be",target:"#ef4444",walmart:"#0071ce",home_depot:"#f96302",lowes:"#004990",back_market:"#16a34a",newegg:"#ff6600",autotrader:"#e8412c",cargurus:"#00968a",carmax:"#003087",wayfair:"#7b2d8b",dicks:"#1e3a5f",chewy:"#0c6bb1"};
+    const ICONS = {amazon:"\uD83D\uDCE6",ebay:"\uD83C\uDFEA",best_buy:"\uD83D\uDCBB",target:"\uD83C\uDFAF",walmart:"\uD83D\uDED2",home_depot:"\uD83C\uDFE0",lowes:"\uD83D\uDD28",back_market:"\u267B\uFE0F",newegg:"\uD83D\uDCBB",autotrader:"\uD83D\uDE97",cargurus:"\uD83D\uDD0D",carmax:"\uD83C\uDFE2"};
+    const TRUST = {amazon:"Prime eligible \u2022 Free returns",ebay:"Money-back guarantee \u2022 Buyer protection",best_buy:"Geek Squad warranty",back_market:"Certified refurb \u2022 1-yr warranty",autotrader:"Dealer-verified",cargurus:"Price analysis",carmax:"5-day return"};
 
     for (const [idx, card] of r.affiliate_cards.slice(0, 3).entries()) {
-      const key   = card.program_key || card.program || "";
+      const key = card.program_key || card.program || "";
       const color = COLORS[key] || "#7c8cf8";
-      const icon  = card.icon || ICONS[key] || "🛒";
+      const icon = card.icon || ICONS[key] || "\uD83D\uDED2";
       const trust = TRUST[key] || "Trusted retailer";
-      const name  = card.badge_label || key;
-      let cardPrice = 0;
-      if (card.price_hint) { const m = String(card.price_hint).match(/([0-9,]+(?:\.[0-9]+)?)/); if (m) cardPrice = parseFloat(m[1].replace(/,/g,"")); }
-      else if (card.price) cardPrice = parseFloat(card.price) || 0;
+      const name = card.badge_label || key;
+      const tier = card.deal_tier || "compare";
+      const hasItems = card.items && card.items.length > 0;
+      let cardPrice = card.product_price || 0;
+      if (!cardPrice && card.price_hint) { const m = String(card.price_hint).match(/([0-9,]+(?:\.[0-9]+)?)/); if (m) cardPrice = parseFloat(m[1].replace(/,/g,"")); }
       const saving = cardPrice > 0 ? r.price - cardPrice : 0;
+      const tierBorder = tier === "better_deal" ? "rgba(34,197,94,0.5)" : tier === "similar_price" ? "rgba(96,165,250,0.4)" : "rgba(255,255,255,0.08)";
+      const tierGlow = tier === "better_deal" ? "ds-glow-green 1.5s ease-in-out 3" : tier === "similar_price" ? "ds-glow-blue 1.5s ease-in-out 3" : "none";
 
       const cardEl = document.createElement("a");
       cardEl.href = card.url || "#"; cardEl.target = "_blank"; cardEl.rel = "noopener noreferrer";
-      cardEl.style.cssText = "display:block;text-decoration:none;background:rgba(15,23,42,0.55);border:1.5px solid rgba(255,255,255,0.08);border-left:4px solid " + color + ";border-radius:10px;padding:11px 12px 10px;margin-bottom:8px;cursor:pointer";
-      cardEl.onmouseenter = () => { cardEl.style.background = "rgba(255,255,255,0.07)"; };
-      cardEl.onmouseleave = () => { cardEl.style.background = "rgba(15,23,42,0.55)"; };
-      cardEl.innerHTML = DOMPurify.sanitize('<div style="display:flex;align-items:center;gap:9px;margin-bottom:7px">' +
-        '<div style="width:38px;height:38px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0;background:' + color + '1a;border:1.5px solid ' + color + '55">' + icon + "</div>" +
-        '<div style="flex:1;min-width:0"><div style="font-size:14px;font-weight:800;color:' + color + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(name) + "</div>" +
-        '<div style="font-size:10.5px;color:#64748b;margin-top:2px">' + escHtml(trust) + "</div></div>" +
-        (cardPrice > 0 ? '<div style="display:flex;flex-direction:column;align-items:flex-end;flex-shrink:0"><div style="font-size:18px;font-weight:900;color:#f1f5f9">$' + cardPrice.toFixed(0) + "</div>" +
-        (saving > 2 ? '<div style="font-size:10px;font-weight:700;color:#6ee7b7;background:rgba(16,185,129,0.15);border:1px solid rgba(16,185,129,0.4);border-radius:5px;padding:1px 7px">$' + saving.toFixed(0) + " less</div>" : "") + "</div>" : "") + "</div>" +
-        (card.subtitle ? '<div style="font-size:11px;color:#94a3b8;margin-bottom:8px">' + escHtml(card.subtitle) + "</div>" : "") +
-        '<div style="display:flex;align-items:center;justify-content:center;background:' + color + ';color:#fff;font-size:12px;font-weight:800;border-radius:7px;padding:8px 0">' + (cardPrice > 0 ? "Shop " : "Compare on ") + escHtml(name) + " →</div>");
-      cardEl.addEventListener("click", () => {
-        try { chrome.runtime.sendMessage({ type:"AFFILIATE_CLICK", program:key, category:r.category_detected||"", price_bucket:priceBucket(r.price), deal_score:score, position:idx+1, card_type:card.card_type||"", selection_reason:card.reason||"", commission_live:!!card.commission_live }); } catch(e) {}
+      cardEl.style.cssText = "display:block;text-decoration:none;background:rgba(15,23,42,0.55);border:1.5px solid " + tierBorder + ";border-left:4px solid " + color + ";border-radius:10px;padding:11px 12px 10px;margin-bottom:8px;cursor:pointer;animation:" + tierGlow;
+      cardEl.onmouseenter = function(){ this.style.background = "rgba(255,255,255,0.07)"; };
+      cardEl.onmouseleave = function(){ this.style.background = "rgba(15,23,42,0.55)"; };
+
+      if (tier === "better_deal" || tier === "similar_price") {
+        const badge = document.createElement("div");
+        if (tier === "better_deal") {
+          badge.style.cssText = "display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:800;color:#22c55e;background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.35);border-radius:5px;padding:2px 8px;margin-bottom:8px";
+          badge.textContent = "\u2B06 Better Deal Found";
+        } else {
+          badge.style.cssText = "display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:800;color:#60a5fa;background:rgba(96,165,250,0.12);border:1px solid rgba(96,165,250,0.35);border-radius:5px;padding:2px 8px;margin-bottom:8px";
+          badge.textContent = "\u2194 Similar Price \u2022 Buy with Protection";
+        }
+        cardEl.appendChild(badge);
+      }
+
+      if (hasItems) {
+        for (const item of card.items.slice(0, 2)) {
+          const itemRow = document.createElement("div");
+          itemRow.style.cssText = "display:flex;align-items:center;gap:10px;margin-bottom:8px";
+          if (item.image_url) {
+            const thumb = document.createElement("img");
+            thumb.src = item.image_url;
+            thumb.style.cssText = "width:48px;height:48px;border-radius:8px;object-fit:cover;flex-shrink:0;background:#1e293b;border:1px solid rgba(255,255,255,0.1)";
+            thumb.onerror = function(){ this.style.display = "none"; };
+            itemRow.appendChild(thumb);
+          }
+          const itemInfo = document.createElement("div");
+          itemInfo.style.cssText = "flex:1;min-width:0";
+          const itemTitle = document.createElement("div");
+          itemTitle.style.cssText = "font-size:12px;font-weight:600;color:#e2e8f0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
+          itemTitle.textContent = item.title || "";
+          itemInfo.appendChild(itemTitle);
+          const itemMeta = document.createElement("div");
+          itemMeta.style.cssText = "display:flex;align-items:center;gap:6px;margin-top:3px";
+          if (item.price > 0) { const ip = document.createElement("span"); ip.style.cssText = "font-size:14px;font-weight:900;color:#f1f5f9"; ip.textContent = "$" + item.price.toFixed(0); itemMeta.appendChild(ip); }
+          if (item.condition) { const ic = document.createElement("span"); ic.style.cssText = "font-size:10px;color:#94a3b8;background:rgba(148,163,184,0.15);border-radius:4px;padding:1px 5px"; ic.textContent = item.condition; itemMeta.appendChild(ic); }
+          itemInfo.appendChild(itemMeta);
+          itemRow.appendChild(itemInfo);
+          if (item.price > 0 && r.price > item.price) {
+            const saveBadge = document.createElement("div");
+            saveBadge.style.cssText = "font-size:10px;font-weight:700;color:#6ee7b7;background:rgba(16,185,129,0.15);border:1px solid rgba(16,185,129,0.4);border-radius:5px;padding:2px 7px;flex-shrink:0;white-space:nowrap";
+            saveBadge.textContent = "$" + (r.price - item.price).toFixed(0) + " less";
+            itemRow.appendChild(saveBadge);
+          }
+          cardEl.appendChild(itemRow);
+        }
+      } else {
+        const topRow = document.createElement("div");
+        topRow.style.cssText = "display:flex;align-items:center;gap:9px;margin-bottom:7px";
+        topRow.innerHTML = DOMPurify.sanitize('<div style="width:38px;height:38px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0;background:' + color + '1a;border:1.5px solid ' + color + '55">' + icon + '</div><div style="flex:1;min-width:0"><div style="font-size:14px;font-weight:800;color:' + color + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(name) + '</div><div style="font-size:10.5px;color:#64748b;margin-top:2px">' + escHtml(trust) + '</div></div>' + (cardPrice > 0 ? '<div style="display:flex;flex-direction:column;align-items:flex-end;flex-shrink:0;gap:2px"><div style="font-size:18px;font-weight:900;color:#f1f5f9">$' + cardPrice.toFixed(0) + '</div>' + (saving > 2 ? '<div style="font-size:10px;font-weight:700;color:#6ee7b7;background:rgba(16,185,129,0.15);border:1px solid rgba(16,185,129,0.4);border-radius:5px;padding:1px 7px">$' + saving.toFixed(0) + ' less</div>' : '') + '</div>' : ''));
+        cardEl.appendChild(topRow);
+      }
+      if (card.subtitle) { const sub = document.createElement("div"); sub.style.cssText = "font-size:11px;color:#94a3b8;margin-bottom:8px"; sub.textContent = card.subtitle; cardEl.appendChild(sub); }
+      const cta = document.createElement("div");
+      cta.style.cssText = "display:flex;align-items:center;justify-content:center;background:" + color + ";color:#fff;font-size:12px;font-weight:800;border-radius:7px;padding:8px 0;text-align:center";
+      cta.textContent = (hasItems ? "View on " : cardPrice > 0 ? "Shop " : "Compare on ") + name + " \u2192";
+      cardEl.appendChild(cta);
+      cardEl.addEventListener("click", function() {
+        try { chrome.runtime.sendMessage({type:"AFFILIATE_CLICK",program:key,category:r.category_detected||"",price_bucket:priceBucket(r.price),deal_score:score,position:idx+1,card_type:card.card_type||"",selection_reason:card.reason||"",commission_live:!!card.commission_live,deal_tier:tier}); } catch(e) {}
       });
       section.appendChild(cardEl);
     }
