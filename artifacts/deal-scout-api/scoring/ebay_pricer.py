@@ -211,7 +211,7 @@ def build_search_query(title: str) -> str:
 #   Gemini (Training Knowledge) → fallback if search fails → still better than mock
 #   eBay API → runs in parallel → ONLY used for sidebar affiliate cards now
 
-async def _try_claude_ai_pricing(query: str, condition: str, listing_price: float = 0.0) -> Optional[dict]:
+async def _try_claude_ai_pricing(query: str, condition: str, listing_price: float = 0.0, category: str = "", description: str = "") -> Optional[dict]:
     """
     Attempt Gemini AI pricing. Returns a stats-format dict on success, None on failure.
 
@@ -220,7 +220,7 @@ async def _try_claude_ai_pricing(query: str, condition: str, listing_price: floa
     """
     try:
         from scoring.claude_pricer import get_claude_market_price
-        result = await get_claude_market_price(query, condition=condition, listing_price=listing_price)
+        result = await get_claude_market_price(query, condition=condition, listing_price=listing_price, category=category, description=description)
         if not result or not result.get("avg_used_price"):
             log.info(f"[Gemini PRIMARY] No price returned for '{query}' — falling back to eBay")
             return None
@@ -622,9 +622,182 @@ async def _safe_craigslist(query: str) -> dict | None:
         return None
 
 
+async def _verify_comps_with_llm(items: list[dict], listing_title: str, query: str) -> list[dict]:
+    """
+    Use Claude Haiku to verify that Browse API comps actually match the listing.
+    Removes non-matching comps (e.g. accessories instead of the main product).
+    Returns filtered list. Falls back to original list on any error.
+    """
+    if not items or len(items) < 2:
+        return items
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(
+            api_key=os.getenv("AI_INTEGRATIONS_ANTHROPIC_API_KEY", "placeholder"),
+            base_url=os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"),
+        )
+
+        comp_list = "\n".join(
+            f"  {i+1}. \"{it.get('title', '')[:80]}\" — ${it.get('price', 0):.0f}"
+            for i, it in enumerate(items[:10])
+        )
+
+        prompt = f"""You are verifying eBay sold comparables for a marketplace listing.
+
+LISTING: "{listing_title}"
+SEARCH QUERY: "{query}"
+
+COMPARABLE ITEMS FOUND:
+{comp_list}
+
+For each comp, respond ONLY with a JSON array of booleans — true if the comp is the SAME product
+(or very similar model/variant), false if it's a different product (accessory, part, wrong item).
+
+Example: [true, true, false, true]
+
+Be generous — variants of the same product (different color, slightly different year) should be true.
+Only mark false if it's clearly a different product (e.g. a case for a phone, parts for a car).
+Return ONLY the JSON array."""
+
+        from scoring import claude_call_with_retry
+        response = await claude_call_with_retry(
+            lambda: client.messages.create(
+                model="claude-haiku-4-5",
+                max_tokens=200,
+                messages=[{"role": "user", "content": prompt}],
+            ),
+            label="CompVerifier",
+        )
+
+        raw = response.content[0].text.strip()
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+        verdicts = json.loads(raw)
+
+        if not isinstance(verdicts, list):
+            return items
+
+        verified = []
+        rejected = 0
+        for i, item in enumerate(items[:10]):
+            if i < len(verdicts) and verdicts[i]:
+                verified.append(item)
+            else:
+                rejected += 1
+        for item in items[10:]:
+            verified.append(item)
+
+        if rejected:
+            log.info(f"[CompVerifier] {rejected}/{min(len(items),10)} comps rejected for '{query}'")
+        if not verified:
+            log.warning(f"[CompVerifier] All comps rejected — using originals")
+            return items
+        return verified
+
+    except Exception as e:
+        log.debug(f"[CompVerifier] Verification failed ({e}) — using all comps")
+        return items
+
+
+async def _llm_sanity_check(
+    listing_title: str, query: str, estimated_value: float, listing_price: float,
+    data_source: str, confidence: str, category: str = "", description: str = "",
+) -> Optional[dict]:
+    """
+    Quick Haiku call to sanity-check the pipeline's estimated value.
+    Can adjust the estimate or downgrade confidence if something looks off.
+    Returns None to keep current values, or dict with adjusted_value/adjusted_confidence.
+    """
+    ratio = listing_price / estimated_value if estimated_value > 0 else 1.0
+    if 0.3 <= ratio <= 3.0:
+        return None
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(
+            api_key=os.getenv("AI_INTEGRATIONS_ANTHROPIC_API_KEY", "placeholder"),
+            base_url=os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"),
+        )
+
+        desc_snippet = (description[:500] + "...") if description and len(description) > 500 else description
+
+        prompt = f"""You are a pricing sanity checker for a marketplace deal scoring app.
+
+LISTING: "{listing_title}"
+{f'CATEGORY: {category}' if category else ''}
+{f'DESCRIPTION: {desc_snippet}' if desc_snippet else ''}
+SELLER ASKING: ${listing_price:.0f}
+OUR PIPELINE ESTIMATE: ${estimated_value:.0f} (source: {data_source}, confidence: {confidence})
+PRICE RATIO: {ratio:.2f}x (listing/estimate)
+
+The ratio is unusual (outside 0.3x-3.0x). Is our estimate reasonable for this specific item?
+
+Respond ONLY with JSON:
+{{
+  "reasonable": true/false,
+  "adjusted_value": <number or null if no change needed>,
+  "adjusted_confidence": "<high|medium|low or null if no change>",
+  "reason": "<brief reason>"
+}}"""
+
+        from scoring import claude_call_with_retry
+        response = await claude_call_with_retry(
+            lambda: client.messages.create(
+                model="claude-haiku-4-5",
+                max_tokens=200,
+                messages=[{"role": "user", "content": prompt}],
+            ),
+            label="SanityCheck",
+        )
+
+        raw = response.content[0].text.strip()
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+        data = json.loads(raw)
+
+        if data.get("reasonable", True):
+            return None
+
+        result = {}
+        if data.get("adjusted_value") and isinstance(data["adjusted_value"], (int, float)):
+            adj = float(data["adjusted_value"])
+            if adj > 0 and 0.1 * estimated_value <= adj <= 10 * estimated_value:
+                result["adjusted_value"] = adj
+        if data.get("adjusted_confidence") in ("high", "medium", "low"):
+            result["adjusted_confidence"] = data["adjusted_confidence"]
+
+        if result:
+            log.info(f"[SanityCheck] Flagged for '{query}': ratio={ratio:.2f}x, reason={data.get('reason','')[:100]}")
+        return result if result else None
+
+    except Exception as e:
+        log.debug(f"[SanityCheck] Failed: {e}")
+        return None
+
+
+def _build_short_query(query: str) -> str:
+    """
+    Build a shorter brand+model query for Browse API retry when the full query
+    returns 0 results. Takes the first 2-3 meaningful tokens.
+    """
+    tokens = query.split()
+    if len(tokens) <= 2:
+        return ""
+    short_tokens = []
+    for t in tokens:
+        if len(t) <= 2:
+            continue
+        short_tokens.append(t)
+        if len(short_tokens) >= 3:
+            break
+    result = " ".join(short_tokens)
+    return result if len(result) >= 5 else ""
+
+
 # ── Main Entry Point ──────────────────────────────────────────────────────────
 
-async def get_market_value(listing_title: str, listing_condition: str = "Used", is_vehicle: bool = False, listing_price: float = 0.0) -> MarketValue:
+async def get_market_value(listing_title: str, listing_condition: str = "Used", is_vehicle: bool = False, listing_price: float = 0.0, description: str = "", category: str = "") -> MarketValue:
     """
     Main entry point. Given a listing title, return a full MarketValue estimate.
 
@@ -734,6 +907,20 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
                 log.info(f"[BrowseAPI PRIMARY] '{query}' → avg=${_browse_result['avg_price']:.0f} ({_browse_result['count']} sold)")
             if _browse_active_result:
                 log.info(f"[BrowseAPI ACTIVE] '{query}' → avg=${_browse_active_result['avg_price']:.0f} ({_browse_active_result['count']} active)")
+
+            if not _browse_result:
+                short_query = _build_short_query(query)
+                if short_query and short_query.lower() != query.lower():
+                    log.info(f"[BrowseAPI RETRY] Full query '{query}' returned 0 — retrying with '{short_query}'")
+                    _browse_result, _retry_active = await asyncio.gather(
+                        search_ebay_browse(short_query, sold=True, limit=20, condition=listing_condition),
+                        search_ebay_browse(short_query, sold=False, limit=20, condition=listing_condition),
+                    )
+                    if _browse_result:
+                        log.info(f"[BrowseAPI RETRY] '{short_query}' → avg=${_browse_result['avg_price']:.0f} ({_browse_result['count']} sold)")
+                        query = short_query
+                    if _retry_active and not _browse_active_result:
+                        _browse_active_result = _retry_active
     except Exception as e:
         log.warning(f"[BrowseAPI PRIMARY] Failed for '{query}': {e}")
 
@@ -752,7 +939,7 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
     # ── Step 1c: If Browse failed, try Claude AI pricing ─────────────────────
     ai_pricing_stats = None
     if not _browse_result:
-        ai_pricing_stats = await _try_claude_ai_pricing(query, condition=listing_condition, listing_price=listing_price)
+        ai_pricing_stats = await _try_claude_ai_pricing(query, condition=listing_condition, listing_price=listing_price, category=category, description=description)
 
     _ai_item_id = ai_pricing_stats.get("item_id", "") if ai_pricing_stats else ""
     _ai_notes   = ai_pricing_stats.get("notes",   "") if ai_pricing_stats else ""
@@ -801,6 +988,21 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
     _ai_is_web_grounded = (
         ai_pricing_stats and ai_pricing_stats.get("data_source") == "claude_web_grounded"
     )
+
+    if _browse_result and _browse_result.get("items") and os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"):
+        _raw_browse_items = _browse_result["items"]
+        _verified_items = await _verify_comps_with_llm(_raw_browse_items, listing_title, query)
+        if len(_verified_items) < len(_raw_browse_items):
+            _verified_prices = [it["price"] for it in _verified_items if it.get("price", 0) >= 5]
+            if _verified_prices:
+                _browse_result = {
+                    **_browse_result,
+                    "items":      _verified_items,
+                    "avg_price":  round(statistics.mean(_verified_prices), 2),
+                    "low_price":  round(min(_verified_prices), 2),
+                    "high_price": round(max(_verified_prices), 2),
+                    "count":      len(_verified_prices),
+                }
 
     if _browse_result:
         sold_avg        = _browse_result["avg_price"]
@@ -907,45 +1109,55 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         data_source     = ai_pricing_stats["data_source"]
 
     else:
-        sold_prices  = [p.price for p in sold_items]
-        sold_avg     = statistics.mean(sold_prices) if sold_prices else 0.0
-        sold_low     = min(sold_prices)             if sold_prices else 0.0
-        sold_high    = max(sold_prices)             if sold_prices else 0.0
-        sold_count   = len(sold_items)
+        sold_prices  = [p.price for p in sold_items if not any(item.get("_is_mock") for item in sold_raw)]
+        active_prices_real = [p.price for p in active_items if not any(item.get("_is_mock") for item in active_raw)]
 
-        active_prices = [p.price for p in active_items]
-        active_avg    = statistics.mean(active_prices) if active_prices else 0.0
-        active_low    = min(active_prices)             if active_prices else 0.0
-        active_count  = len(active_items)
-
-        new_price = min(p.price for p in new_items) if new_items else 0.0
-
-        if sold_avg > 0 and active_avg > 0:
-            estimated_value = (sold_avg * 2 + active_avg) / 3
-        elif sold_avg > 0:
-            estimated_value = sold_avg
-        elif active_avg > 0:
-            estimated_value = active_avg * 0.85
-        else:
+        if ebay_is_mock:
+            log.info(f"[Market] All live sources exhausted for '{query}' — returning insufficient_data")
+            sold_avg = 0.0
+            sold_low = 0.0
+            sold_high = 0.0
+            sold_count = 0
+            active_avg = 0.0
+            active_low = 0.0
+            active_count = 0
+            new_price = 0.0
             estimated_value = 0.0
-
-        if len(sold_items) >= 10 and not ebay_is_mock:
-            confidence = "high"
-        elif len(sold_items) >= 3 and not ebay_is_mock:
-            confidence = "medium"
+            confidence = "insufficient_data"
+            data_source = "insufficient_data"
         else:
-            confidence = "low"
+            sold_avg     = statistics.mean(sold_prices) if sold_prices else 0.0
+            sold_low     = min(sold_prices)             if sold_prices else 0.0
+            sold_high    = max(sold_prices)             if sold_prices else 0.0
+            sold_count   = len(sold_items)
 
-        data_source = "ebay_mock" if ebay_is_mock else "ebay_live"
+            active_prices = [p.price for p in active_items]
+            active_avg    = statistics.mean(active_prices) if active_prices else 0.0
+            active_low    = min(active_prices)             if active_prices else 0.0
+            active_count  = len(active_items)
 
-    # ── Locked price range override (when mock fired) ───────────────────────────
-    # WHY data_source == "ebay_mock" (not just ebay_is_mock):
-    #   ebay_is_mock is True whenever eBay sidebar cards are mock — including
-    #   the case where Google Shopping SUCCEEDED but eBay failed. In that case
-    #   data_source = "google_shopping" and we have real Google pricing.
-    #   We must not clobber that with the locked range. Only override when the
-    #   pricing source itself is mock (i.e. both Google AND eBay failed).
-    if data_source == "ebay_mock" and _locked_price_low > 0 and _locked_price_high > _locked_price_low:
+            new_price = min(p.price for p in new_items) if new_items else 0.0
+
+            if sold_avg > 0 and active_avg > 0:
+                estimated_value = (sold_avg * 2 + active_avg) / 3
+            elif sold_avg > 0:
+                estimated_value = sold_avg
+            elif active_avg > 0:
+                estimated_value = active_avg * 0.85
+            else:
+                estimated_value = 0.0
+
+            if len(sold_items) >= 10:
+                confidence = "high"
+            elif len(sold_items) >= 3:
+                confidence = "medium"
+            else:
+                confidence = "low"
+
+            data_source = "ebay_live"
+
+    # ── Locked price range override (when no live data available) ───────────────
+    if data_source == "insufficient_data" and _locked_price_low > 0 and _locked_price_high > _locked_price_low:
         locked_mid      = (_locked_price_low + _locked_price_high) / 2
         sold_avg        = locked_mid
         sold_low        = _locked_price_low
@@ -962,29 +1174,22 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
             f"${_locked_price_high} (mid=${locked_mid:.0f}) instead of mock"
         )
 
-    # ── Suspect flag: mock data + price far outside mock range ────────────────
-    # Only fires when: (a) both live sources failed, AND (b) no locked range.
-    # When the ratio is extreme (>3× or <0.3×), the mock data belongs to a
-    # completely different price tier than the listing — it will MISLEAD the
-    # scorer. Better to pass zero (no data) than wrong data.
-    if data_source == "ebay_mock" and estimated_value > 0:
-        ratio = listing_price / estimated_value if listing_price > 0 else 1.0
-        if ratio > 3.0 or ratio < 0.3:
-            mock_est = estimated_value
-            # Zero out all price fields — scorer gets "no data" rather than wrong data
-            estimated_value = 0.0
-            sold_avg        = 0.0
-            sold_low        = 0.0
-            sold_high       = 0.0
-            active_avg      = 0.0
-            active_low      = 0.0
-            confidence      = "suspect"
-            log.warning(
-                f"[Market] Suspect comps: listing=${listing_price:.0f} vs "
-                f"mock_est=${mock_est:.0f} (ratio={ratio:.1f}x) — "
-                f"zeroing estimate. Query='{query}' likely wrong category. "
-                f"Use /corrections to add a price override."
+    # ── LLM Price Sanity Check ────────────────────────────────────────────────
+    if estimated_value > 0 and listing_price > 0 and data_source not in ("insufficient_data", "correction_range") and os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"):
+        try:
+            _sanity_result = await _llm_sanity_check(
+                listing_title, query, estimated_value, listing_price,
+                data_source, confidence, category, description,
             )
+            if _sanity_result:
+                if _sanity_result.get("adjusted_value"):
+                    _old_est = estimated_value
+                    estimated_value = round(_sanity_result["adjusted_value"], 2)
+                    log.info(f"[SanityCheck] Adjusted estimate: ${_old_est:.0f} → ${estimated_value:.0f}")
+                if _sanity_result.get("adjusted_confidence"):
+                    confidence = _sanity_result["adjusted_confidence"]
+        except Exception as e:
+            log.debug(f"[SanityCheck] Skipped: {e}")
 
     # ── Step 4: Build sidebar affiliate cards from eBay items ─────────────────
     # Prefer Browse API items for sidebar cards; fall back to Finding API raw items.

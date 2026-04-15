@@ -463,6 +463,38 @@ async def get_vehicle_market_value(
             source = "craigslist" if not prices else source
 
     if not prices:
+        log.info("[VehiclePricer] No prices from CarGurus/Craigslist — trying Claude web-grounded pricing")
+        try:
+            from scoring.claude_pricer import get_claude_market_price
+            _vq = f"{year} {make} {model}"
+            _is_classic = year < 2000
+            _vehicle_desc = f"{'Classic/vintage ' if _is_classic else ''}{year} {make} {model} vehicle"
+            ai = await get_claude_market_price(
+                _vq,
+                condition="used",
+                listing_price=listing_price,
+                category="classic vehicle" if _is_classic else "vehicle",
+                description=_vehicle_desc,
+            )
+            if ai and ai.get("avg_used_price"):
+                ai_avg = ai["avg_used_price"]
+                log.info(f"[VehiclePricer] Claude fallback: ${ai_avg:.0f} for {_vq}")
+                return {
+                    "query_used":      _vq,
+                    "sold_avg":        float(ai["avg_used_price"]),
+                    "sold_low":        float(ai["price_low"]),
+                    "sold_high":       float(ai["price_high"]),
+                    "sold_count":      0,
+                    "active_avg":      float(ai["avg_used_price"]),
+                    "active_low":      float(ai["price_low"]),
+                    "active_count":    0,
+                    "new_price":       0.0,
+                    "estimated_value": float(ai["avg_used_price"]),
+                    "confidence":      ai.get("confidence", "low"),
+                    "data_source":     ai.get("data_source", "claude_knowledge"),
+                }
+        except Exception as e:
+            log.warning(f"[VehiclePricer] Claude fallback failed: {e}")
         log.warning("[VehiclePricer] No prices found from any source")
         return None
 

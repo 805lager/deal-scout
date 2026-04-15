@@ -239,6 +239,8 @@ async def get_claude_market_price(
     query: str,
     condition: str = "Used",
     listing_price: float = 0.0,
+    category: str = "",
+    description: str = "",
 ) -> Optional[dict]:
     """
     Get AI-powered used market price estimate for an item using Claude,
@@ -273,6 +275,8 @@ async def get_claude_market_price(
 
     web_context = ""
     data_source = "claude_knowledge"
+    _web_grounding_attempted = True
+    _web_grounding_succeeded = False
     try:
         from scoring.web_pricer import search_market_prices
         web_data = await search_market_prices(query, condition, listing_price)
@@ -293,18 +297,51 @@ IMPORTANT: Weight these real-time prices heavily in your estimate. They reflect
 current 2026 market conditions, which may differ from your training data.
 """
             data_source = "claude_web_grounded"
+            _web_grounding_succeeded = True
             log.info(f"[ClaudePricer] Web grounding: {len(prices)} prices, avg=${web_data['price_avg']:.0f}")
+        else:
+            log.info(f"[ClaudePricer] Web grounding returned no prices for '{query}' — proceeding with knowledge only (confidence capped at low)")
     except Exception as e:
-        log.debug(f"[ClaudePricer] Web search grounding failed (non-fatal): {e}")
+        log.warning(f"[ClaudePricer] Web search grounding failed: {e} — proceeding with knowledge only (confidence capped at low)")
 
     condition_guide = _condition_price_guide(condition)
+
+    category_context = ""
+    if category:
+        category_context = f"\nProduct Category: {category}"
+        cat_lower = category.lower()
+        if any(kw in cat_lower for kw in ["electronics", "phone", "laptop", "tablet", "computer", "gaming", "console"]):
+            category_context += "\nDEPRECIATION NOTE: Electronics depreciate 20-40% per year. A 2-year-old device is worth 40-60% of original retail."
+        elif any(kw in cat_lower for kw in ["furniture", "sofa", "couch", "table", "desk", "chair"]):
+            category_context += "\nDEPRECIATION NOTE: Furniture depreciates 50-70% immediately. Used furniture typically sells for 25-40% of retail unless it's a premium/designer brand."
+        elif any(kw in cat_lower for kw in ["appliance", "washer", "dryer", "refrigerator", "dishwasher"]):
+            category_context += "\nDEPRECIATION NOTE: Major appliances depreciate ~15% per year. 5-year-old appliances are worth 30-50% of retail."
+        elif any(kw in cat_lower for kw in ["tool", "power tool", "drill", "saw"]):
+            category_context += "\nDEPRECIATION NOTE: Quality power tools hold value well. Used professional-grade tools retain 50-70% of retail."
+        elif any(kw in cat_lower for kw in ["bike", "bicycle", "e-bike", "electric bike"]):
+            category_context += "\nDEPRECIATION NOTE: Bikes depreciate 30-50% in year one, then slowly. Premium brands (Trek, Specialized) hold value better."
+        elif any(kw in cat_lower for kw in ["instrument", "guitar", "piano", "drum"]):
+            category_context += "\nDEPRECIATION NOTE: Musical instruments hold value well, especially name brands. Vintage instruments may appreciate."
+        elif any(kw in cat_lower for kw in ["camera", "lens", "dslr", "mirrorless"]):
+            category_context += "\nDEPRECIATION NOTE: Camera bodies depreciate 20-30% per year. Lenses hold value much better (retain 60-80%)."
+
+    description_context = ""
+    if description:
+        desc_trimmed = description[:2000].strip()
+        description_context = f"""
+## LISTING DESCRIPTION (from seller)
+{desc_trimmed}
+
+Use this description to identify: exact model/variant, included accessories, signs of wear,
+modifications, missing parts, or any details that affect pricing.
+"""
 
     prompt = f"""You are a used marketplace pricing expert. Provide accurate used/secondhand market pricing for:
 
 Item: {query}
 Condition: {condition}
-{f"Seller is asking: ${listing_price:.0f}" if listing_price > 0 else ""}
-{web_context}
+{f"Seller is asking: ${listing_price:.0f}" if listing_price > 0 else ""}{category_context}
+{web_context}{description_context}
 {condition_guide}
 
 Return ONLY a JSON object with this exact structure:
@@ -354,12 +391,15 @@ Return ONLY the JSON, no explanation."""
         result = _validate_and_normalize(data, listing_price, data_source)
 
         if result:
+            if not _web_grounding_succeeded and result["confidence"] != "low":
+                log.info(f"[ClaudePricer] Capping confidence to 'low' — web grounding failed/empty")
+                result["confidence"] = "low"
             _cache[cache_key] = {"result": result, "ts": now}
             asyncio.create_task(_db_cache_set(query, condition, result))
             log.info(
                 f"[ClaudePricer] {query}: avg=${result['avg_used_price']:.0f} "
                 f"({result['price_low']:.0f}-{result['price_high']:.0f}) "
-                f"conf={result['confidence']}"
+                f"conf={result['confidence']} web_grounded={_web_grounding_succeeded}"
             )
         return result
 

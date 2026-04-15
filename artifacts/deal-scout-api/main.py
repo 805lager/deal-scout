@@ -445,6 +445,7 @@ async def score_listing(listing: ListingRequest, request: Request):
                 listing_condition = listing.condition,
                 is_vehicle        = listing.is_vehicle,
                 listing_price     = listing.price,
+                description       = (listing.description or "")[:2000],
             ),
             evaluate_product(brand="", model="", category="", display_name=listing.title),
             return_exceptions=True,
@@ -496,6 +497,8 @@ async def score_listing(listing: ListingRequest, request: Request):
             listing_condition = listing.condition,
             is_vehicle        = listing.is_vehicle,
             listing_price     = listing.price,
+            description       = (listing.description or "")[:2000],
+            category          = product_info.category,
         )
     if product_info.brand or product_info.display_name:
         _eval_coro = evaluate_product(
@@ -1089,6 +1092,7 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                     listing_condition = listing.condition,
                     is_vehicle        = listing.is_vehicle,
                     listing_price     = listing.price,
+                    description       = (listing.description or "")[:2000],
                 ),
                 evaluate_product(brand="", model="", category="", display_name=listing.title),
                 return_exceptions=True,
@@ -1130,6 +1134,8 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                     listing_condition = listing.condition,
                     is_vehicle        = listing.is_vehicle,
                     listing_price     = listing.price,
+                    description       = (listing.description or "")[:2000],
+                    category          = product_info.category,
                 )
                 _refine_eval_task = evaluate_product(
                     brand        = product_info.brand,
@@ -1157,6 +1163,8 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                             listing_condition = listing.condition,
                             is_vehicle        = listing.is_vehicle,
                             listing_price     = listing.price,
+                            description       = (listing.description or "")[:2000],
+                            category          = product_info.category,
                         )
                     except Exception as _ref_err:
                         log.warning(f"[Stream] eBay refinement failed: {_ref_err}")
@@ -1681,7 +1689,7 @@ async def test_claude(
     except Exception as e:
         return {"status": "error", "detail": str(e)}
 
-BACKEND_VERSION = "0.37.0"
+BACKEND_VERSION = "0.38.0"
 
 @app.get("/privacy", response_class=HTMLResponse)
 async def privacy_policy():
