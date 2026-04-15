@@ -339,6 +339,12 @@ Analyze this listing holistically. Consider:
 ## PRODUCT REPUTATION
 {product_evaluation.to_prompt_text() if product_evaluation else 'No product reputation data available for this model.'}
 
+## CRITICAL RULES FOR PHOTOS
+- NEVER claim you can see "only one angle" or "a single photo" unless you were literally given exactly 1 image.
+- NEVER invent a photo count. If Photos above says "3 provided", there are 3 — do not say "all 6 photos" or any other number you made up.
+- If you analyzed multiple photos, describe what you ACTUALLY saw across them (damage, angles, condition details).
+- NEVER say "condition must be verified across all N photos" — you either saw the photos or you didn't. If you saw them, report what you observed.
+
 ## CRITICAL RULES FOR DATA QUALITY
 - If Data confidence is "low", do NOT flag price-to-comp mismatch as a red flag. State in value_assessment that comps are limited and you cannot confirm fair pricing, but do not penalize the score for it.
 - Only fire a "price above market" red flag when confidence is "medium" or "high" AND the gap is significant.
@@ -626,11 +632,13 @@ async def score_deal(
             })
 
         vision_instruction = (
-            f"These {num_images} photo(s) are for a listing titled: '{listing.get('title', 'unknown item')}'\n\n"
+            f"You are looking at EXACTLY {num_images} photo(s) of a listing titled: '{listing.get('title', 'unknown item')}'\n"
+            f"You MUST reference what you ACTUALLY SEE in these {num_images} photo(s). "
+            f"Do NOT invent photo counts — there are exactly {num_images}.\n\n"
         )
         if photo_count > num_images:
             vision_instruction += (
-                f"NOTE: You are analyzing {num_images} of {photo_count} provided photo(s). "
+                f"NOTE: The listing has {photo_count} total photos but you are analyzing {num_images}. "
                 "Do NOT flag limited photo quantity as a red flag. Do NOT speculate about the content of photos you haven't seen.\n\n"
             )
         vision_instruction += (
@@ -638,11 +646,12 @@ async def score_deal(
             "Background objects, room decor, and other items visible in the environment are "
             "INCIDENTAL — they are NOT the listing item and should NOT affect your analysis. "
             "If you see multiple objects, the item matching the listing title is the one being sold.\n\n"
-            "Analyze the primary item (the one being sold) across ALL provided photos:\n"
+            f"Analyze the primary item across ALL {num_images} provided photo(s):\n"
             "- Is the visible condition consistent with the seller's claimed condition?\n"
-            "- Are there signs of damage, wear, or missing parts not mentioned in ANY photo?\n"
+            "- Are there signs of damage, wear, or missing parts visible in ANY photo?\n"
             "- Are any included accessories visible?\n"
-            "- Do different angles reveal issues not visible in the first photo?\n\n"
+            "- Do different photos reveal issues not visible in the first one?\n"
+            "In your verdict and condition_notes, describe what you ACTUALLY observed — never fabricate.\n\n"
         )
 
         message_content.append({
