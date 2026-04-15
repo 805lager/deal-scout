@@ -323,11 +323,11 @@ Return this exact JSON structure:
 
 For "positives", identify trust signals such as:
 - Detailed description with specifics (model numbers, measurements, history)
-- Reasonable pricing relative to condition
 - Seller provides many clear photos
 - In-person pickup available
 - Legitimate reason for selling mentioned
 - Good seller rating/history
+Do NOT include "reasonable price" as a positive — you do not have market comparison data. Pricing analysis is handled separately.
 Return 1-4 positives. If nothing positive stands out, return an empty list.
 
 Scoring guide:

@@ -263,7 +263,11 @@ async def _fetch_gemini_reputation(brand: str, model: str, category: str, fallba
 
     category_guidance = _get_category_guidance(category)
 
-    prompt = f"""You are a product reliability expert. Based on consumer reviews, owner reports, and known quality data for the {product_term}, provide a reliability assessment.
+    category_context = f" (category: {category})" if category else ""
+    prompt = f"""You are a product reliability expert. Based on consumer reviews, owner reports, and known quality data for the {product_term}{category_context}, provide a reliability assessment.
+
+IMPORTANT: Evaluate the PRODUCT itself — its build quality, durability, and owner satisfaction.
+Do NOT evaluate sports teams, franchises, brands as entertainment entities, or anything other than the physical product's reliability as a consumer good.
 
 Return ONLY a valid JSON object (no markdown, no explanation outside the JSON):
 {{

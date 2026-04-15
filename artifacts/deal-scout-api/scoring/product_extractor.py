@@ -136,6 +136,10 @@ Extract the product identity. Rules:
   "bass guitar", "labtop" → "laptop". Use the technically correct term a buyer would
   search — not the seller's incorrect wording. If a term seems wrong for the category,
   use your knowledge of the product to substitute the correct searchable term.
+- PRODUCT TYPE IS CRITICAL: search_query MUST include the product type (e.g. "massage chair",
+  "desk lamp", "bicycle"). Branded/licensed items like "NFL Raiders Massage Chair" need the
+  product type in the query — searching just "NFL Raiders" returns jerseys/hats, not chairs.
+  The product type is more important than the license/franchise name for finding correct comps.
 
 Respond ONLY with valid JSON, no preamble, no fences:
 {{
