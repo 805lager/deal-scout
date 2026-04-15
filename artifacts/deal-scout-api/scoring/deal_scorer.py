@@ -611,6 +611,23 @@ async def score_deal(
     prompt = build_scoring_prompt(listing, market_value, product_evaluation, photo_count=photo_count)
 
     all_urls = image_urls or ([image_url] if image_url else [])
+    if all_urls:
+        from urllib.parse import urlparse
+        seen_stems = set()
+        deduped = []
+        for u in all_urls:
+            try:
+                stem = urlparse(u).path
+                import re as _re
+                stem = _re.sub(r'/[spc]\d+x\d+/', '/_/', stem)
+                if stem not in seen_stems:
+                    seen_stems.add(stem)
+                    deduped.append(u)
+            except Exception:
+                deduped.append(u)
+        if len(deduped) < len(all_urls):
+            log.info(f"[Vision] Deduped {len(all_urls)} URLs → {len(deduped)} unique images")
+        all_urls = deduped
     image_results = []
     if all_urls:
         log.info(f"Fetching {min(len(all_urls), 5)} listing image(s) for vision analysis...")

@@ -416,24 +416,19 @@
       !!img.closest('[data-testid*="sponsored"]') ||
       !!img.closest('[aria-label*="Sponsored"]');
     const _absTop = img => img.getBoundingClientRect().top + window.scrollY;
-    const _pickImages = (minW, maxTop = 900) => _allScontent
-      .filter(img => {
-        if (_isCardImage(img)) return false;
-        const w = img.clientWidth || img.offsetWidth || 0;
-        if (w < minW) return false;
-        return _absTop(img) < maxTop;
-      })
+    const _dedupUrls = urls => {
+      const seen = new Set();
+      return urls.filter(u => {
+        try { const stem = new URL(u).pathname.replace(/\/[spc]\d+x\d+\//,'/_/'); if (seen.has(stem)) return false; seen.add(stem); return true; } catch(_) { return true; }
+      });
+    };
+    const _listingImages = _allScontent
+      .filter(img => !_isCardImage(img) && _absTop(img) < 1200)
       .map(img => img.src)
-      .filter(src => src && src.length > 10)
-      .slice(0, 5);
-
-    let imageUrls =
-      _pickImages(200).length       ? _pickImages(200)       :
-      _pickImages(100).length       ? _pickImages(100)       :
-      _pickImages(100, 1800).length ? _pickImages(100, 1800) :
-      _allScontent.map(i => i.src).filter(s => s).slice(0, 5);
-    if (imageUrls.length === 0 && _videoPosterUrls.length > 0) {
-      imageUrls = _videoPosterUrls.slice(0, 5);
+      .filter(src => src && src.length > 10);
+    let imageUrls = _dedupUrls([..._listingImages, ..._videoPosterUrls]).slice(0, 5);
+    if (imageUrls.length === 0) {
+      imageUrls = _allScontent.map(i => i.src).filter(s => s).slice(0, 5);
     }
 
     const vehicleText = title + ' ' + description.slice(0, 300);
@@ -447,11 +442,7 @@
     const sellerTrust = extractSellerTrust();
     const listingUrl = location.href;
 
-    const _imgCount = _allScontent.filter(img =>
-      !_isCardImage(img) && _absTop(img) < 900
-    ).length;
-    const _vidCount = _videoPosterUrls.length;
-    const photoCount = (_imgCount + _vidCount) || imageUrls.length;
+    const photoCount = imageUrls.length;
 
     return {
       title,
@@ -541,31 +532,19 @@
       !!img.closest('aside') ||
       !!img.closest('[data-testid*="sponsored"]') ||
       !!img.closest('[aria-label*="Sponsored"]');
-    const _raw_isVisible = img => {
-      if (!img.offsetParent && img.tagName !== 'BODY') return false;
-      const st = window.getComputedStyle(img);
-      if (st.display === 'none' || st.visibility === 'hidden') return false;
-      const r = img.getBoundingClientRect();
-      return r.width > 0 && r.height > 0;
+    const _raw_dedupUrls = urls => {
+      const seen = new Set();
+      return urls.filter(u => {
+        try { const stem = new URL(u).pathname.replace(/\/[spc]\d+x\d+\//,'/_/'); if (seen.has(stem)) return false; seen.add(stem); return true; } catch(_) { return true; }
+      });
     };
-    const _raw_pick = (minW, maxTop = 900) => _raw_all
-      .filter(img => {
-        if (!_raw_isVisible(img)) return false;
-        if (_raw_isCard(img)) return false;
-        const w = img.clientWidth || img.offsetWidth || 0;
-        if (minW && w < minW) return false;
-        return _raw_absTop(img) < maxTop;
-      })
+    const _raw_listingImages = _raw_all
+      .filter(img => !_raw_isCard(img) && _raw_absTop(img) < 1200)
       .map(img => img.src)
-      .filter(src => src && src.length > 10)
-      .slice(0, 5);
-    let imageUrls =
-      _raw_pick(200).length       ? _raw_pick(200)       :
-      _raw_pick(100).length       ? _raw_pick(100)       :
-      _raw_pick(100, 1800).length ? _raw_pick(100, 1800) :
-      _raw_all.map(i => i.src).filter(s => s).slice(0, 5);
-    if (imageUrls.length === 0 && _raw_vidPosters.length > 0) {
-      imageUrls = _raw_vidPosters.slice(0, 5);
+      .filter(src => src && src.length > 10);
+    let imageUrls = _raw_dedupUrls([..._raw_listingImages, ..._raw_vidPosters]).slice(0, 5);
+    if (imageUrls.length === 0) {
+      imageUrls = _raw_all.map(i => i.src).filter(s => s).slice(0, 5);
     }
 
     const _rh1 = (() => {
@@ -590,10 +569,7 @@
       ? (_rpre.slice(-200) + _rpost).slice(0, 4000)
       : (container.innerText || '').slice(0, 4000);
 
-    const _raw_imgCount = _raw_all.filter(img =>
-      !_raw_isCard(img) && _raw_absTop(img) < 900
-    ).length;
-    const _raw_photoCount = (_raw_imgCount + _raw_vidPosters.length) || imageUrls.length;
+    const _raw_photoCount = imageUrls.length;
 
     return {
       raw_text:    rawText,
