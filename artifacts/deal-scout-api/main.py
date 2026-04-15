@@ -1531,6 +1531,12 @@ async def _validate_query_background(
             "Are the eBay results relevant price comps for this listing?\n"
             "A result is relevant if it is the same product type, not an accessory, "
             "not a completely different item, and not a wildly different tier/brand.\n\n"
+            "IMPORTANT for better_query: If the listing has a franchise/license name "
+            "(NFL, MLB, NBA, Disney, Marvel, etc.) that is DECORATIVE on a standalone "
+            "product (e.g. 'NFL Raiders massage chair'), do NOT include the franchise "
+            "name in better_query. Search by product type + features instead "
+            "(e.g. 'zero gravity massage chair heated'). Only keep franchise names "
+            "when the franchise IS the product (e.g. '49ers hat', 'Raiders jersey').\n\n"
             'Respond ONLY with a JSON object:\n'
             '{"relevant": true/false, "reason": "<one sentence>", '
             '"better_query": "<improved eBay search query if not relevant, otherwise repeat the original>"}'

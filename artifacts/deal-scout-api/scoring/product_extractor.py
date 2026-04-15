@@ -137,9 +137,23 @@ Extract the product identity. Rules:
   search — not the seller's incorrect wording. If a term seems wrong for the category,
   use your knowledge of the product to substitute the correct searchable term.
 - PRODUCT TYPE IS CRITICAL: search_query MUST include the product type (e.g. "massage chair",
-  "desk lamp", "bicycle"). Branded/licensed items like "NFL Raiders Massage Chair" need the
-  product type in the query — searching just "NFL Raiders" returns jerseys/hats, not chairs.
-  The product type is more important than the license/franchise name for finding correct comps.
+  "desk lamp", "bicycle").
+- BRAND vs LICENSE in search_query — three cases:
+  1. MANUFACTURER brand (Milwaukee, Canon, Sony, KitchenAid) → KEEP in search_query.
+     These brands make the product and define its value. "Milwaukee M18 drill" needs "Milwaukee".
+  2. LICENSE/FRANCHISE as DECORATION on a standalone product (NFL Raiders massage chair,
+     Disney Princess bedframe, Marvel backpack, Hello Kitty toaster) → DROP the license from
+     search_query. The product exists independently; the license is cosmetic. Searching
+     "NFL Raiders massage chair" returns jerseys, not chairs. Search "zero gravity massage
+     chair heated" instead. Use product type + key features.
+  3. LICENSE/FRANCHISE IS THE PRODUCT (49ers hat, Raiders jersey, Yankees fitted cap,
+     Lakers Starter jacket, Disney collectible figurine) → KEEP the team/franchise name.
+     The branding defines what the product IS and directly affects its value. A "49ers hat"
+     is worth more than a "hat". These are fan merchandise/apparel/memorabilia where the
+     franchise name is essential for correct comps.
+  Rule of thumb: if the product category exists without the franchise (chairs, bedframes,
+  backpacks, toasters), drop the franchise. If removing the franchise name changes the
+  product into something generic with different value (hat → generic hat), keep it.
 
 Respond ONLY with valid JSON, no preamble, no fences:
 {{
