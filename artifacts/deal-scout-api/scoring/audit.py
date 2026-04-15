@@ -280,7 +280,7 @@ async def run_llm_check(scorecards: list, version_filter: str = None, since_id: 
         return {"error": f"Rate limited — try again in {wait}s", "retry_after": wait}
     _last_check_ts = now
 
-    filtered = []
+    candidates = []
     for sc in scorecards:
         sc_id = sc.get("_id", 0)
         sc_version = sc.get("metadata", {}).get("backend_version", "")
@@ -288,9 +288,10 @@ async def run_llm_check(scorecards: list, version_filter: str = None, since_id: 
             continue
         if version_filter and sc_version != version_filter:
             continue
-        filtered.append(sc)
-        if len(filtered) >= limit:
-            break
+        candidates.append(sc)
+
+    candidates.sort(key=lambda sc: sc.get("_id", 0))
+    filtered = candidates[:limit]
 
     if not filtered:
         return {"findings": [], "reviewed_count": 0, "message": "No new scores to review"}
@@ -459,5 +460,12 @@ def build_rescore_diff(old_scorecard: dict, new_response: dict) -> dict:
     new_reds = set(new_response.get("red_flags", []))
     if old_reds != new_reds:
         diff["red_flags"] = {"added": list(new_reds - old_reds), "removed": list(old_reds - new_reds)}
+
+    old_aff = old_scorecard.get("affiliate_cards", [])
+    new_aff = new_response.get("affiliate_cards", [])
+    old_aff_keys = set(c.get("program_key", "") for c in old_aff if isinstance(c, dict))
+    new_aff_keys = set(c.get("program_key", "") for c in new_aff if isinstance(c, dict))
+    if old_aff_keys != new_aff_keys:
+        diff["affiliate_cards"] = {"added": list(new_aff_keys - old_aff_keys), "removed": list(old_aff_keys - new_aff_keys)}
 
     return diff

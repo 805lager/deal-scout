@@ -2957,6 +2957,7 @@ async def audit_check(request: Request):
         limit = body.get("limit", 50)
         version = body.get("version", BACKEND_VERSION)
         review_all = body.get("review_all", False)
+        explicit_since_id = body.get("since_id")
 
         rows = await pool.fetch(
             "SELECT id, server_ts, payload FROM score_log ORDER BY server_ts DESC LIMIT 500"
@@ -2970,7 +2971,12 @@ async def audit_check(request: Request):
             scorecards.append(p)
 
         from scoring.audit import _last_reviewed_id
-        since_id = 0 if review_all else _last_reviewed_id
+        if explicit_since_id is not None:
+            since_id = int(explicit_since_id)
+        elif review_all:
+            since_id = 0
+        else:
+            since_id = _last_reviewed_id
 
         return await run_llm_check(scorecards, version_filter=version, since_id=since_id, limit=limit)
     except Exception as e:
@@ -3037,6 +3043,7 @@ async def audit_rescore(request: Request):
 
         return {
             "old_scorecard_id": score_log_id,
+            "original_scorecard": old_scorecard,
             "new_response": new_response,
             "diff": diff,
         }
