@@ -600,12 +600,23 @@ async function runCheck() {
     if (data.findings.length === 0) {
       list.innerHTML = '<div class="empty-state" style="padding:20px">No issues found — all reviewed scores look correct.</div>';
     } else {
-      list.innerHTML = data.findings.map(f => `
-        <div class="finding ${esc(f.severity)}" style="cursor:pointer" onclick="jumpToRow(${f.id})">
-          <div class="finding-title">${esc(f.title)||'Unknown'} — ${fmt$(f.price)}<span class="sev-badge ${esc(f.severity)}">${esc(f.severity)}</span></div>
-          <div class="finding-meta">${esc(f.issue_type)} | Score Log #${f.id} — click to view</div>
-          <div class="finding-desc">${esc(f.description)}</div>
-          ${f.suggested_fix ? `<div class="finding-fix">Fix: ${esc(f.suggested_fix)}</div>` : ''}
+      const grouped = {};
+      data.findings.forEach(f => {
+        const t = f.issue_type || 'other';
+        if (!grouped[t]) grouped[t] = [];
+        grouped[t].push(f);
+      });
+      list.innerHTML = Object.entries(grouped).map(([type, items]) => `
+        <div style="margin-bottom:12px">
+          <div style="font-weight:600;font-size:13px;color:#f59e0b;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">${esc(type)} (${items.length})</div>
+          ${items.map(f => `
+            <div class="finding ${esc(f.severity)}" style="cursor:pointer" onclick="jumpToRow(${f.id})">
+              <div class="finding-title">${esc(f.title)||'Unknown'} — ${fmt$(f.price)}<span class="sev-badge ${esc(f.severity)}">${esc(f.severity)}</span></div>
+              <div class="finding-meta">Score Log #${f.id} — click to view</div>
+              <div class="finding-desc">${esc(f.description)}</div>
+              ${f.suggested_fix ? `<div class="finding-fix">Fix: ${esc(f.suggested_fix)}</div>` : ''}
+            </div>
+          `).join('')}
         </div>
       `).join('');
     }
@@ -703,14 +714,18 @@ function renderSummaryCards(review) {
 
 async function loadData() {
   try {
-    const [scoreResp, telemResp] = await Promise.all([
-      fetch(`${BASE}/score-log`, {headers: headers()}),
+    const vf = document.getElementById('versionFilter').value;
+    const reviewUrl = vf ? `${BASE}/admin/audit/review?version=${encodeURIComponent(vf)}` : `${BASE}/admin/audit/review`;
+    const [reviewResp, telemResp] = await Promise.all([
+      fetch(reviewUrl, {headers: headers()}),
       fetch(`${BASE}/admin/audit/telemetry`, {headers: headers()}),
     ]);
-    const scoreData = await scoreResp.json();
+    const reviewData = await reviewResp.json();
     const telemData = await telemResp.json();
 
-    allScorecards = scoreData.scorecards || [];
+    const scoreLogResp = await fetch(`${BASE}/score-log`, {headers: headers()});
+    const scoreLogData = await scoreLogResp.json();
+    allScorecards = scoreLogData.scorecards || [];
 
     const versions = new Set();
     const platforms = new Set();
@@ -725,7 +740,6 @@ async function loadData() {
     });
 
     const vSel = document.getElementById('versionFilter');
-    const currentOpts = vSel.innerHTML;
     vSel.innerHTML = '<option value="">All versions</option>';
     [...versions].sort().reverse().forEach(v => {
       const sel = v === CURRENT_VERSION ? 'selected' : '';
@@ -740,22 +754,8 @@ async function loadData() {
     sSel.innerHTML = '<option value="">All</option>';
     [...sources].sort().forEach(s => { sSel.innerHTML += `<option value="${s}">${s}</option>`; });
 
-    const vf = document.getElementById('versionFilter').value;
-    const filtered = allScorecards.filter(sc => !vf || (sc.metadata||{}).backend_version === vf);
-    const reviewPacket = {stats:{total_reviewed: filtered.length, anomaly_count:0, avg_score:null, by_data_source:{}, anomaly_rate:'0%'}};
-    let totalScore = 0, scoreN = 0;
-    filtered.forEach(sc => {
-      const flags = detectAnomalies(sc);
-      if (flags.length) reviewPacket.stats.anomaly_count++;
-      const src = (sc.price_comparison||{}).data_source||'unknown';
-      reviewPacket.stats.by_data_source[src] = (reviewPacket.stats.by_data_source[src]||0) + 1;
-      const s = (sc.deal_score||{}).score;
-      if (s != null) { totalScore += s; scoreN++; }
-    });
-    reviewPacket.stats.avg_score = scoreN ? Math.round(totalScore/scoreN*10)/10 : null;
-    reviewPacket.stats.anomaly_rate = filtered.length ? (reviewPacket.stats.anomaly_count/filtered.length*100).toFixed(1)+'%' : '0%';
-
-    renderSummaryCards(reviewPacket);
+    allReview = reviewData;
+    renderSummaryCards(reviewData);
     renderTelemetry(telemData);
     renderTable();
 
