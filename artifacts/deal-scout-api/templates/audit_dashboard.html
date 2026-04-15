@@ -262,6 +262,23 @@ function detectAnomalies(sc) {
   if (score<=4 && est>0 && price<est*0.6) flags.push({rule:'score_price_low',severity:'warning'});
   if (secScore<=3) flags.push({rule:'security_critical',severity:'critical'});
   if (aff.length===0) flags.push({rule:'missing_affiliates',severity:'info'});
+
+  const cat = (ds.category||'').toLowerCase();
+  if (cat && aff.length>0) {
+    const affText = aff.map(a=>(a.title||'')+' '+(a.search_query||'')).join(' ').toLowerCase();
+    const pairs = [
+      [['vehicle','car','truck','rv','trailer','motorcycle'],['electronics','phone','laptop','camera']],
+      [['electronics','phone','laptop','computer','tablet'],['vehicle','car','truck','furniture']],
+      [['furniture','couch','sofa','table','chair'],['electronics','phone','laptop','vehicle']],
+    ];
+    for (const [catKw, badKw] of pairs) {
+      if (catKw.some(k=>cat.includes(k))) {
+        if (badKw.some(k=>affText.includes(k)))
+          flags.push({rule:'category_affiliate_mismatch',severity:'warning'});
+        break;
+      }
+    }
+  }
   return flags;
 }
 

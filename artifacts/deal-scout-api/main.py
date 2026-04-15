@@ -303,6 +303,7 @@ class DealScoreResponse(BaseModel):
     sold_low:          float = 0.0   # Low end of price range
     sold_high:         float = 0.0   # High end of price range
     active_avg:        float
+    active_count:      int   = 0
     active_low:        float = 0.0   # Lowest active listing price
     new_price:         float
     market_confidence: str
@@ -770,6 +771,7 @@ async def score_listing(listing: ListingRequest, request: Request):
         sold_low            = market_value.sold_low,
         sold_high           = market_value.sold_high,
         active_avg          = market_value.active_avg,
+        active_count        = market_value.active_count if hasattr(market_value, 'active_count') else 0,
         active_low          = market_value.active_low,
         new_price           = market_value.new_price,
         market_confidence   = market_value.confidence,
@@ -1348,6 +1350,7 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                 sold_low          = market_value.sold_low,
                 sold_high         = market_value.sold_high,
                 active_avg        = market_value.active_avg,
+                active_count      = market_value.active_count if hasattr(market_value, 'active_count') else 0,
                 active_low        = market_value.active_low,
                 new_price         = market_value.new_price,
                 market_confidence = market_value.confidence,
