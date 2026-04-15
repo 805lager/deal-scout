@@ -293,11 +293,11 @@ Apply vehicle-specific reasoning:
         shipping_line = "\nShipping:     Free / local pickup (no additional cost)"
 
     if photo_count > 1:
-        photos_line = f"\nPhotos:       {photo_count} available (you are analyzing up to 5 — do NOT flag limited photo count as a red flag)"
+        photos_line = f"\nPhotos:       {photo_count} provided — do NOT flag limited photo count as a negative"
     elif photo_count == 1:
-        photos_line = "\nPhotos:       1 extracted (listing may have more photos — DOM extraction is limited, do NOT flag photo count)"
+        photos_line = "\nPhotos:       1 provided — do NOT speculate about how many photos the listing has. NEVER say 'listing indicates N photos exist' — you only know about the photos we gave you"
     else:
-        photos_line = "\nPhotos:       Photo count unknown (do NOT penalize — DOM extraction cannot always detect photo count)"
+        photos_line = "\nPhotos:       None provided — do NOT penalize for missing photos and do NOT guess how many the listing has"
 
     category_rules = _category_specific_rules(listing)
 
@@ -630,8 +630,8 @@ async def score_deal(
         )
         if photo_count > num_images:
             vision_instruction += (
-                f"NOTE: This listing has {photo_count} total photo(s). You are analyzing {num_images} of {photo_count}. "
-                "Do NOT flag limited photo quantity as a red flag — additional photos exist.\n\n"
+                f"NOTE: You are analyzing {num_images} of {photo_count} provided photo(s). "
+                "Do NOT flag limited photo quantity as a red flag. Do NOT speculate about the content of photos you haven't seen.\n\n"
             )
         vision_instruction += (
             "IMPORTANT: Focus ONLY on the PRIMARY SUBJECT of these photos (the item being sold). "
