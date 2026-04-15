@@ -943,18 +943,17 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         log.warning(f"[BrowseAPI PRIMARY] Failed for '{query}': {e}")
         log.info(f"[Telemetry] browse_outcome=error query='{query}'")
 
-    # ── Step 1b: If Browse API failed, try Google Shopping ────────────────────
+    # ── Step 1b: Google Shopping prices (always try for affiliate price hints) ─
     _google_stats = None
     goog_prices = []
-    if not _browse_result:
-        try:
-            from scoring.google_pricer import get_google_shopping_prices, prices_to_market_stats
-            goog_prices = await get_google_shopping_prices(query, max_results=12, min_price=listing_price)
-            _google_stats = prices_to_market_stats(goog_prices)
-            if _google_stats:
-                log.info(f"[GoogleFallback] '{query}' → avg=${_google_stats['avg']:.0f} ({_google_stats['count']} prices)")
-        except Exception as e:
-            log.warning(f"[GoogleFallback] Failed for '{query}': {e}")
+    try:
+        from scoring.google_pricer import get_google_shopping_prices, prices_to_market_stats
+        goog_prices = await get_google_shopping_prices(query, max_results=12, min_price=listing_price)
+        _google_stats = prices_to_market_stats(goog_prices)
+        if _google_stats:
+            log.info(f"[GooglePrices] '{query}' → avg=${_google_stats['avg']:.0f} ({_google_stats['count']} prices)")
+    except Exception as e:
+        log.warning(f"[GooglePrices] Failed for '{query}': {e}")
 
     # ── Step 1c: If Browse failed, try Claude AI pricing ─────────────────────
     ai_pricing_stats = None

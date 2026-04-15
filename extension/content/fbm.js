@@ -1692,7 +1692,8 @@
       if (hasItems) {
         for (const item of card.items.slice(0, 2)) {
           const itemRow = document.createElement('div');
-          itemRow.style.cssText = 'display:flex;align-items:center;gap:10px;margin-bottom:8px';
+          itemRow.style.cssText = 'display:flex;align-items:center;gap:10px;margin-bottom:8px;cursor:pointer';
+          if (item.url) { itemRow.addEventListener('click', function(e){ e.preventDefault(); e.stopPropagation(); window.open(item.url, '_blank'); }); }
 
           if (item.image_url) {
             const thumb = document.createElement('img');

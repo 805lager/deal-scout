@@ -65,6 +65,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from dotenv import load_dotenv
+from scoring.ebay_pricer import build_item_affiliate_url
 
 load_dotenv()
 
@@ -1657,6 +1658,8 @@ def _build_card(
     product_price = 0.0
     card_items = []
 
+    ebay_campaign_id = AFFILIATE_PROGRAMS.get("ebay", {}).get("tag", "5339144027")
+
     if key == "ebay" and _ebay_items and listing_price > 0:
         for ei in _ebay_items[:2]:
             ep = 0.0
@@ -1672,6 +1675,8 @@ def _build_card(
                 ei_img = getattr(ei, "image_url", "")
                 ei_url = getattr(ei, "url", "")
                 ei_cond = getattr(ei, "condition", "Used")
+            if ei_url and "mkevt" not in ei_url:
+                ei_url = build_item_affiliate_url(ei_url, ebay_campaign_id)
             if ep > 0:
                 card_items.append({
                     "title": ei_title[:80],
@@ -1686,6 +1691,8 @@ def _build_card(
             product_price = best_item["price"]
             image_url = best_item.get("image_url", "")
             price_hint = f"${product_price:.0f}"
+            if best_item.get("url"):
+                url = best_item["url"]
 
             if product_price < listing_price:
                 deal_tier = "better_deal"
