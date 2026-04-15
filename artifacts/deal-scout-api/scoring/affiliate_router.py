@@ -1691,7 +1691,7 @@ def should_trigger_buy_new(
     #   ebay_mock        — seeded from keywords, not real sales data
     #   correction_range — user locked in used value; new_price still from mock
     #   gemini_knowledge — AI training-data estimate, not live search grounding
-    if data_source in ("ebay_mock", "insufficient_data", "correction_range", "gemini_knowledge"):
+    if data_source in ("ebay_mock", "insufficient_data", "correction_range", "gemini_knowledge", "claude_knowledge"):
         return False, ""
 
     ratio = listing_price / new_price
