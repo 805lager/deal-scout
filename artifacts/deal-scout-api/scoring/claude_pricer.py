@@ -275,7 +275,6 @@ async def get_claude_market_price(
 
     web_context = ""
     data_source = "claude_knowledge"
-    _web_grounding_attempted = True
     _web_grounding_succeeded = False
     try:
         from scoring.web_pricer import search_market_prices

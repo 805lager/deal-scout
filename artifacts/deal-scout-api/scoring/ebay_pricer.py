@@ -703,6 +703,7 @@ Return ONLY the JSON array."""
 async def _llm_sanity_check(
     listing_title: str, query: str, estimated_value: float, listing_price: float,
     data_source: str, confidence: str, category: str = "", description: str = "",
+    sold_count: int = 0, top_comps: list[dict] | None = None,
 ) -> Optional[dict]:
     """
     Quick Haiku call to sanity-check the pipeline's estimated value.
@@ -722,6 +723,13 @@ async def _llm_sanity_check(
 
         desc_snippet = (description[:500] + "...") if description and len(description) > 500 else description
 
+        comps_block = ""
+        if top_comps:
+            lines = [f"  - \"{c.get('title','')}\" @ ${c.get('price',0):.0f}" for c in top_comps[:3]]
+            comps_block = f"\nTOP SOLD COMPS ({sold_count} total):\n" + "\n".join(lines)
+        elif sold_count > 0:
+            comps_block = f"\nSOLD COMP COUNT: {sold_count}"
+
         prompt = f"""You are a pricing sanity checker for a marketplace deal scoring app.
 
 LISTING: "{listing_title}"
@@ -729,9 +737,10 @@ LISTING: "{listing_title}"
 {f'DESCRIPTION: {desc_snippet}' if desc_snippet else ''}
 SELLER ASKING: ${listing_price:.0f}
 OUR PIPELINE ESTIMATE: ${estimated_value:.0f} (source: {data_source}, confidence: {confidence})
-PRICE RATIO: {ratio:.2f}x (listing/estimate)
+PRICE RATIO: {ratio:.2f}x (listing/estimate){comps_block}
 
 The ratio is unusual (outside 0.3x-3.0x). Is our estimate reasonable for this specific item?
+Consider whether the sold comps actually match this listing. If the comps are for a different variant, size, or model, the estimate may be wrong.
 
 Respond ONLY with JSON:
 {{
@@ -1116,8 +1125,7 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         data_source     = ai_pricing_stats["data_source"]
 
     else:
-        sold_prices  = [p.price for p in sold_items if not any(item.get("_is_mock") for item in sold_raw)]
-        active_prices_real = [p.price for p in active_items if not any(item.get("_is_mock") for item in active_raw)]
+        sold_prices = [p.price for p in sold_items] if not ebay_is_mock else []
 
         if ebay_is_mock:
             log.info(f"[Market] All live sources exhausted for '{query}' — returning insufficient_data")
@@ -1182,12 +1190,15 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         )
 
     # ── LLM Price Sanity Check ────────────────────────────────────────────────
+    _sanity_comps = (_browse_result.get("items") or [])[:3] if _browse_result else []
+    _sanity_sold_count = sold_count if sold_count else len(sold_items)
     if estimated_value > 0 and listing_price > 0 and data_source not in ("insufficient_data", "correction_range") and os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"):
         try:
             _sanity_result = await asyncio.wait_for(
                 _llm_sanity_check(
                     listing_title, query, estimated_value, listing_price,
                     data_source, confidence, category, description,
+                    sold_count=_sanity_sold_count, top_comps=_sanity_comps,
                 ),
                 timeout=5.0,
             )

@@ -475,16 +475,16 @@ async def score_listing(listing: ListingRequest, request: Request):
     raw_q       = raw_title_query.lower()
     # Skip refinement if eBay is rate-limited — a refined query returns the same
     # mock data, so the extra round-trip wastes 1-2s with zero accuracy gain.
-    _no_live_data = getattr(prelim_market, "data_source", "") in ("ebay_mock", "insufficient_data", "correction_range")
+    _ebay_rate_limited = getattr(prelim_market, "data_source", "") == "ebay_mock"
     _raw_words = set(raw_q.split())
     _ext_words = set(extracted_q.split())
     _word_overlap = len(_raw_words & _ext_words) / max(len(_raw_words | _ext_words), 1)
     _queries_similar = _word_overlap > 0.8
 
     need_refine = (extracted_q and extracted_q != raw_q and len(extracted_q) > 4
-                   and not _no_live_data and not _queries_similar)
-    if _no_live_data and extracted_q != raw_q:
-        log.info(f"[Speed] Skipping eBay refinement — no live data, refinement won't help")
+                   and not _ebay_rate_limited and not _queries_similar)
+    if _ebay_rate_limited and extracted_q != raw_q:
+        log.info(f"[Speed] Skipping eBay refinement — rate-limited, mock data unchanged")
     elif _queries_similar and extracted_q != raw_q:
         log.info(f"[Speed] Skipping market refinement — queries {_word_overlap:.0%} similar")
 
@@ -1114,7 +1114,7 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
             # eBay refinement + product eval refinement (concurrent when both needed)
             extracted_q  = (product_info.search_query or "").strip().lower()
             raw_q        = raw_title_query.lower()
-            _no_live_data = getattr(prelim_market, "data_source", "") in ("ebay_mock", "insufficient_data", "correction_range")
+            _ebay_rate_limited = getattr(prelim_market, "data_source", "") == "ebay_mock"
 
             _raw_words = set(raw_q.split())
             _ext_words = set(extracted_q.split())
@@ -1122,7 +1122,7 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
             _queries_similar = _word_overlap > 0.8
 
             need_refine  = (extracted_q and extracted_q != raw_q and len(extracted_q) > 4
-                            and not _no_live_data and not _queries_similar)
+                            and not _ebay_rate_limited and not _queries_similar)
             if _queries_similar and extracted_q != raw_q:
                 log.info(f"[Stream] Skipping market refinement — queries {_word_overlap:.0%} similar")
 
