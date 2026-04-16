@@ -472,14 +472,17 @@
       cardEl.onmouseenter = function(){ this.style.background = "rgba(255,255,255,0.07)"; };
       cardEl.onmouseleave = function(){ this.style.background = "rgba(15,23,42,0.55)"; };
 
-      if (tier === "better_deal" || tier === "similar_price") {
+      if (tier === "better_deal" || tier === "similar_price" || tier === "compare") {
         const badge = document.createElement("div");
         if (tier === "better_deal") {
           badge.style.cssText = "display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:800;color:#22c55e;background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.35);border-radius:5px;padding:2px 8px;margin-bottom:8px";
           badge.textContent = "\u2B06 Better Deal Found";
-        } else {
+        } else if (tier === "similar_price") {
           badge.style.cssText = "display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:800;color:#60a5fa;background:rgba(96,165,250,0.12);border:1px solid rgba(96,165,250,0.35);border-radius:5px;padding:2px 8px;margin-bottom:8px";
           badge.textContent = "\u2194 Similar Price \u2022 Buy with Protection";
+        } else {
+          badge.style.cssText = "display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:800;color:#94a3b8;background:rgba(148,163,184,0.10);border:1px solid rgba(148,163,184,0.25);border-radius:5px;padding:2px 8px;margin-bottom:8px";
+          badge.textContent = "\uD83D\uDD0D Compare Prices";
         }
         cardEl.appendChild(badge);
       }

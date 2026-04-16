@@ -1711,10 +1711,16 @@ def _build_card(
                 subtitle = f"${product_price:.0f} on eBay · ${savings:.0f} less"
                 reason = f"Cheaper than listing but {over_pct}% above ${market_avg:.0f} market avg"
                 log.info(f"[AffiliateRouter] eBay item ${product_price:.0f} is cheaper than listing ${listing_price:.0f} but {over_pct}% above market avg ${market_avg:.0f} — downgraded to 'compare'")
-            elif product_price <= listing_price * 1.20:
+            elif product_price <= listing_price * 1.20 and is_market_fair:
                 deal_tier = "similar_price"
                 subtitle = f"${product_price:.0f} on eBay · Buyer protection included"
                 reason = "Similar price with eBay buyer protection"
+            elif product_price <= listing_price * 1.20 and not is_market_fair:
+                deal_tier = "compare"
+                over_pct = round((product_price / market_avg - 1) * 100) if market_avg > 0 else 0
+                subtitle = f"${product_price:.0f} on eBay · Compare prices"
+                reason = f"Similar price but {over_pct}% above ${market_avg:.0f} market avg"
+                log.info(f"[AffiliateRouter] eBay item ${product_price:.0f} similar to listing ${listing_price:.0f} but {over_pct}% above market avg ${market_avg:.0f} — downgraded to 'compare'")
             else:
                 subtitle = f"From ${product_price:.0f} on eBay"
 
