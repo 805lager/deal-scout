@@ -502,6 +502,7 @@ async def score_security(
         category      = category,
         listing_price = listing.price,
         market_value  = market_value,
+        is_auction    = is_auction,
     )
     l1_score = _layer1_score(l1_flags)
     log.info(f"[Security] Layer 1: {len(l1_flags)} flags, score={l1_score}")

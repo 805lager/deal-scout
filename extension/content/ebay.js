@@ -298,8 +298,13 @@
   function renderScore(r) {
     const panel = getPanel();
     panel.textContent = "";
-    const isAuction = !!(r.auction_advice && r.auction_advice.is_auction);
-    if (isAuction) {
+    const auctionAdv = r.auction_advice || {};
+    const isAuction = !!auctionAdv.is_auction;
+    // mode === "primary" → pure auction, replace score with auction panel
+    // mode === "secondary" → hybrid (auction + BIN), normal score + auction info below
+    const isPrimaryAuction = isAuction && auctionAdv.mode !== "secondary";
+
+    if (isPrimaryAuction) {
       renderAuctionHeader(r, panel);
       renderAuctionAdvice(r, panel);
     } else {
@@ -307,11 +312,13 @@
     }
     renderSummary(r, panel);
     renderMarketData(r, panel);
-    if (!isAuction) renderBuyNewSection(r, panel);
+    if (!isPrimaryAuction) renderBuyNewSection(r, panel);
+    // Hybrid auctions: show auction info as secondary panel below market data
+    if (isAuction && !isPrimaryAuction) renderAuctionAdvice(r, panel);
     renderFlags(r, panel);
     renderSecurityScore(r, panel);
     renderBundleBreakdown(r, panel);
-    if (!isAuction) renderNegotiationMessage(r, panel);
+    if (!isPrimaryAuction) renderNegotiationMessage(r, panel);
     renderFooter(r, panel);
   }
 

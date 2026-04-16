@@ -1229,59 +1229,84 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                         log.warning(f"[Stream] Product eval refinement failed: {_eval_err}")
 
             # ── Auction Mode: derive bid range from market data ──────────────
-            # For pure auctions (no BIN), now that we have sold_avg, calculate:
+            # For PURE auctions (no BIN), once we have sold_avg, we calculate:
             #   suggested_max_bid = sold_avg * 0.85  (= "great deal" threshold)
             #   walk_away_price   = sold_avg * 1.05  (= no longer a deal)
-            # We then OVERRIDE listing.price with suggested_max_bid for the rest
-            # of the pipeline. This means:
+            # and OVERRIDE listing.price with suggested_max_bid for the rest of
+            # the pipeline. This means:
             #   1. Security scorer no longer sees "$87 vs $379 = scam" — it sees
             #      "$322 vs $379 = fair" and the false low-price flag is suppressed.
             #   2. Deal scorer rates "if you win at $322, here's how good a deal".
-            # The extension UI uses auction_advice to show the real current bid.
+            #
+            # For HYBRID listings (auction + BIN), the BIN price is already used
+            # for primary scoring (set above). We still emit auction_advice as
+            # SECONDARY info — `mode: "secondary"` tells the UI to render it
+            # below the normal score panel rather than replacing the score.
             auction_advice = {}
-            if _auction_only_mode:
+            if _is_auction:
                 _sold_avg = float(getattr(market_value, "sold_avg", 0) or 0)
+                _bid_count = int(getattr(raw, "bid_count", 0) or 0)
+                _time_left = (getattr(raw, "time_left_text", "") or "").strip()
+                _mode = "primary" if _auction_only_mode else "secondary"
+
                 if _sold_avg > 0:
                     _suggested_max = round(_sold_avg * 0.85)
                     _walk_away     = round(_sold_avg * 1.05)
-                    auction_advice = {
-                        "is_auction":        True,
-                        "current_bid":       _current_bid or listing.price,
-                        "bid_count":         int(getattr(raw, "bid_count", 0) or 0),
-                        "time_left":         (getattr(raw, "time_left_text", "") or "").strip(),
-                        "suggested_max_bid": _suggested_max,
-                        "walk_away_price":   _walk_away,
-                        "market_avg":        round(_sold_avg),
-                        "reasoning":         (
+                    if _mode == "secondary":
+                        _reasoning = (
+                            f"Auction option also available: bid up to ${_suggested_max} "
+                            f"to beat the Buy It Now price (${round(_bin_price)}). "
+                            f"Walk away above ${_walk_away}."
+                        )
+                    else:
+                        _reasoning = (
                             f"Bid up to ${_suggested_max} for a strong deal "
                             f"(15% under ${round(_sold_avg)} market avg). "
                             f"Walk away above ${_walk_away}."
-                        ),
+                        )
+                    auction_advice = {
+                        "is_auction":        True,
+                        "mode":              _mode,
+                        "current_bid":       _current_bid,
+                        "bid_count":         _bid_count,
+                        "time_left":         _time_left,
+                        "suggested_max_bid": _suggested_max,
+                        "walk_away_price":   _walk_away,
+                        "market_avg":        round(_sold_avg),
+                        "has_buy_it_now":    bool(_has_bin),
+                        "buy_it_now_price":  round(_bin_price) if _bin_price > 0 else 0,
+                        "reasoning":         _reasoning,
                     }
                     log.info(
-                        f"[Auction] Mode=ON cur_bid=${_current_bid:.0f} "
+                        f"[Auction] mode={_mode} cur_bid=${_current_bid:.0f} "
                         f"market=${_sold_avg:.0f} max_bid=${_suggested_max} "
                         f"walk=${_walk_away}"
                     )
-                    # Override listing.price → suggested_max_bid so downstream
-                    # scoring reflects "deal at the bid ceiling" not "deal at
-                    # current bid". This kills the false scam flag.
-                    listing.price = float(_suggested_max)
-                    listing.raw_price_text = f"${_suggested_max}"
+                    if _auction_only_mode:
+                        # Override listing.price → suggested_max_bid so
+                        # downstream scoring reflects "deal at the bid ceiling"
+                        # not "deal at current bid". This kills the false scam
+                        # flag (defense-in-depth alongside is_auction passed
+                        # to the security scorer).
+                        listing.price = float(_suggested_max)
+                        listing.raw_price_text = f"${_suggested_max}"
                 else:
                     # No market data — still flag as auction so UI can show a
-                    # banner, but no bid range
+                    # banner, but no bid range available.
                     auction_advice = {
                         "is_auction":        True,
-                        "current_bid":       _current_bid or listing.price,
-                        "bid_count":         int(getattr(raw, "bid_count", 0) or 0),
-                        "time_left":         (getattr(raw, "time_left_text", "") or "").strip(),
+                        "mode":              _mode,
+                        "current_bid":       _current_bid,
+                        "bid_count":         _bid_count,
+                        "time_left":         _time_left,
                         "suggested_max_bid": 0,
                         "walk_away_price":   0,
                         "market_avg":        0,
+                        "has_buy_it_now":    bool(_has_bin),
+                        "buy_it_now_price":  round(_bin_price) if _bin_price > 0 else 0,
                         "reasoning":         "Auction in progress. Not enough market data to suggest a bid range — bid based on what the item is worth to you.",
                     }
-                    log.info(f"[Auction] Mode=ON but no market data — banner only")
+                    log.info(f"[Auction] mode={_mode} but no market data — banner only")
 
             # ── Step 3: Deal scoring + security (concurrent) ─────────────────
             yield _sse({"type": "progress", "label": "AI deal analysis in progress…"})
