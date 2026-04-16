@@ -1390,6 +1390,7 @@ def get_affiliate_recommendations(
     # Extract new retail price from market_value so _build_card can show dollar gap
     # and populate price_hint. Guarded: market_value may be None if pricing failed.
     mv_new_price = getattr(market_value, "new_price", 0.0) or 0.0
+    mv_market_avg = getattr(market_value, "sold_avg", 0.0) or getattr(market_value, "estimated_value", 0.0) or 0.0
 
     log.info(f"[AffiliateRouter] Category='{category}'{' (override)' if category_override else ''} for '{query}' @ ${listing_price:.0f}")
 
@@ -1500,6 +1501,7 @@ def get_affiliate_recommendations(
             display_name   = display_name,
             ebay_active_items = ebay_items,
             google_price_data = goog_prices,
+            market_avg     = mv_market_avg,
         )
         cards.append(card)
 
@@ -1546,6 +1548,7 @@ def _build_card(
     display_name: str = "",
     ebay_active_items: list = None,
     google_price_data: list = None,
+    market_avg: float = 0.0,
 ) -> AffiliateCard:
     """Build the display copy for a single affiliate card."""
 
@@ -1694,11 +1697,20 @@ def _build_card(
             if best_item.get("url"):
                 url = best_item["url"]
 
-            if product_price < listing_price:
+            is_market_fair = (market_avg <= 0) or (product_price <= market_avg * 1.10)
+
+            if product_price < listing_price and is_market_fair:
                 deal_tier = "better_deal"
                 savings = listing_price - product_price
                 subtitle = f"${product_price:.0f} on eBay · Save ${savings:.0f}"
                 reason = f"Better deal — ${savings:.0f} less than this listing"
+            elif product_price < listing_price and not is_market_fair:
+                deal_tier = "compare"
+                savings = listing_price - product_price
+                over_pct = round((product_price / market_avg - 1) * 100) if market_avg > 0 else 0
+                subtitle = f"${product_price:.0f} on eBay · ${savings:.0f} less"
+                reason = f"Cheaper than listing but {over_pct}% above ${market_avg:.0f} market avg"
+                log.info(f"[AffiliateRouter] eBay item ${product_price:.0f} is cheaper than listing ${listing_price:.0f} but {over_pct}% above market avg ${market_avg:.0f} — downgraded to 'compare'")
             elif product_price <= listing_price * 1.20:
                 deal_tier = "similar_price"
                 subtitle = f"${product_price:.0f} on eBay · Buyer protection included"

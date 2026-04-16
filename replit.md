@@ -135,7 +135,7 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 ## Extension Version
 
-Current: **v0.39.0** (extension) / **v0.39.0** (API)
+Current: **v0.41.0** (extension) / **v0.41.0** (API)
 
 ### v0.33.0 API Scoring Fixes
 - Security ≤3 unconditionally forces `should_buy=False` (not just score cap)
