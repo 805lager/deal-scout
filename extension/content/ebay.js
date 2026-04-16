@@ -237,12 +237,21 @@
       }
     }
 
-    const isAuction = hasCurrentBidLabel || hasPlaceBidBtn || hasTimeLeft;
+    // Auction classification requires a BID-SPECIFIC signal — not just a
+    // time-left countdown. eBay BIN listings can show "Ends in..." text
+    // (return windows, promotion timers, scheduled relistings), so triggering
+    // auction UI on hasTimeLeft alone risks misclassifying BIN listings.
+    // We require: explicit "Current bid" label, OR a Place Bid button,
+    // OR a positive bid count.
+    const bidCountValue = bidCountMatch
+      ? parseInt(bidCountMatch[1] || bidCountMatch[2], 10) || 0
+      : 0;
+    const isAuction = hasCurrentBidLabel || hasPlaceBidBtn || bidCountValue > 0;
 
     return {
       is_auction:        !!isAuction,
       current_bid:       currentBid,
-      bid_count:         bidCountMatch ? parseInt(bidCountMatch[1] || bidCountMatch[2], 10) || 0 : 0,
+      bid_count:         bidCountValue,
       time_left_text:    timeLeftMatch ? timeLeftMatch[1].trim().slice(0, 60) : "",
       has_buy_it_now:    !!hasBuyItNow,
       buy_it_now_price:  buyItNowPrice,
