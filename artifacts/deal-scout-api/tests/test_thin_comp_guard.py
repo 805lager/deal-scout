@@ -84,6 +84,28 @@ def test_jade_toad_payload_is_rewritten():
     assert out["recommended_offer"] >= 0.5 * listing["price"]
 
 
+def test_score_floor_when_only_summary_is_comp_driven():
+    """Score floor should fire when comp anchoring lives in summary/verdict
+    only (no comp-driven red_flag present)."""
+    listing = {"price": 200.0}
+    market_value = {"confidence": "low", "sold_count": 1, "estimated_value": 30.0}
+    data = {
+        "score": 2,
+        "verdict": "Poor value",
+        "summary": "Price is 566% above the eBay sold average.",
+        "value_assessment": "price-to-value ratio is indefensible",
+        "red_flags": [],
+        "recommended_offer": 30.0,
+        "confidence": "low",
+    }
+    out, modified = _apply_thin_comp_guard(data, listing, market_value)
+    assert modified is True
+    assert out["score"] >= 4, f"Score should be floored to 4, got {out['score']}"
+    assert "566" not in out["summary"]
+    assert "indefensible" not in out["value_assessment"].lower()
+    assert out["recommended_offer"] >= 0.5 * listing["price"]
+
+
 def test_verdict_neutralized_even_when_not_comp_phrased():
     """A plain 'AVOID' verdict must be rewritten when the guard fires."""
     listing = {"price": 300.0}

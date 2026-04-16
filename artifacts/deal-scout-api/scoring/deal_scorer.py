@@ -678,26 +678,36 @@ def _apply_thin_comp_guard(
     modified = False
 
     original_flags = data.get("red_flags") or []
+    flags_stripped = False
     if isinstance(original_flags, list):
         kept_flags = [f for f in original_flags if not _is_comp_driven(str(f))]
         if len(kept_flags) != len(original_flags):
             data["red_flags"] = kept_flags
             modified = True
+            flags_stripped = True
             stripped = [f for f in original_flags if f not in kept_flags]
             log.info(f"[ThinCompGuard] Stripped {len(stripped)} comp-driven red_flag(s): {stripped}")
-            if int(data.get("score", 5) or 5) < 4:
-                data["score"] = 4
-                log.info("[ThinCompGuard] Floored score to 4 (was anchored to thin comps)")
 
     thin_note = "Comps are thin — fair value cannot be confirmed from available market data."
     neutral_verdict = "Comps thin — verify value independently"
 
+    text_rewritten = False
     for field in ("summary", "value_assessment"):
         val = data.get(field)
         if isinstance(val, str) and _is_comp_driven(val):
             data[field] = thin_note
             modified = True
+            text_rewritten = True
             log.info(f"[ThinCompGuard] Rewrote comp-driven {field}")
+
+    # Score floor — activate on ANY comp-driven rewrite (flag strip, summary
+    # rewrite, or value_assessment rewrite). Prevents a residual <4 score
+    # when Claude anchored the score to thin comps via summary/verdict even
+    # with no comp-driven red_flag present.
+    if (flags_stripped or text_rewritten) and int(data.get("score", 5) or 5) < 4:
+        data["score"] = 4
+        modified = True
+        log.info("[ThinCompGuard] Floored score to 4 (was anchored to thin comps)")
 
     # Verdict neutralization — Haiku frequently returns short, definitive
     # verdicts like "AVOID" or "Overpriced" that don't match the comp-driven
