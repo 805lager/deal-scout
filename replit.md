@@ -135,7 +135,42 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 ## Extension Version
 
-Current: **v0.42.2** (extension) / **v0.42.2** (API)
+Current: **v0.42.3** (extension) / **v0.42.3** (API)
+
+### v0.42.3 Thin-comp market guard — stop single-comp AVOID verdicts
+- **User report**: Nephrite jade money toad listing ($399 + $60.51 ship, 25 lb
+  hand-carved stone) scored **2/10 AVOID** with red flag "Price 819% above
+  eBay sold average" and `recommended_offer` $85 — based on a single $50
+  eBay comp with `confidence=low`. The prompt-level rule telling Haiku
+  "do not flag price-to-comp mismatch when confidence is low" was being
+  ignored (same pattern as the v0.42.2 hallucination filter), and the UI
+  delta badge had no confidence gating at all.
+- **Server: post-process guard** in `scoring/deal_scorer.py`
+  (`_apply_thin_comp_guard`). When `market_value.confidence == "low"` AND
+  `sold_count <= 2`, the guard:
+    * strips red_flags matching any of ~20 comp-driven patterns
+      (`"% above"`, `"overpriced"`, `"price-to-value ratio"`, `"far exceeds"`,
+      `"vs. asking"`, `"markup of over"`, `"indefensible"`, …)
+    * rewrites `summary` / `verdict` / `value_assessment` that use the same
+      language to "Comps are thin — fair value cannot be confirmed"
+    * floors `score` at 4 **only if** a comp-driven flag was actually
+      removed (so genuine low scores driven by real issues like scam
+      payment requests are preserved)
+    * floors `recommended_offer` at 50% of asking so a single weak comp
+      can't anchor the negotiation number
+- **Server: stronger prompt wording** in the CRITICAL RULES FOR DATA
+  QUALITY section — added an explicit negative example showing the
+  exact phrasings Haiku must not produce when confidence=low.
+- **Extension UI gating (all 4 content scripts)**: In the Market
+  Comparison panel, the red "$X above market (+Y%)" badge is replaced
+  with a neutral "○ Comps limited — comparison unreliable" note when
+  `market_confidence === "low"` AND `sold_count <= 2`. Applied
+  identically to `fbm.js`, `craigslist.js`, `offerup.js`, and `ebay.js`
+  so behavior is consistent regardless of marketplace.
+- **Regression tests**: `artifacts/deal-scout-api/tests/
+  test_thin_comp_guard.py` covers six cases including the exact jade
+  toad payload, high-confidence listings (guard inactive), boundary at
+  `sold_count == 3`, and real non-comp scam flags (score not floored).
 
 ### v0.42.2 eBay Auction Mode — Pydantic v2 setattr fix + AI hallucination filter
 - **ROOT CAUSE: Pydantic v2 silently rejected setattr** — `ListingRequest`

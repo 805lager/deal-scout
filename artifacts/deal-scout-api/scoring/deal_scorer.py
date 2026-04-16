@@ -373,6 +373,7 @@ Analyze this listing holistically. Consider:
 ## CRITICAL RULES FOR DATA QUALITY
 - If Data confidence is "low", do NOT flag price-to-comp mismatch as a red flag. State in value_assessment that comps are limited and you cannot confirm fair pricing, but do not penalize the score for it.
 - Only fire a "price above market" red flag when confidence is "medium" or "high" AND the gap is significant.
+- When confidence is "low", NEVER write phrases like "X% above market", "massively overpriced", "price-to-value ratio is indefensible", or anchor `recommended_offer` to the sold average. Example of what NOT to do when confidence=low: summary="Massively overpriced; 819% above market comp." / red_flag="Price 819% above eBay sold average". Instead say "Comps are thin — fair value cannot be confirmed" and base the offer on condition, description quality, and listed price only.
 - Red flags should be grounded in the listing text itself (vague description, implausible claims, inconsistent details), NOT in weak eBay comp data.
 - Never flag standard vehicle attributes (mileage, transmission, color, battery specs) as suspicious.
 - Do not flag missing accessories or original packaging for vehicles, motorcycles, or powersports items.
@@ -614,6 +615,104 @@ def _market_fallback_score(listing: dict, market_value: dict, image_analyzed: bo
     )
 
 
+_COMP_DRIVEN_PATTERNS = (
+    "above market",
+    "over market",
+    "above ebay",
+    "above sold",
+    "above comp",
+    "above the sold",
+    "above average sold",
+    "above aggregate",
+    "% above",
+    "% over",
+    "% markup",
+    "overpriced",
+    "massively overpriced",
+    "price-to-value ratio",
+    "price to value ratio",
+    "far exceeds",
+    "markup of over",
+    "indefensible",
+    "price-to-comp",
+    "vs. asking",
+    "vs asking",
+    "asking price far exceeds",
+)
+
+
+def _is_comp_driven(text: str) -> bool:
+    """True if `text` contains language anchored to a sold/market comp comparison."""
+    if not text:
+        return False
+    t = text.lower()
+    return any(p in t for p in _COMP_DRIVEN_PATTERNS)
+
+
+def _apply_thin_comp_guard(
+    data: dict,
+    listing: dict,
+    market_value: dict,
+) -> tuple[dict, bool]:
+    """
+    Post-process Claude's scoring response when the market comp data is thin.
+
+    Haiku ignores the prompt-level rule telling it "do not flag price-to-comp
+    mismatch when confidence is low." This guard enforces the rule mechanically:
+    when confidence == "low" AND sold_count <= 2, we:
+      • strip comp-driven red_flags
+      • strip comp-driven language from summary/verdict/value_assessment
+      • floor `score` at 4 IF any comp-driven red flag was removed (i.e. the
+        low score was anchored to thin comps, not real listing issues)
+      • floor `recommended_offer` at asking × 0.5 so a single weak comp
+        cannot anchor the negotiation number
+
+    Returns (possibly-modified data, whether anything was rewritten).
+    """
+    confidence = str(market_value.get("confidence", "")).lower()
+    sold_count = int(market_value.get("sold_count", 0) or 0)
+    if confidence != "low" or sold_count > 2:
+        return data, False
+
+    asking = float(listing.get("price") or 0.0)
+    modified = False
+
+    original_flags = data.get("red_flags") or []
+    if isinstance(original_flags, list):
+        kept_flags = [f for f in original_flags if not _is_comp_driven(str(f))]
+        if len(kept_flags) != len(original_flags):
+            data["red_flags"] = kept_flags
+            modified = True
+            stripped = [f for f in original_flags if f not in kept_flags]
+            log.info(f"[ThinCompGuard] Stripped {len(stripped)} comp-driven red_flag(s): {stripped}")
+            if int(data.get("score", 5) or 5) < 4:
+                data["score"] = 4
+                log.info("[ThinCompGuard] Floored score to 4 (was anchored to thin comps)")
+
+    thin_note = "Comps are thin — fair value cannot be confirmed from available market data."
+
+    for field in ("summary", "verdict", "value_assessment"):
+        val = data.get(field)
+        if isinstance(val, str) and _is_comp_driven(val):
+            data[field] = thin_note if field != "verdict" else "Comps thin — verify value independently"
+            modified = True
+            log.info(f"[ThinCompGuard] Rewrote comp-driven {field}")
+
+    if asking > 0:
+        raw_offer = data.get("recommended_offer")
+        try:
+            current_offer = float(raw_offer) if raw_offer is not None else 0.0
+        except (TypeError, ValueError):
+            current_offer = 0.0
+        floor = round(asking * 0.5, 2)
+        if 0 < current_offer < floor:
+            data["recommended_offer"] = floor
+            modified = True
+            log.info(f"[ThinCompGuard] Floored recommended_offer {current_offer} → {floor} (50% of asking)")
+
+    return data, modified
+
+
 async def score_deal(
     listing: dict,
     market_value: dict,
@@ -747,6 +846,11 @@ async def score_deal(
             except Exception as e2:
                 log.error(f"JSON parse failed: {e}\nRepair also failed: {e2}\nRaw text was:\n{raw_text}")
                 return None
+
+        # Thin-comp guard: when confidence=low AND sold_count<=2, Haiku tends to
+        # anchor red_flags / summary / recommended_offer to a single weak comp.
+        # Strip that language and floor the offer before we convert to DealScore.
+        data, _guard_modified = _apply_thin_comp_guard(data, listing, market_value)
 
         # WHY `or 0` not default=0:
         #   data.get("recommended_offer", 0) returns None when the key EXISTS

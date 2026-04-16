@@ -584,14 +584,22 @@
     // market". For pure auctions WITH a current bid, label it as "vs market"
     // (not "below") since the price will rise.
     if (r.sold_avg && comparePrice > 0) {
-      const delta = comparePrice - r.sold_avg;
-      const pct = Math.abs(Math.round((delta / r.sold_avg) * 100));
-      const isBelow = delta < 0;
-      const deltaEl = document.createElement("div");
-      deltaEl.style.cssText = "margin-top:6px;font-size:12px;font-weight:600;color:" + (isPureAuction ? "#9ca3af" : (isBelow ? "#22c55e" : "#ef4444"));
-      const verb = isPureAuction ? (isBelow ? "below" : "above") + " market (current bid)" : (isBelow ? "below" : "above") + " market";
-      deltaEl.textContent = "● $" + Math.abs(delta).toFixed(0) + " " + verb + " (" + (isBelow ? "-" : "+") + pct + "%)";
-      section.appendChild(deltaEl);
+      const thinComps = (r.market_confidence === "low") && ((r.sold_count || 0) <= 2);
+      if (thinComps) {
+        const warnEl = document.createElement("div");
+        warnEl.style.cssText = "margin-top:6px;font-size:12px;font-style:italic;color:#9ca3af";
+        warnEl.textContent = "○ Comps limited — comparison unreliable";
+        section.appendChild(warnEl);
+      } else {
+        const delta = comparePrice - r.sold_avg;
+        const pct = Math.abs(Math.round((delta / r.sold_avg) * 100));
+        const isBelow = delta < 0;
+        const deltaEl = document.createElement("div");
+        deltaEl.style.cssText = "margin-top:6px;font-size:12px;font-weight:600;color:" + (isPureAuction ? "#9ca3af" : (isBelow ? "#22c55e" : "#ef4444"));
+        const verb = isPureAuction ? (isBelow ? "below" : "above") + " market (current bid)" : (isBelow ? "below" : "above") + " market";
+        deltaEl.textContent = "● $" + Math.abs(delta).toFixed(0) + " " + verb + " (" + (isBelow ? "-" : "+") + pct + "%)";
+        section.appendChild(deltaEl);
+      }
     }
     if (r.ai_notes) {
       const n = document.createElement("div");

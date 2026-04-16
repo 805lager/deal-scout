@@ -370,12 +370,20 @@
       section.appendChild(el);
     }
     if (r.sold_avg && r.price) {
-      const delta = r.price - r.sold_avg;
-      const pct = Math.abs(Math.round((delta / r.sold_avg) * 100));
-      const el = document.createElement("div");
-      el.style.cssText = "margin-top:6px;font-size:12px;font-weight:600;color:" + (delta < 0 ? "#22c55e" : "#ef4444");
-      el.textContent = "● $" + Math.abs(delta).toFixed(0) + (delta < 0 ? " below" : " above") + " market (" + (delta < 0 ? "-" : "+") + pct + "%)";
-      section.appendChild(el);
+      const thinComps = (r.market_confidence === "low") && ((r.sold_count || 0) <= 2);
+      if (thinComps) {
+        const el = document.createElement("div");
+        el.style.cssText = "margin-top:6px;font-size:12px;font-style:italic;color:#9ca3af";
+        el.textContent = "○ Comps limited — comparison unreliable";
+        section.appendChild(el);
+      } else {
+        const delta = r.price - r.sold_avg;
+        const pct = Math.abs(Math.round((delta / r.sold_avg) * 100));
+        const el = document.createElement("div");
+        el.style.cssText = "margin-top:6px;font-size:12px;font-weight:600;color:" + (delta < 0 ? "#22c55e" : "#ef4444");
+        el.textContent = "● $" + Math.abs(delta).toFixed(0) + (delta < 0 ? " below" : " above") + " market (" + (delta < 0 ? "-" : "+") + pct + "%)";
+        section.appendChild(el);
+      }
     }
     if (r.ai_notes) {
       const n = document.createElement("div");
