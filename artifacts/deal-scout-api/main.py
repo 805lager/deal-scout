@@ -283,6 +283,17 @@ class RawListingRequest(BaseModel):
     photo_count: int  = 0   # True carousel photo count from DOM (may be > len(image_urls))
     platform:    str = "facebook_marketplace"
     listing_url: str = ""
+    # ── eBay auction-specific fields (DOM-detected by ebay.js) ──────────
+    # When is_auction=True, the price Claude extracts will be the *current bid*,
+    # which is misleading: it will rise. The backend uses these fields to switch
+    # into Auction Mode — suppressing low-price scam flags and returning bid
+    # guidance derived from the eBay sold market average.
+    is_auction:       bool  = False  # True if listing has Place Bid / Current bid / Time left signals
+    current_bid:      float = 0.0    # Current bid in $ (auctions only)
+    bid_count:        int   = 0      # Number of bids placed so far
+    time_left_text:   str   = ""     # Raw "Time left:" text, e.g. "2d 14h", "3h 22m"
+    has_buy_it_now:   bool  = False  # True for hybrid listings (auction + Buy It Now)
+    buy_it_now_price: float = 0.0    # Buy It Now price in $ (hybrid listings only)
 
 
 class DealScoreResponse(BaseModel):
@@ -353,6 +364,11 @@ class DealScoreResponse(BaseModel):
     craigslist_count:        int   = 0
     # Security scoring
     security_score:        dict = {}   # Scam/fraud risk assessment
+    # Auction Mode (eBay auctions only) — present when listing is an auction
+    # without a Buy It Now option. Contains current bid, time left, and a
+    # market-derived bid range so the user knows when to stop bidding.
+    # Empty dict for fixed-price listings (Buy It Now or other platforms).
+    auction_advice:        dict = {}
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -1060,6 +1076,33 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                             "message": "Could not read the listing title — wait for the page to fully load"})
                 return
 
+            # ── Auction Mode pre-processing (eBay only) ──────────────────────
+            # If this is an auction with no Buy It Now, the "price" Claude
+            # extracted is the current bid — meaningless for deal scoring (it
+            # will rise). We defer the real scoring price until after market
+            # data lookup, when we can derive a suggested max bid from sold_avg.
+            #
+            # If it's a hybrid (auction + BIN), use the BIN price as the
+            # scoring price — that's the actual "asking price" the user can
+            # take right now.
+            _is_auction = bool(getattr(raw, "is_auction", False))
+            _has_bin    = bool(getattr(raw, "has_buy_it_now", False))
+            _bin_price  = float(getattr(raw, "buy_it_now_price", 0) or 0)
+            _current_bid = float(getattr(raw, "current_bid", 0) or 0)
+            _auction_only_mode = _is_auction and not (_has_bin and _bin_price > 0)
+
+            if _is_auction and _has_bin and _bin_price > 0:
+                # Hybrid: prefer BIN price (it's the real "you can buy this now" price)
+                if abs(_bin_price - price) / max(_bin_price, 1) > 0.05:
+                    log.info(f"[Auction][Hybrid] Overriding price ${price:.0f} → BIN ${_bin_price:.0f}")
+                price = _bin_price
+            elif _auction_only_mode and _current_bid > 0:
+                # Pure auction: ensure price reflects current bid (Claude usually
+                # gets this right but be defensive)
+                if abs(_current_bid - price) / max(_current_bid, 1) > 0.10:
+                    log.info(f"[Auction] Aligning price ${price:.0f} → current bid ${_current_bid:.0f}")
+                    price = _current_bid
+
             # Build ListingRequest from extracted data
             listing = ListingRequest(
                 title          = title,
@@ -1185,6 +1228,61 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                     except Exception as _eval_err:
                         log.warning(f"[Stream] Product eval refinement failed: {_eval_err}")
 
+            # ── Auction Mode: derive bid range from market data ──────────────
+            # For pure auctions (no BIN), now that we have sold_avg, calculate:
+            #   suggested_max_bid = sold_avg * 0.85  (= "great deal" threshold)
+            #   walk_away_price   = sold_avg * 1.05  (= no longer a deal)
+            # We then OVERRIDE listing.price with suggested_max_bid for the rest
+            # of the pipeline. This means:
+            #   1. Security scorer no longer sees "$87 vs $379 = scam" — it sees
+            #      "$322 vs $379 = fair" and the false low-price flag is suppressed.
+            #   2. Deal scorer rates "if you win at $322, here's how good a deal".
+            # The extension UI uses auction_advice to show the real current bid.
+            auction_advice = {}
+            if _auction_only_mode:
+                _sold_avg = float(getattr(market_value, "sold_avg", 0) or 0)
+                if _sold_avg > 0:
+                    _suggested_max = round(_sold_avg * 0.85)
+                    _walk_away     = round(_sold_avg * 1.05)
+                    auction_advice = {
+                        "is_auction":        True,
+                        "current_bid":       _current_bid or listing.price,
+                        "bid_count":         int(getattr(raw, "bid_count", 0) or 0),
+                        "time_left":         (getattr(raw, "time_left_text", "") or "").strip(),
+                        "suggested_max_bid": _suggested_max,
+                        "walk_away_price":   _walk_away,
+                        "market_avg":        round(_sold_avg),
+                        "reasoning":         (
+                            f"Bid up to ${_suggested_max} for a strong deal "
+                            f"(15% under ${round(_sold_avg)} market avg). "
+                            f"Walk away above ${_walk_away}."
+                        ),
+                    }
+                    log.info(
+                        f"[Auction] Mode=ON cur_bid=${_current_bid:.0f} "
+                        f"market=${_sold_avg:.0f} max_bid=${_suggested_max} "
+                        f"walk=${_walk_away}"
+                    )
+                    # Override listing.price → suggested_max_bid so downstream
+                    # scoring reflects "deal at the bid ceiling" not "deal at
+                    # current bid". This kills the false scam flag.
+                    listing.price = float(_suggested_max)
+                    listing.raw_price_text = f"${_suggested_max}"
+                else:
+                    # No market data — still flag as auction so UI can show a
+                    # banner, but no bid range
+                    auction_advice = {
+                        "is_auction":        True,
+                        "current_bid":       _current_bid or listing.price,
+                        "bid_count":         int(getattr(raw, "bid_count", 0) or 0),
+                        "time_left":         (getattr(raw, "time_left_text", "") or "").strip(),
+                        "suggested_max_bid": 0,
+                        "walk_away_price":   0,
+                        "market_avg":        0,
+                        "reasoning":         "Auction in progress. Not enough market data to suggest a bid range — bid based on what the item is worth to you.",
+                    }
+                    log.info(f"[Auction] Mode=ON but no market data — banner only")
+
             # ── Step 3: Deal scoring + security (concurrent) ─────────────────
             yield _sse({"type": "progress", "label": "AI deal analysis in progress…"})
 
@@ -1221,6 +1319,7 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                         category         = _prelim_category,
                         market_value     = market_value,
                         normalized_title = product_info.display_name,
+                        is_auction       = _auction_only_mode,
                     ),
                     timeout=10.0,
                 )
@@ -1349,9 +1448,16 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
             active_items_sample = [_to_dict_s(i) for i in (market_value.active_items_sample or [])]
             affiliate_dicts     = [_dc_asdict(c) for c in affiliate_cards]
 
+            # For auction-only listings, the displayed "price" should be the
+            # current bid (what's shown on eBay right now), not the
+            # suggested_max_bid we used internally for scoring purposes.
+            _display_price = listing.price
+            if _auction_only_mode and _current_bid > 0:
+                _display_price = _current_bid
+
             response = DealScoreResponse(
                 title             = listing.title,
-                price             = listing.price,
+                price             = _display_price,
                 location          = listing.location,
                 condition         = listing.condition,
                 original_price    = listing.original_price,
@@ -1398,6 +1504,7 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                 craigslist_asking_low   = market_value.craigslist_low,
                 craigslist_asking_high  = market_value.craigslist_high,
                 craigslist_count        = market_value.craigslist_count,
+                auction_advice          = auction_advice,
             )
 
             # DB save (non-fatal)
@@ -1699,7 +1806,7 @@ async def test_claude(
     except Exception as e:
         return {"status": "error", "detail": str(e)}
 
-BACKEND_VERSION = "0.41.0"
+BACKEND_VERSION = "0.42.0"
 
 @app.get("/privacy", response_class=HTMLResponse)
 async def privacy_policy():

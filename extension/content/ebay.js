@@ -1,6 +1,7 @@
 /**
  * ebay.js — Deal Scout Content Script for eBay Listings
- * v0.31.0
+ * v0.42.0 — Auction Mode: detects auction listings and shows bid range guidance
+ *           instead of misleading "current bid = price" deal scoring.
  *
  * INJECTED INTO: www.ebay.com/itm/*  (listing detail pages)
  * PURPOSE: Scores eBay used/refurb listings against market comps,
@@ -155,6 +156,62 @@
 
   // ── Raw Data Extraction ──────────────────────────────────────────────────────
 
+  // Detect auction-mode signals from the eBay DOM.
+  // WHY: eBay shows "Current bid" instead of asking price for auctions, which
+  // tricks the backend into thinking a $87 bid on a $400 MacBook is an
+  // "exceptional value / likely scam". Detecting auction mode lets the backend
+  // suppress the false scam flag and return bid guidance instead.
+  function extractAuctionData(mainEl) {
+    const text = (mainEl.innerText || "");
+    const lower = text.toLowerCase();
+
+    // Look for unambiguous auction signals:
+    //   "Current bid" / "Starting bid" labels (always present on auctions)
+    //   "Place bid" button text
+    //   "X bids" or "(X bids)" near the price
+    //   "Time left:" countdown
+    const hasCurrentBidLabel = /current\s+bid\s*:?/i.test(text) || /starting\s+bid\s*:?/i.test(text);
+    const hasPlaceBidBtn     = /place\s+bid\b/i.test(text) || /\bbid\s+now\b/i.test(text);
+    const bidCountMatch      = text.match(/\((\d+)\s+bids?\)|(\d+)\s+bids?\b/i);
+    const timeLeftMatch      = text.match(/time\s+left\s*:?\s*([^\n\r]{1,60})/i);
+    const hasTimeLeft        = !!timeLeftMatch;
+
+    // Buy It Now signals (may co-exist with auction on hybrid listings)
+    const hasBuyItNow = /buy\s+it\s+now/i.test(text);
+    let buyItNowPrice = 0;
+    if (hasBuyItNow) {
+      // Find a price near "Buy It Now" — search a 200-char window around the match
+      const idx = lower.indexOf("buy it now");
+      if (idx >= 0) {
+        const windowText = text.slice(Math.max(0, idx - 50), idx + 200);
+        const priceMatch = windowText.match(/\$\s*([\d,]+(?:\.\d{2})?)/);
+        if (priceMatch) buyItNowPrice = parseFloat(priceMatch[1].replace(/,/g, "")) || 0;
+      }
+    }
+
+    // Current bid amount — first $ price near "Current bid" label
+    let currentBid = 0;
+    const cbIdx = lower.indexOf("current bid");
+    const sbIdx = lower.indexOf("starting bid");
+    const bidLabelIdx = cbIdx >= 0 ? cbIdx : sbIdx;
+    if (bidLabelIdx >= 0) {
+      const windowText = text.slice(bidLabelIdx, bidLabelIdx + 200);
+      const priceMatch = windowText.match(/\$\s*([\d,]+(?:\.\d{2})?)/);
+      if (priceMatch) currentBid = parseFloat(priceMatch[1].replace(/,/g, "")) || 0;
+    }
+
+    const isAuction = hasCurrentBidLabel || hasPlaceBidBtn || hasTimeLeft;
+
+    return {
+      is_auction:        !!isAuction,
+      current_bid:       currentBid,
+      bid_count:         bidCountMatch ? parseInt(bidCountMatch[1] || bidCountMatch[2], 10) || 0 : 0,
+      time_left_text:    timeLeftMatch ? timeLeftMatch[1].trim().slice(0, 60) : "",
+      has_buy_it_now:    !!hasBuyItNow,
+      buy_it_now_price:  buyItNowPrice,
+    };
+  }
+
   function extractRaw() {
     // eBay images: the main product image carousel
     const imageUrls = Array.from(
@@ -169,11 +226,19 @@
                 || document.body;
     const rawText = (mainEl.innerText || "").slice(0, 4000);
 
+    const auction = extractAuctionData(mainEl);
+
     return {
-      raw_text:    rawText,
-      image_urls:  imageUrls,
-      platform:    PLATFORM,
-      listing_url: location.href,
+      raw_text:         rawText,
+      image_urls:       imageUrls,
+      platform:         PLATFORM,
+      listing_url:      location.href,
+      is_auction:       auction.is_auction,
+      current_bid:      auction.current_bid,
+      bid_count:        auction.bid_count,
+      time_left_text:   auction.time_left_text,
+      has_buy_it_now:   auction.has_buy_it_now,
+      buy_it_now_price: auction.buy_it_now_price,
     };
   }
 
@@ -233,14 +298,20 @@
   function renderScore(r) {
     const panel = getPanel();
     panel.textContent = "";
-    renderHeader(r, panel);
+    const isAuction = !!(r.auction_advice && r.auction_advice.is_auction);
+    if (isAuction) {
+      renderAuctionHeader(r, panel);
+      renderAuctionAdvice(r, panel);
+    } else {
+      renderHeader(r, panel);
+    }
     renderSummary(r, panel);
     renderMarketData(r, panel);
-    renderBuyNewSection(r, panel);
+    if (!isAuction) renderBuyNewSection(r, panel);
     renderFlags(r, panel);
     renderSecurityScore(r, panel);
     renderBundleBreakdown(r, panel);
-    renderNegotiationMessage(r, panel);
+    if (!isAuction) renderNegotiationMessage(r, panel);
     renderFooter(r, panel);
   }
 
@@ -277,6 +348,126 @@
       '<div style="font-size:10px;color:#6b7280;margin-top:1px">🏷 eBay listing · $' + (r.price || 0).toFixed(0) + "</div></div>");
     hdr.appendChild(scoreRow);
     container.appendChild(hdr);
+  }
+
+  // Auction Mode header — replaces the score circle with an "AUCTION" badge
+  // showing current bid + bid count + time left. The deal-score number is
+  // misleading for auctions (the price will rise), so we emphasize bid
+  // strategy instead.
+  function renderAuctionHeader(r, container) {
+    const a = r.auction_advice || {};
+    const curBid = a.current_bid || r.price || 0;
+    const bids = a.bid_count || 0;
+    const timeLeft = a.time_left || "";
+
+    const hdr = document.createElement("div");
+    hdr.style.cssText = "background:#13111f;border-bottom:1px solid #3d3660;border-radius:10px 10px 0 0;padding:10px 12px;cursor:move";
+
+    const topRow = document.createElement("div");
+    topRow.style.cssText = "display:flex;align-items:center;justify-content:space-between;margin-bottom:6px";
+    topRow.innerHTML = DOMPurify.sanitize('<span style="font-weight:700;font-size:13px;color:#7c8cf8">📊 Deal Scout</span>');
+    const closeBtn = document.createElement("button");
+    closeBtn.textContent = "✕";
+    closeBtn.style.cssText = "background:none;border:none;color:#6b7280;font-size:15px;cursor:pointer;padding:1px 4px";
+    closeBtn.onclick = removePanel;
+    topRow.appendChild(closeBtn);
+    hdr.addEventListener("mousedown", (e) => {
+      if (e.target === closeBtn) return;
+      const p = getPanel();
+      const rect = p.getBoundingClientRect();
+      p._ds_drag = { on: true, ox: e.clientX - rect.left, oy: e.clientY - rect.top };
+    });
+    hdr.appendChild(topRow);
+
+    const auctionRow = document.createElement("div");
+    auctionRow.style.cssText = "display:flex;align-items:center;gap:10px";
+    auctionRow.innerHTML = DOMPurify.sanitize(
+      '<div style="background:linear-gradient(135deg,#7c3aed 0%,#a855f7 100%);color:#fff;padding:8px 10px;border-radius:8px;font-weight:800;font-size:11px;letter-spacing:0.5px;flex-shrink:0;text-align:center;min-width:62px">' +
+        '<div style="font-size:14px;line-height:1">🔨</div>' +
+        '<div style="margin-top:2px">AUCTION</div>' +
+      '</div>' +
+      '<div style="flex:1;min-width:0">' +
+        '<div style="font-size:14px;font-weight:800;color:#e2e8f0">Current bid: $' + (curBid || 0).toFixed(0) + '</div>' +
+        '<div style="font-size:11px;color:#94a3b8;margin-top:2px">' +
+          (bids ? (bids + ' bid' + (bids === 1 ? '' : 's')) : 'No bids yet') +
+          (timeLeft ? ' · ⏱ ' + escHtml(timeLeft) : '') +
+        '</div>' +
+        '<div style="font-size:10px;color:#6b7280;margin-top:1px">🏷 eBay auction listing</div>' +
+      '</div>'
+    );
+    hdr.appendChild(auctionRow);
+    container.appendChild(hdr);
+  }
+
+  // Bid Strategy panel — the headline output for auction mode.
+  // Shows: walk-away ceiling, suggested max bid, current bid, market avg.
+  // This is what replaces the "Better Deal / Fair Deal / Overpriced" verdict
+  // for auction listings.
+  function renderAuctionAdvice(r, container) {
+    const a = r.auction_advice || {};
+    const maxBid = a.suggested_max_bid || 0;
+    const walkAway = a.walk_away_price || 0;
+    const market = a.market_avg || r.sold_avg || 0;
+    const curBid = a.current_bid || r.price || 0;
+
+    const section = document.createElement("div");
+    section.style.cssText = "background:linear-gradient(135deg,rgba(124,58,237,0.10),rgba(34,197,94,0.05));border:1px solid rgba(124,58,237,0.28);border-radius:10px;padding:11px 12px;margin:10px 12px 0";
+
+    const hdr = document.createElement("div");
+    hdr.style.cssText = "font-weight:700;font-size:11px;letter-spacing:0.5px;text-transform:uppercase;color:#c4b5fd;margin-bottom:8px;display:flex;align-items:center;gap:6px";
+    hdr.innerHTML = DOMPurify.sanitize('<span>🎯 Bid Strategy</span>');
+    section.appendChild(hdr);
+
+    if (maxBid > 0 && walkAway > 0) {
+      // Bid range visualization
+      const range = document.createElement("div");
+      range.style.cssText = "display:flex;flex-direction:column;gap:8px";
+      range.innerHTML = DOMPurify.sanitize(
+        '<div style="display:flex;justify-content:space-between;align-items:baseline">' +
+          '<span style="font-size:11px;color:#9ca3af">Bid up to (great deal)</span>' +
+          '<span style="font-size:18px;font-weight:800;color:#22c55e">$' + maxBid.toFixed(0) + '</span>' +
+        '</div>' +
+        '<div style="display:flex;justify-content:space-between;align-items:baseline">' +
+          '<span style="font-size:11px;color:#9ca3af">Walk away above</span>' +
+          '<span style="font-size:14px;font-weight:700;color:#ef4444">$' + walkAway.toFixed(0) + '</span>' +
+        '</div>' +
+        '<div style="display:flex;justify-content:space-between;align-items:baseline;border-top:1px solid rgba(255,255,255,0.06);padding-top:6px;margin-top:2px">' +
+          '<span style="font-size:11px;color:#6b7280">Market avg (sold)</span>' +
+          '<span style="font-size:12px;font-weight:600;color:#94a3b8">$' + market.toFixed(0) + '</span>' +
+        '</div>' +
+        '<div style="display:flex;justify-content:space-between;align-items:baseline">' +
+          '<span style="font-size:11px;color:#6b7280">Current bid</span>' +
+          '<span style="font-size:12px;font-weight:600;color:' + (curBid <= maxBid ? '#22c55e' : (curBid <= walkAway ? '#fbbf24' : '#ef4444')) + '">$' + curBid.toFixed(0) + '</span>' +
+        '</div>'
+      );
+      section.appendChild(range);
+
+      // Status callout based on where current bid sits
+      const status = document.createElement("div");
+      let statusText = "", statusColor = "";
+      if (curBid <= maxBid) {
+        statusText = "✅ Still room to bid for a great deal";
+        statusColor = "#22c55e";
+      } else if (curBid <= walkAway) {
+        statusText = "⚠️ Approaching market value — bid carefully";
+        statusColor = "#fbbf24";
+      } else {
+        statusText = "⛔ Already above market — let it go";
+        statusColor = "#ef4444";
+      }
+      status.style.cssText = "margin-top:9px;padding:7px 9px;background:rgba(0,0,0,0.18);border-radius:6px;font-size:12px;font-weight:600;color:" + statusColor;
+      status.textContent = statusText;
+      section.appendChild(status);
+    }
+
+    if (a.reasoning) {
+      const note = document.createElement("div");
+      note.style.cssText = "margin-top:8px;font-size:11px;color:#c4b5fd;line-height:1.45;font-style:italic";
+      note.textContent = a.reasoning;
+      section.appendChild(note);
+    }
+
+    container.appendChild(section);
   }
 
   function renderSummary(r, container) {

@@ -212,10 +212,15 @@ ITEM_RISK_PATTERNS = {
 }
 
 
-def run_layer1(listing_text: str, title: str, category: str, listing_price: float, market_value) -> list:
+def run_layer1(listing_text: str, title: str, category: str, listing_price: float, market_value, is_auction: bool = False) -> list:
     """
     Fast regex scan — runs in <1ms, no API call.
     Returns list of (flag_message, severity) tuples.
+
+    is_auction: when True, suppresses the price-based scam flags.
+      Pure auctions show the *current bid* (which starts low and rises) as the
+      price. Without this flag, every active auction would trigger
+      "78% below market = likely scam" before the auction has even progressed.
     """
     combined = f"{title} {listing_text}".lower()
     found = []
@@ -248,7 +253,7 @@ def run_layer1(listing_text: str, title: str, category: str, listing_price: floa
         "vehicles":    (0.40, "high"),
         "_default":    (0.20, "high"),
     }
-    if market_value and listing_price > 0:
+    if market_value and listing_price > 0 and not is_auction:
         est = getattr(market_value, "estimated_value", 0) or 0
         if est > 0:
             thresh, severity = PRICE_THRESHOLDS.get(category, PRICE_THRESHOLDS["_default"])
@@ -267,7 +272,7 @@ def run_layer1(listing_text: str, title: str, category: str, listing_price: floa
         "cameras":   40,
     }
     floor = HARD_FLOOR_PRICES.get(category, 0)
-    if floor > 0 and 0 < listing_price < floor and "too good" not in str(seen).lower():
+    if not is_auction and floor > 0 and 0 < listing_price < floor and "too good" not in str(seen).lower():
         found.append({
             "flag": f"Price ${listing_price:.0f} is unusually low for {category} — verify legitimacy",
             "severity": "high",
@@ -449,6 +454,12 @@ async def score_security(
     # WHY: listing.title is the raw seller text (e.g. "taylor electrostatic guitar").
     # After product_extractor runs, we know the correct name. Passing it here stops
     # Claude from flagging the seller's typo as a product-authenticity red flag.
+    is_auction: bool = False,
+    # WHY: For pure eBay auctions the "price" is the current bid, which starts
+    # low and rises. Without this flag, Layer 1 would emit "X% below market =
+    # likely scam" on every active auction. Note: in practice the streaming
+    # pipeline overrides listing.price → suggested_max_bid for auctions before
+    # calling score_security, so this flag is defense-in-depth.
 ) -> SecurityScore:
     """
     Full two-layer security scoring.

@@ -135,7 +135,28 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 ## Extension Version
 
-Current: **v0.41.0** (extension) / **v0.41.0** (API)
+Current: **v0.42.0** (extension) / **v0.42.0** (API)
+
+### v0.42.0 eBay Auction Mode
+- **Auction detection in `extension/content/ebay.js`**: `extractAuctionData()` parses
+  the eBay DOM for "Current bid", "Place bid", "Time left", "(N bids)", and
+  "Buy It Now" signals. Sends `is_auction`, `current_bid`, `bid_count`,
+  `time_left_text`, `has_buy_it_now`, `buy_it_now_price` alongside `raw_text`.
+- **Backend Auction Mode in `main.py /score/stream`**: When `is_auction=True`
+  and no Buy It Now option, derives `suggested_max_bid = sold_avg * 0.85` and
+  `walk_away_price = sold_avg * 1.05`, then OVERRIDES `listing.price` →
+  `suggested_max_bid` for the rest of the pipeline. Hybrid (auction + BIN)
+  listings use the BIN price as the scoring price. Returns new `auction_advice`
+  dict in `DealScoreResponse` with current bid, time left, bid range, market avg.
+- **Suppresses false low-price scam flag**: `security_scorer.run_layer1` accepts
+  `is_auction` and skips both the "X% below market" and "unusually low for
+  category" hard-floor flags when True. Defense-in-depth — the price override
+  above already prevents the trigger.
+- **Auction Mode UI in ebay.js**: `renderAuctionHeader()` replaces the score
+  circle with an "AUCTION" badge + current bid + time left. `renderAuctionAdvice()`
+  shows the bid range (green "bid up to" cap, red "walk away" floor, gray market
+  avg, color-coded current bid status). Suppresses negotiation-message and
+  Buy New sections in auction mode.
 
 ### v0.33.0 API Scoring Fixes
 - Security ≤3 unconditionally forces `should_buy=False` (not just score cap)
