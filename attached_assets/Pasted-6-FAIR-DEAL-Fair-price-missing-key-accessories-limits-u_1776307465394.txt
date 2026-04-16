@@ -1,0 +1,85 @@
+6
+✅ FAIR DEAL
+Fair price, missing key accessories limits utility.
+high confidence · haiku-4-5
+Asking price $2000 $1700
+Rec. offer $1400
+Like New
+📍 San Marcos, CA
+The Form 3BL is selling at fair market value ($1700 vs. $1550 estimated), but the critical omission of a resin tank and build plate significantly reduces usability and value. The printer appears in good physical condition based on visual inspection across all 5 photos, but without consumables, a buyer would need to invest $400–600 more to make it operational. Seller is transparent about what's included, which is a positive signal.
+📈 Market Comparison
+Est. prices
+Est. sold avg
+$1920
+Est. active avg
+$1920
+Sold range
+$30 – $9999
+Listed price
+$1700
+Confidence
+high
+● $220 below market (-11%)
+🔍 Formlabs Form 3BL 3D printer
+high confidence · 11 estimated comps
+✅ Seller is transparent about missing accessories upfront—no hidden surprises.
+✅ Includes WiFi antenna and power cables, confirming intention to sell a nearly-working unit.
+✅ Physical condition is genuinely clean and well-maintained based on visual inspection.
+✅ Form 3BL is a reputable, high-end printer with strong user feedback and industrial-grade optics.
+⚠ Missing resin tank and build plate—essential consumables that cost $400–600 to replace; listed unit is incomplete.
+⚠ No mention of print history, maintenance records, or warranty status; unclear if unit is functional or calibrated.
+⚠ Seller acquired via unclear channel ('what you see is what you get' phrasing suggests rapid offload).
+⚠ Price assumes buyer already has tank/plate or is willing to pay significant additional cost to use the printer.
+A complete Form 3BL typically sells used for $1550–$1920. This unit without tank or build plate is worth approximately $1200–$1350 as-is; the asking price of $1700 assumes the buyer already owns or can source these accessories. For someone without them, the real total cost of ownership jumps to ~$2100–$2300.
+💡 Better Deals Found
+We found lower prices available now.
+Affiliate
+🛒
+Amazon
+Prime eligible • Free returns
+New condition · Amazon pricing
+Compare on Amazon →
+⬆ Better Deal Found
+
+Formlabs Form 3B 3D Printer
+$1500
+Used
+$200 less
+
+Formlabs Form 3L 3D SLA Printer W/ Resin Curing Station, Wash Tank, Rinse Bucket
+$3800
+Used
+$1500 on eBay · Save $200
+View on eBay →
+♻️
+Back Market
+Certified refurb • 1-yr warranty
+Certified refurbished · warranty included
+Compare on Back Market →
+🔒 Security Check 7/10
+low risk
+safe to proceed
+⚠ Incomplete item: missing tank and build plate (essential components)
+⚠ Seller rating not displayed despite claimed established member status
+⚠ Limited photos (5) for high-value industrial equipment ($1700)
+⚠ Vague condition claim: 'like new' but missing critical parts
+✅ Detailed description specifies what is and isn't included
+✅ Seller account established since 2022 (multi-year history)
+✅ Specific model mentioned with capability details
+✅ Seller profile since 2022
+Checks performed
+• Pattern scan (payment, contact, urgency)
+• Price vs market anomaly check
+• AI scam language analysis
+⭐ Product Reputation
+good
+⚠ Resin tank degradation and scratching after extended use
+⚠ Occasional failed prints due to calibration drift
+⚠ Build platform adhesion inconsistency
+💬 Copy negotiation message
+Was this score accurate?
+👍
+Yes, accurate
+👎
+No, off
+Deal Scout v0.40.0
