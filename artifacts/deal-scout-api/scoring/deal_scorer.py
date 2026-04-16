@@ -731,7 +731,10 @@ def _apply_thin_comp_guard(
         except (TypeError, ValueError):
             current_offer = 0.0
         floor = round(asking * 0.5, 2)
-        if 0 < current_offer < floor:
+        # Apply the floor whenever the offer is below it — including zero,
+        # negative, or missing offers. Claude sometimes returns 0/null for
+        # thin-comp listings it would otherwise label "AVOID".
+        if current_offer < floor:
             data["recommended_offer"] = floor
             modified = True
             log.info(f"[ThinCompGuard] Floored recommended_offer {current_offer} → {floor} (50% of asking)")
