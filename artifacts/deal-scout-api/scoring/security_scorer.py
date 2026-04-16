@@ -564,27 +564,7 @@ async def score_security(
         log.info("[Security] Skipping Layer 2 (no API client)")
 
 
-    # Merge scores: Layer 1 anchors, AI adjusts.
-    # WHY DYNAMIC WEIGHTING by AI risk level:
-    #   When AI sees a clear scam (score 1-3), trust it heavily — regex can't
-    #   detect social engineering or subtle manipulation. Giving L1 35% weight
-    #   when AI says 2/10 but L1 is clean would produce a misleadingly safe 5/10.
-    #   When AI gives a high score (8-10), it agrees with a clean L1, so the
-    #   exact blend doesn't matter much — the result is high either way.
-    ai_score = ai_result.get("score")
-    if ai_score and isinstance(ai_score, (int, float)):
-        if ai_score <= 3:
-            weight_ai = 0.85   # AI detects critical scam signal — trust it
-        elif ai_score <= 5:
-            weight_ai = 0.75   # AI sees notable risk — lean toward AI
-        else:
-            weight_ai = 0.65   # Normal blend
-        final_score = round((l1_score * (1 - weight_ai)) + (ai_score * weight_ai))
-    else:
-        final_score = l1_score
-
-    final_score = max(1, min(10, final_score))
-
+    # ---- Pre-merge AI flag filtering (so boost is reflected in final_score) ----
     # Merge flags — deduplicate
     ai_flags   = ai_result.get("flags", []) or []
     ai_positives = ai_result.get("positives", []) or []
@@ -628,13 +608,35 @@ async def score_security(
             # Claude's score is heavily driven by the dominant flag(s) it lists.
             # If we just filtered out a price-anomaly flag, the score Claude
             # returned is artificially low for our actual policy. Boost the AI
-            # score by ~1.5 per dropped price flag (capped at +3) so the final
-            # blended security score reflects only the remaining real concerns.
+            # score by ~1.5 per dropped price flag (capped at +3) BEFORE the
+            # blend below so the final security score reflects only remaining
+            # real concerns.
             _ai_sc = ai_result.get("score")
             if isinstance(_ai_sc, (int, float)):
                 boost = min(3, int(round(dropped * 1.5)))
                 ai_result["score"] = min(10, _ai_sc + boost)
                 log.info(f"[Security][Auction] Boosted AI score {_ai_sc} → {ai_result['score']} (+{boost})")
+
+    # Merge scores: Layer 1 anchors, AI adjusts.
+    # WHY DYNAMIC WEIGHTING by AI risk level:
+    #   When AI sees a clear scam (score 1-3), trust it heavily — regex can't
+    #   detect social engineering or subtle manipulation. Giving L1 35% weight
+    #   when AI says 2/10 but L1 is clean would produce a misleadingly safe 5/10.
+    #   When AI gives a high score (8-10), it agrees with a clean L1, so the
+    #   exact blend doesn't matter much — the result is high either way.
+    ai_score = ai_result.get("score")
+    if ai_score and isinstance(ai_score, (int, float)):
+        if ai_score <= 3:
+            weight_ai = 0.85   # AI detects critical scam signal — trust it
+        elif ai_score <= 5:
+            weight_ai = 0.75   # AI sees notable risk — lean toward AI
+        else:
+            weight_ai = 0.65   # Normal blend
+        final_score = round((l1_score * (1 - weight_ai)) + (ai_score * weight_ai))
+    else:
+        final_score = l1_score
+
+    final_score = max(1, min(10, final_score))
 
     all_flags = list(dict.fromkeys(l1_messages + deduped_ai_flags))
 
