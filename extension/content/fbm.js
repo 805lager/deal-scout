@@ -1421,6 +1421,18 @@
     }
     if (r.market_confidence) rows.push({ label: 'Confidence', value: r.market_confidence });
 
+    // Thin-comp: gray out the sold-avg / mid-point / AI-avg row so users
+    // can see at a glance that the headline market number is unreliable.
+    const _thinCompsForRows = (r.market_confidence === 'low') && ((r.sold_count || 0) <= 2) && r.sold_avg;
+    if (_thinCompsForRows) {
+      for (const rw of rows) {
+        if (/sold avg|mid-point avg|ai market avg/i.test(rw.label)) {
+          rw.color = '#6b7280';
+          rw.bold = false;
+        }
+      }
+    }
+
     const hasRealData = rows.some(rw => !['Confidence','Listed price'].includes(rw.label));
     if (!hasRealData && (r.data_source === 'ebay_mock' || !r.data_source)) {
       return;

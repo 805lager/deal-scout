@@ -75,7 +75,32 @@ def test_jade_toad_payload_is_rewritten():
     assert "% above" not in out["summary"]
     assert "indefensible" not in out["value_assessment"].lower()
 
+    # Verdict must be neutralized — plain "AVOID" does not match the comp
+    # patterns but is still a comp-anchored verdict and must be rewritten.
+    vlow = out["verdict"].lower()
+    for forbidden in ("avoid", "overpriced", "do not buy", "walk away"):
+        assert forbidden not in vlow, f"Verdict still contains '{forbidden}': {out['verdict']!r}"
+
     assert out["recommended_offer"] >= 0.5 * listing["price"]
+
+
+def test_verdict_neutralized_even_when_not_comp_phrased():
+    """A plain 'AVOID' verdict must be rewritten when the guard fires."""
+    listing = {"price": 300.0}
+    market_value = {"confidence": "low", "sold_count": 1, "estimated_value": 40.0}
+    data = {
+        "score": 2,
+        "verdict": "AVOID",
+        "summary": "Price 650% above eBay sold average.",
+        "red_flags": ["Price 650% above market"],
+        "recommended_offer": 40.0,
+        "confidence": "low",
+    }
+    out, modified = _apply_thin_comp_guard(data, listing, market_value)
+    assert modified is True
+    assert out["verdict"].lower() != "avoid"
+    assert "avoid" not in out["verdict"].lower()
+    assert "overpriced" not in out["verdict"].lower()
 
 
 def test_high_confidence_listing_is_untouched():

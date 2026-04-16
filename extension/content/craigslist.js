@@ -493,11 +493,22 @@
     if (r.craigslist_asking_avg > 0) rows.push({ label: "CL asking avg", value: ps + r.craigslist_asking_avg.toFixed(0), note: "(" + (r.craigslist_count || 0) + " local)" });
     rows.push({ label: "Listed price", value: ps + (r.price || 0).toFixed(0) });
 
+    const _thinCompsForRows = (r.market_confidence === "low") && ((r.sold_count || 0) <= 2) && r.sold_avg;
+    if (_thinCompsForRows) {
+      for (const rw of rows) {
+        if (/sold avg|mid-point avg|ai market avg/i.test(rw.label)) {
+          rw.dim = true;
+          rw.bold = false;
+        }
+      }
+    }
+
     for (const row of rows) {
       const el = document.createElement("div");
       el.style.cssText = "display:flex;justify-content:space-between;align-items:baseline;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.05)";
+      const valStyle = 'font-weight:' + (row.bold ? "700" : "500") + ';font-size:' + (row.bold ? "14px" : "13px") + (row.dim ? ';color:#6b7280' : '');
       el.innerHTML = DOMPurify.sanitize('<span style="color:#9ca3af;font-size:12px">' + escHtml(row.label) + (row.note ? ' <span style="color:#6b7280;font-size:10px">' + escHtml(row.note) + "</span>" : "") + "</span>" +
-        '<span style="font-weight:' + (row.bold ? "700" : "500") + ';font-size:' + (row.bold ? "14px" : "13px") + '">' + escHtml(row.value) + "</span>");
+        '<span style="' + valStyle + '">' + escHtml(row.value) + "</span>");
       section.appendChild(el);
     }
 

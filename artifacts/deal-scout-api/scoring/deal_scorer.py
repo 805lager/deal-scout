@@ -690,13 +690,29 @@ def _apply_thin_comp_guard(
                 log.info("[ThinCompGuard] Floored score to 4 (was anchored to thin comps)")
 
     thin_note = "Comps are thin — fair value cannot be confirmed from available market data."
+    neutral_verdict = "Comps thin — verify value independently"
 
-    for field in ("summary", "verdict", "value_assessment"):
+    for field in ("summary", "value_assessment"):
         val = data.get(field)
         if isinstance(val, str) and _is_comp_driven(val):
-            data[field] = thin_note if field != "verdict" else "Comps thin — verify value independently"
+            data[field] = thin_note
             modified = True
             log.info(f"[ThinCompGuard] Rewrote comp-driven {field}")
+
+    # Verdict neutralization — Haiku frequently returns short, definitive
+    # verdicts like "AVOID" or "Overpriced" that don't match the comp-driven
+    # phrasings but are still anchored to the same thin comp. If the guard
+    # already triggered (comp flag stripped or comp-driven text rewritten)
+    # OR the verdict itself uses comp-driven language, neutralize it.
+    # We deliberately do NOT fire on definitive-negative words alone when
+    # the guard was otherwise quiet — those cases reflect real non-comp
+    # issues (e.g. scam indicators) and the verdict should stand.
+    verdict_val = data.get("verdict")
+    if isinstance(verdict_val, str) and (modified or _is_comp_driven(verdict_val)):
+        if verdict_val != neutral_verdict:
+            data["verdict"] = neutral_verdict
+            modified = True
+            log.info(f"[ThinCompGuard] Neutralized verdict '{verdict_val}' → '{neutral_verdict}'")
 
     if asking > 0:
         raw_offer = data.get("recommended_offer")
