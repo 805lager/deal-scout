@@ -1605,6 +1605,7 @@
 
     const hasBetterDeal = hasCards && r.affiliate_cards.some(c => c.deal_tier === 'better_deal');
     const hasSimilar = hasCards && r.affiliate_cards.some(c => c.deal_tier === 'similar_price');
+    const hasCompare = hasCards && r.affiliate_cards.some(c => c.deal_tier === 'compare');
 
     if (!document.getElementById('ds-aff-glow-anim')) {
       const styleEl = document.createElement('style');
@@ -1623,6 +1624,7 @@
     let hdrIcon, hdrText, hdrSub;
     if (hasBetterDeal)     { hdrIcon = '\uD83D\uDCA1'; hdrText = 'Better Deals Found'; hdrSub = 'We found lower prices available now.'; }
     else if (hasSimilar)   { hdrIcon = '\u2705'; hdrText = 'Available Elsewhere'; hdrSub = 'Similar prices with buyer protection.'; }
+    else if (hasCompare)   { hdrIcon = '\uD83D\uDD0D'; hdrText = 'Compare Prices'; hdrSub = 'Check similar listings before buying.'; }
     else if (!hasCards)    { hdrIcon = '\uD83D\uDCA1'; hdrText = 'Buy New Instead?'; hdrSub = 'Asking price is close to retail.'; }
     else if (score <= 3)   { hdrIcon = '\u26A0\uFE0F'; hdrText = 'Better Options Available'; hdrSub = 'This deal is overpriced — compare below.'; }
     else if (score <= 5)   { hdrIcon = '\uD83D\uDCA1'; hdrText = 'Compare Before Buying'; hdrSub = 'Check these alternatives first.'; }
