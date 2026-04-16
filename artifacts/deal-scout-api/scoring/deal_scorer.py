@@ -700,15 +700,6 @@ def _apply_thin_comp_guard(
             text_rewritten = True
             log.info(f"[ThinCompGuard] Rewrote comp-driven {field}")
 
-    # Score floor — activate on ANY comp-driven rewrite (flag strip, summary
-    # rewrite, or value_assessment rewrite). Prevents a residual <4 score
-    # when Claude anchored the score to thin comps via summary/verdict even
-    # with no comp-driven red_flag present.
-    if (flags_stripped or text_rewritten) and int(data.get("score", 5) or 5) < 4:
-        data["score"] = 4
-        modified = True
-        log.info("[ThinCompGuard] Floored score to 4 (was anchored to thin comps)")
-
     # Verdict neutralization — Haiku frequently returns short, definitive
     # verdicts like "AVOID" or "Overpriced" that don't match the comp-driven
     # phrasings but are still anchored to the same thin comp. If the guard
@@ -718,11 +709,23 @@ def _apply_thin_comp_guard(
     # the guard was otherwise quiet — those cases reflect real non-comp
     # issues (e.g. scam indicators) and the verdict should stand.
     verdict_val = data.get("verdict")
+    verdict_rewritten = False
     if isinstance(verdict_val, str) and (modified or _is_comp_driven(verdict_val)):
         if verdict_val != neutral_verdict:
             data["verdict"] = neutral_verdict
             modified = True
+            verdict_rewritten = True
             log.info(f"[ThinCompGuard] Neutralized verdict '{verdict_val}' → '{neutral_verdict}'")
+
+    # Score floor — activate on ANY comp-driven rewrite (flag strip, summary/
+    # value_assessment rewrite, OR verdict neutralization). Prevents a
+    # residual <4 score when Claude anchored the score to thin comps via
+    # verdict-only language. Placed AFTER verdict neutralization so the
+    # verdict-only comp-anchor case is covered.
+    if (flags_stripped or text_rewritten or verdict_rewritten) and int(data.get("score", 5) or 5) < 4:
+        data["score"] = 4
+        modified = True
+        log.info("[ThinCompGuard] Floored score to 4 (was anchored to thin comps)")
 
     if asking > 0:
         raw_offer = data.get("recommended_offer")

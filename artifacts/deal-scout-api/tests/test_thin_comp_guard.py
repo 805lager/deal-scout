@@ -106,6 +106,26 @@ def test_score_floor_when_only_summary_is_comp_driven():
     assert out["recommended_offer"] >= 0.5 * listing["price"]
 
 
+def test_score_floor_fires_on_verdict_only_comp_anchor():
+    """When the ONLY comp-driven signal is verdict text, score must still
+    be floored to 4 (no comp-driven red_flags, no comp-driven summary)."""
+    listing = {"price": 120.0}
+    market_value = {"confidence": "low", "sold_count": 1, "estimated_value": 20.0}
+    data = {
+        "score": 2,
+        "verdict": "Price far exceeds fair market value",
+        "summary": "Item appears authentic but overpriced for this category.",
+        "value_assessment": "Poor value relative to similar items.",
+        "red_flags": [],
+        "recommended_offer": 20.0,
+        "confidence": "low",
+    }
+    out, modified = _apply_thin_comp_guard(data, listing, market_value)
+    assert modified is True
+    assert out["score"] >= 4, f"Score must be floored when verdict was comp-driven, got {out['score']}"
+    assert "exceeds" not in out["verdict"].lower()
+
+
 def test_verdict_neutralized_even_when_not_comp_phrased():
     """A plain 'AVOID' verdict must be rewritten when the guard fires."""
     listing = {"price": 300.0}
