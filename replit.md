@@ -135,7 +135,36 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 ## Extension Version
 
-Current: **v0.42.0** (extension) / **v0.42.0** (API)
+Current: **v0.42.1** (extension) / **v0.42.1** (API)
+
+### v0.42.1 eBay Auction Mode — DOM extraction + display consistency
+- **Extractor robustness in `extension/content/ebay.js`**: Modern eBay auction
+  pages render text without literal "Current bid:" / "Time left:" labels
+  (e.g. `"$152.50\n8 bidsEnds in 3d 22h"`). Fixed:
+  - `bid_count` regex no longer requires a trailing word boundary (eBay's text
+    can be concatenated like `8 bidsEnds`).
+  - `time_left_text` accepts `"Ends in Xd Yh"` and standalone `"Xd Yh left"`
+    in addition to the old `"Time left:"` form.
+  - `current_bid` falls back to the $ price nearest the bid-count text or the
+    "Place bid" button when no explicit "Current bid" label exists.
+- **UI fallback bug fixed**: `renderAuctionHeader` / `renderAuctionAdvice` no
+  longer fall back to `r.price` when `auction_advice.current_bid` is 0 — that
+  was displaying the suggested-max-bid override as the current bid.
+- **Market Comparison row label**: For pure auctions the "Listed price" row
+  now reads "Current bid" and uses the real bid (not the override) for the
+  delta, with neutral coloring + "(current bid)" suffix to communicate the
+  price will rise.
+- **Deal-scorer summary swap**: For pure auctions the response `summary` is
+  now the auction-advice reasoning ("Bid up to $X for a strong deal..."),
+  not the Claude prose that referenced the override price.
+- **Layer 2 security auction context**: `run_layer2` accepts `is_auction`,
+  `auction_current_bid`, `market_sold_avg` and uses an auction-aware price
+  block ("Current bid: $X (auction in progress; typical sold ~$Y)") plus an
+  AUCTION CONTEXT block instructing Claude not to flag the bid as
+  below-market. Defense-in-depth post-process: AI flags matching price-anomaly
+  patterns are dropped for auctions, and the AI score is boosted by ~1.5 per
+  dropped flag (capped at +3) so the merged security score isn't punished
+  for a flag we hide from the user.
 
 ### v0.42.0 eBay Auction Mode
 - **Auction detection in `extension/content/ebay.js`**: `extractAuctionData()` parses

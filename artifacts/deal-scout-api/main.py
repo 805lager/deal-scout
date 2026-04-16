@@ -1337,6 +1337,16 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
             if listing.is_vehicle and _prelim_category not in _SPECIFIC_VEHICLE_CATS_S:
                 _prelim_category = "vehicles"
 
+            # Surface auction current_bid on the listing object so the security
+            # scorer's Layer 2 prompt can show "Current bid: $X (auction; ~$Y typical)"
+            # instead of the override price, which Claude would otherwise read as
+            # "$344 vs $800-1200 retail = severe price anomaly".
+            if _auction_only_mode and _current_bid > 0:
+                try:
+                    setattr(listing, "auction_current_bid", float(_current_bid))
+                except Exception:
+                    pass
+
             _security_task = asyncio.create_task(
                 asyncio.wait_for(
                     score_security(
@@ -1503,7 +1513,16 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                 active_items_sample = active_items_sample,
                 score               = deal_score.score,
                 verdict             = deal_score.verdict,
-                summary             = deal_score.summary,
+                # For pure auctions, the deal-scorer's summary text references
+                # the override price (suggested_max_bid) and is misleading
+                # ("priced at $344 which is 10% above market"). Replace it
+                # with the auction_advice reasoning so the user sees a
+                # consistent message about the bid range.
+                summary             = (
+                    auction_advice.get("reasoning") or deal_score.summary
+                    if _auction_only_mode and auction_advice.get("reasoning")
+                    else deal_score.summary
+                ),
                 value_assessment    = deal_score.value_assessment,
                 condition_notes     = deal_score.condition_notes,
                 red_flags           = deal_score.red_flags,
@@ -1831,7 +1850,7 @@ async def test_claude(
     except Exception as e:
         return {"status": "error", "detail": str(e)}
 
-BACKEND_VERSION = "0.42.0"
+BACKEND_VERSION = "0.42.1"
 
 @app.get("/privacy", response_class=HTMLResponse)
 async def privacy_policy():

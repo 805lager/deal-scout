@@ -172,8 +172,20 @@
     //   "Time left:" countdown
     const hasCurrentBidLabel = /current\s+bid\s*:?/i.test(text) || /starting\s+bid\s*:?/i.test(text);
     const hasPlaceBidBtn     = /place\s+bid\b/i.test(text) || /\bbid\s+now\b/i.test(text);
-    const bidCountMatch      = text.match(/\((\d+)\s+bids?\)|(\d+)\s+bids?\b/i);
-    const timeLeftMatch      = text.match(/time\s+left\s*:?\s*([^\n\r]{1,60})/i);
+    // Bid count: eBay sometimes renders concatenated text like "8 bidsEnds in 3d"
+    // (no whitespace), so we cannot require a trailing word boundary. Accept
+    // either the "(N bids)" parenthetical form or "N bid(s)" followed by ANY
+    // non-digit character (or end of string).
+    const bidCountMatch      = text.match(/\((\d+)\s+bids?\)/i) ||
+                               text.match(/(\d+)\s+bids?(?:[^a-z0-9]|$)/i) ||
+                               text.match(/(\d+)\s+bids?([A-Z])/);
+    // Time left: modern eBay shows "Ends in 3d 22h" or "Ends Mon, Apr 21" or
+    // "3d 22h left" instead of literal "Time left:". Accept several variants.
+    const timeLeftMatch =
+        text.match(/time\s+left\s*:?\s*([^\n\r]{1,60})/i) ||
+        text.match(/ends\s+in\s+([^\n\r]{1,40}?)(?:[A-Z][a-z]{2}day|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|\n|$)/i) ||
+        text.match(/\b(\d+d\s*\d+h(?:\s*\d+m)?)\s+left\b/i) ||
+        text.match(/ends\s+in\s+(\d+d\s*\d+h)/i);
     const hasTimeLeft        = !!timeLeftMatch;
 
     // Buy It Now signals (may co-exist with auction on hybrid listings)
@@ -189,7 +201,11 @@
       }
     }
 
-    // Current bid amount — first $ price near "Current bid" label
+    // Current bid amount — try several anchors in order of reliability:
+    //  1. First $ price near "Current bid" / "Starting bid" label
+    //  2. First $ price within ~150 chars BEFORE "X bids" text (modern eBay
+    //     shows "$152.50\n8 bids" with no explicit label)
+    //  3. First $ price within ~250 chars BEFORE the "Place bid" button
     let currentBid = 0;
     const cbIdx = lower.indexOf("current bid");
     const sbIdx = lower.indexOf("starting bid");
@@ -198,6 +214,27 @@
       const windowText = text.slice(bidLabelIdx, bidLabelIdx + 200);
       const priceMatch = windowText.match(/\$\s*([\d,]+(?:\.\d{2})?)/);
       if (priceMatch) currentBid = parseFloat(priceMatch[1].replace(/,/g, "")) || 0;
+    }
+    if (!currentBid && bidCountMatch && bidCountMatch.index !== undefined) {
+      const bcIdx = bidCountMatch.index;
+      const windowText = text.slice(Math.max(0, bcIdx - 150), bcIdx);
+      const prices = windowText.match(/\$\s*[\d,]+(?:\.\d{2})?/g);
+      if (prices && prices.length) {
+        // Take the price closest to the "X bids" text (last in the slice)
+        const last = prices[prices.length - 1];
+        currentBid = parseFloat(last.replace(/[^\d.]/g, "")) || 0;
+      }
+    }
+    if (!currentBid && hasPlaceBidBtn) {
+      const pbIdx = lower.search(/place\s+bid|bid\s+now/);
+      if (pbIdx >= 0) {
+        const windowText = text.slice(Math.max(0, pbIdx - 250), pbIdx);
+        const prices = windowText.match(/\$\s*[\d,]+(?:\.\d{2})?/g);
+        if (prices && prices.length) {
+          const last = prices[prices.length - 1];
+          currentBid = parseFloat(last.replace(/[^\d.]/g, "")) || 0;
+        }
+      }
     }
 
     const isAuction = hasCurrentBidLabel || hasPlaceBidBtn || hasTimeLeft;
@@ -363,7 +400,10 @@
   // strategy instead.
   function renderAuctionHeader(r, container) {
     const a = r.auction_advice || {};
-    const curBid = a.current_bid || r.price || 0;
+    // IMPORTANT: do NOT fall back to r.price — for pure auctions r.price has
+    // been overridden to suggested_max_bid by the backend, so falling back
+    // would display the bid ceiling as if it were the current bid.
+    const curBid = a.current_bid || 0;
     const bids = a.bid_count || 0;
     const timeLeft = a.time_left || "";
 
@@ -415,7 +455,10 @@
     const maxBid = a.suggested_max_bid || 0;
     const walkAway = a.walk_away_price || 0;
     const market = a.market_avg || r.sold_avg || 0;
-    const curBid = a.current_bid || r.price || 0;
+    // Do NOT fall back to r.price — for pure auctions r.price is the
+    // suggested_max_bid override, which would mis-paint "current bid" green
+    // even when we have no real current_bid value.
+    const curBid = a.current_bid || 0;
 
     const section = document.createElement("div");
     section.style.cssText = "background:linear-gradient(135deg,rgba(124,58,237,0.10),rgba(34,197,94,0.05));border:1px solid rgba(124,58,237,0.28);border-radius:10px;padding:11px 12px;margin:10px 12px 0";
@@ -493,13 +536,31 @@
     hdr.textContent = "📈 Market Comparison";
     section.appendChild(hdr);
 
+    // For pure auctions r.price is the suggested_max_bid override, not what
+    // the user is actually paying. Substitute the real current_bid (or the
+    // BIN price for hybrid listings) and label it appropriately.
+    const aa = r.auction_advice || {};
+    const isPureAuction = aa.is_auction && aa.mode !== "secondary";
+    const isHybrid = aa.is_auction && aa.mode === "secondary";
+    let priceRowLabel = "Listed price";
+    let priceRowValue = r.price || 0;
+    let comparePrice = r.price || 0;  // used for the "X below/above market" delta
+    if (isPureAuction) {
+      priceRowLabel = "Current bid";
+      priceRowValue = aa.current_bid || 0;
+      comparePrice = aa.current_bid || 0;
+    } else if (isHybrid) {
+      priceRowLabel = "Buy It Now price";
+      // r.price is already the BIN price for hybrids — keep it
+    }
+
     const ps = "$";
     const rows = [];
     if (r.sold_avg)   rows.push({ label: "eBay sold avg",   value: ps + r.sold_avg.toFixed(0),   bold: true });
     if (r.active_avg) rows.push({ label: "Active listings", value: ps + r.active_avg.toFixed(0) });
     if (r.new_price)  rows.push({ label: "New retail",      value: ps + r.new_price.toFixed(0) });
     if (r.craigslist_asking_avg > 0) rows.push({ label: "CL asking avg", value: ps + r.craigslist_asking_avg.toFixed(0), note: "(" + (r.craigslist_count || 0) + " local)" });
-    rows.push({ label: "Listed price", value: ps + (r.price || 0).toFixed(0) });
+    rows.push({ label: priceRowLabel, value: ps + priceRowValue.toFixed(0) });
 
     for (const row of rows) {
       const el = document.createElement("div");
@@ -509,13 +570,18 @@
       section.appendChild(el);
     }
 
-    if (r.sold_avg && r.price) {
-      const delta = r.price - r.sold_avg;
+    // Suppress the misleading "X below market" delta for pure auctions when
+    // we don't have a real current_bid — otherwise it would show "$0 below
+    // market". For pure auctions WITH a current bid, label it as "vs market"
+    // (not "below") since the price will rise.
+    if (r.sold_avg && comparePrice > 0) {
+      const delta = comparePrice - r.sold_avg;
       const pct = Math.abs(Math.round((delta / r.sold_avg) * 100));
       const isBelow = delta < 0;
       const deltaEl = document.createElement("div");
-      deltaEl.style.cssText = "margin-top:6px;font-size:12px;font-weight:600;color:" + (isBelow ? "#22c55e" : "#ef4444");
-      deltaEl.textContent = "● $" + Math.abs(delta).toFixed(0) + (isBelow ? " below" : " above") + " market (" + (isBelow ? "-" : "+") + pct + "%)";
+      deltaEl.style.cssText = "margin-top:6px;font-size:12px;font-weight:600;color:" + (isPureAuction ? "#9ca3af" : (isBelow ? "#22c55e" : "#ef4444"));
+      const verb = isPureAuction ? (isBelow ? "below" : "above") + " market (current bid)" : (isBelow ? "below" : "above") + " market";
+      deltaEl.textContent = "● $" + Math.abs(delta).toFixed(0) + " " + verb + " (" + (isBelow ? "-" : "+") + pct + "%)";
       section.appendChild(deltaEl);
     }
     if (r.ai_notes) {

@@ -306,7 +306,7 @@ Analyze this listing and return ONLY valid JSON with no markdown, no explanation
 
 Listing to analyze:
 Title: {title}
-Price: ${price}
+{price_block}
 Description: {description}
 Condition: {condition}
 Seller joined: {seller_joined}
@@ -314,6 +314,7 @@ Seller rating: {seller_rating}
 Photos provided: {photo_count}
 Category: {category}
 Layer 1 flags already detected: {layer1_flags}
+{auction_note}
 
 Return this exact JSON structure:
 {{
@@ -370,6 +371,9 @@ async def run_layer2(
     layer1_flags: list,
     client: anthropic.Anthropic,
     effective_title: str = "",  # normalized title from product_extractor — fixes NameError
+    is_auction: bool = False,
+    auction_current_bid: float = 0.0,
+    market_sold_avg: float = 0.0,
 ) -> dict:
     """
     Claude Haiku security analysis. Returns parsed JSON dict or raises.
@@ -412,9 +416,33 @@ async def run_layer2(
 
     # Use effective_title if passed, fall back to raw listing title
     title_for_prompt = (effective_title or listing.title or "")[:100]
+
+    # Build price block + auction note. For pure auctions we explicitly tell
+    # the AI this is an auction-in-progress with current bid + market context,
+    # so it stops flagging "$X vs ~$retail" as a severe price anomaly. The
+    # actual scoring price (listing.price) is the suggested_max_bid override,
+    # but Claude needs to see the real current bid + market avg.
+    if is_auction and auction_current_bid > 0:
+        if market_sold_avg > 0:
+            price_block = (
+                f"Current bid: ${auction_current_bid:.0f} (auction in progress; "
+                f"typical sold price for this item ~${market_sold_avg:.0f})"
+            )
+        else:
+            price_block = f"Current bid: ${auction_current_bid:.0f} (auction in progress)"
+        auction_note = (
+            "\nAUCTION CONTEXT: This is a live auction. The current bid will rise "
+            "before the listing ends — do NOT flag the current bid as 'below market' "
+            "or as a price anomaly. Focus on seller trust, item authenticity, "
+            "description quality, and item-specific risks (BIOS lock, iCloud lock, etc.)."
+        )
+    else:
+        price_block = f"Price: ${listing.price}"
+        auction_note = ""
+
     prompt = SECURITY_PROMPT.format(
         title         = title_for_prompt,  # normalized title, not raw seller text
-        price         = listing.price,
+        price_block   = price_block,
         description   = (listing.description or "")[:600],
         condition     = listing.condition or "unknown",
         seller_joined = seller_joined,
@@ -422,6 +450,7 @@ async def run_layer2(
         photo_count   = photo_str,
         category      = category,
         layer1_flags  = layer1_summary,
+        auction_note  = auction_note,
     )
 
     from scoring import claude_call_with_retry
@@ -511,8 +540,17 @@ async def score_security(
     ai_result = {}
     if anthropic_client is not None:
         try:
+            # For auctions, pass current_bid + sold_avg so Claude doesn't flag
+            # the auction starting price as a "severe price anomaly".
+            _auction_cur_bid = float(getattr(listing, "auction_current_bid", 0) or 0)
+            _market_sold_avg = float(getattr(market_value, "sold_avg", 0) or 0)
             ai_result = await asyncio.wait_for(
-                run_layer2(listing, category, l1_flags, anthropic_client, effective_title),
+                run_layer2(
+                    listing, category, l1_flags, anthropic_client, effective_title,
+                    is_auction=is_auction,
+                    auction_current_bid=_auction_cur_bid,
+                    market_sold_avg=_market_sold_avg,
+                ),
                 timeout=8.0,
             )
             log.info(f"[Security] Layer 2: score={ai_result.get('score')} risk={ai_result.get('risk_level')}")
@@ -562,6 +600,42 @@ async def score_security(
         return False
 
     deduped_ai_flags = [f for f in ai_flags if not _is_covered_by_l1(f)]
+
+    # For auctions, drop AI flags that complain about price being low/anomalous.
+    # Claude Haiku frequently ignores the "do NOT flag price" instruction in the
+    # auction context because its training-data prior on retail prices overrides
+    # explicit instructions. The current bid is ALWAYS lower than market on a
+    # live auction — that is the entire point of an auction — so price-anomaly
+    # flags are noise here. Bid guidance is communicated via auction_advice.
+    if is_auction:
+        _PRICE_ANOMALY_PATTERNS = (
+            "below market", "low price", "extremely low", "underpriced",
+            "severe price", "price anomaly", "vs ~$", "vs $",
+            "typical retail", "typically $", "this price point",
+            "too good to be true", "abnormally low",
+        )
+        def _is_price_anomaly_flag(flag: str) -> bool:
+            low = flag.lower()
+            for phrase in _PRICE_ANOMALY_PATTERNS:
+                if phrase in low:
+                    return True
+            return False
+        before = len(deduped_ai_flags)
+        deduped_ai_flags = [f for f in deduped_ai_flags if not _is_price_anomaly_flag(f)]
+        dropped = before - len(deduped_ai_flags)
+        if dropped > 0:
+            log.info(f"[Security][Auction] Dropped {dropped} price-anomaly flag(s)")
+            # Claude's score is heavily driven by the dominant flag(s) it lists.
+            # If we just filtered out a price-anomaly flag, the score Claude
+            # returned is artificially low for our actual policy. Boost the AI
+            # score by ~1.5 per dropped price flag (capped at +3) so the final
+            # blended security score reflects only the remaining real concerns.
+            _ai_sc = ai_result.get("score")
+            if isinstance(_ai_sc, (int, float)):
+                boost = min(3, int(round(dropped * 1.5)))
+                ai_result["score"] = min(10, _ai_sc + boost)
+                log.info(f"[Security][Auction] Boosted AI score {_ai_sc} → {ai_result['score']} (+{boost})")
+
     all_flags = list(dict.fromkeys(l1_messages + deduped_ai_flags))
 
     risk_level     = _score_to_risk(final_score)
