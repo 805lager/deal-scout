@@ -315,6 +315,22 @@ Photos provided: {photo_count}
 Category: {category}
 Layer 1 flags already detected: {layer1_flags}
 {auction_note}
+{page_text_block}
+
+CRITICAL — Avoid hallucinating missing-info flags:
+- The "Listing page text" block above (when present) is the actual raw text
+  from the listing page, including "Item specifics" / spec tables, return
+  policy, shipping info, and seller details. READ IT before flagging.
+- If item specifics like Brand, Model, Storage, RAM, Color, Condition,
+  MPN, UPC are present in the page text, you MUST NOT flag "no specs
+  provided", "minimal description", or "no model/storage/RAM details".
+- If a return policy line is present (e.g. "Returns: Seller does not
+  accept returns" or "30-day returns"), you MUST NOT flag "no mention
+  of return policy" — instead, you may note the policy itself if it is
+  unfavorable.
+- If shipping is listed, do not flag "no shipping information".
+- Only flag information that is genuinely absent from BOTH the description
+  AND the page text.
 
 Return this exact JSON structure:
 {{
@@ -374,6 +390,7 @@ async def run_layer2(
     is_auction: bool = False,
     auction_current_bid: float = 0.0,
     market_sold_avg: float = 0.0,
+    raw_text: str = "",
 ) -> dict:
     """
     Claude Haiku security analysis. Returns parsed JSON dict or raises.
@@ -440,17 +457,33 @@ async def run_layer2(
         price_block = f"Price: ${listing.price}"
         auction_note = ""
 
+    # Surface raw page text (item specifics, return policy, shipping etc.) so
+    # Claude doesn't hallucinate "no specs / no return info" when the listing
+    # actually contains them. The summarized `description` field loses this
+    # detail. Truncate to ~2400 chars to leave room for the rest of the prompt.
+    page_text_excerpt = (raw_text or "").strip()[:2400]
+    if page_text_excerpt:
+        page_text_block = (
+            "\nListing page text (raw, includes Item specifics / shipping / returns):\n"
+            "-----\n"
+            f"{page_text_excerpt}\n"
+            "-----"
+        )
+    else:
+        page_text_block = ""
+
     prompt = SECURITY_PROMPT.format(
-        title         = title_for_prompt,  # normalized title, not raw seller text
-        price_block   = price_block,
-        description   = (listing.description or "")[:600],
-        condition     = listing.condition or "unknown",
-        seller_joined = seller_joined,
-        seller_rating = seller_rating,
-        photo_count   = photo_str,
-        category      = category,
-        layer1_flags  = layer1_summary,
-        auction_note  = auction_note,
+        title           = title_for_prompt,  # normalized title, not raw seller text
+        price_block     = price_block,
+        description     = (listing.description or "")[:600],
+        condition       = listing.condition or "unknown",
+        seller_joined   = seller_joined,
+        seller_rating   = seller_rating,
+        photo_count     = photo_str,
+        category        = category,
+        layer1_flags    = layer1_summary,
+        auction_note    = auction_note,
+        page_text_block = page_text_block,
     )
 
     from scoring import claude_call_with_retry
@@ -544,10 +577,12 @@ async def score_security(
             # the auction starting price as a "severe price anomaly".
             _auction_cur_bid = float(getattr(listing, "auction_current_bid", 0) or 0)
             _market_sold_avg = float(getattr(market_value, "sold_avg", 0) or 0)
+            _raw_text = getattr(listing, "raw_text", "") or ""
             ai_result = await asyncio.wait_for(
                 run_layer2(
                     listing, category, l1_flags, anthropic_client, effective_title,
                     is_auction=is_auction,
+                    raw_text=_raw_text,
                     auction_current_bid=_auction_cur_bid,
                     market_sold_avg=_market_sold_avg,
                 ),
@@ -581,6 +616,83 @@ async def score_security(
 
     deduped_ai_flags = [f for f in ai_flags if not _is_covered_by_l1(f)]
 
+    # ---- Page-text-aware hallucination filter ----
+    # Even with the page text in the prompt and explicit "do not flag" rules,
+    # Claude Haiku sometimes still emits boilerplate "missing specs / no
+    # storage / no return policy" flags driven by category priors. Drop those
+    # when the raw page text actually CONTAINS the data the AI claims is missing.
+    _page_text_lower = (getattr(listing, "raw_text", "") or "").lower()
+    if _page_text_lower:
+        # Tokens that, if present in page text, invalidate a "missing X" flag
+        _SPEC_PRESENCE_MAP = (
+            # (page-text tokens that prove presence, flag-text tokens that mean
+            #  the AI is claiming this same thing is absent)
+            (("ssd", "storage", "256 gb", "512 gb", "1 tb", "hard drive"),
+                ("storage", "ssd", "hard drive")),
+            (("ram size", "memory", "ddr", " gb ram", "8 gb", "16 gb"),
+                ("ram", "memory")),
+            (("color", "space gray", "silver", "gold", "black", "white"),
+                ("color",)),
+            (("processor", "cpu", "intel", "amd", "apple m"),
+                ("processor", "cpu", "model")),
+            (("returns:", "return policy", "return window", "30-day return",
+              "no returns", "does not accept returns"),
+                ("return policy", "no return", "no mention of return",
+                 "return information")),
+            (("shipping:", "ships ", "shipping cost", "free shipping",
+              "usps", "ups ", "fedex"),
+                ("shipping information", "no shipping", "shipping unknown")),
+            (("condition:", "used", "new", "refurbished", "pre-owned"),
+                ("condition details", "no condition", "condition unknown")),
+            (("brand", "manufacturer"),
+                ("brand", "manufacturer unknown")),
+            (("mpn", "upc", "model number", "part number", "serial"),
+                ("model number", "no mpn", "no upc")),
+        )
+
+        def _is_hallucinated_missing_flag(flag: str) -> bool:
+            low = flag.lower()
+            # "missing", "no", "lacks", "absent", "without", "unknown",
+            # "unspecified", "not provided", "minimal", "vague", "no specifics"
+            if not any(neg in low for neg in (
+                "missing", "no specs", "no specific", "no model",
+                "no storage", "no ram", "no color", "no condition",
+                "no return", "no shipping", "no battery",
+                "lacks ", "without ", "absent", "unknown",
+                "not provided", "not mentioned", "not specified",
+                "minimal description", "minimal product",
+                "vague description", "insufficient",
+            )):
+                return False
+            for page_tokens, flag_tokens in _SPEC_PRESENCE_MAP:
+                if any(t in low for t in flag_tokens) and any(
+                    t in _page_text_lower for t in page_tokens
+                ):
+                    return True
+            return False
+
+        before_h = len(deduped_ai_flags)
+        deduped_ai_flags = [
+            f for f in deduped_ai_flags if not _is_hallucinated_missing_flag(f)
+        ]
+        dropped_h = before_h - len(deduped_ai_flags)
+        if dropped_h > 0:
+            log.info(
+                f"[Security] Dropped {dropped_h} hallucinated 'missing info' "
+                f"flag(s) — page text contained the data"
+            )
+
+        # Same hallucination filter against item_risks (the user-facing
+        # "warnings" list concatenates flags + item_risks; un-filtered
+        # item_risks were leaking through as the user's complaint shows).
+        before_ir = len(item_risks)
+        item_risks = [r for r in item_risks if not _is_hallucinated_missing_flag(r)]
+        if before_ir != len(item_risks):
+            log.info(
+                f"[Security] Dropped {before_ir - len(item_risks)} hallucinated "
+                f"item_risk(s) where page text contained the data"
+            )
+
     # For auctions, drop AI flags that complain about price being low/anomalous.
     # Claude Haiku frequently ignores the "do NOT flag price" instruction in the
     # auction context because its training-data prior on retail prices overrides
@@ -593,6 +705,13 @@ async def score_security(
             "severe price", "price anomaly", "vs ~$", "vs $",
             "typical retail", "typically $", "this price point",
             "too good to be true", "abnormally low",
+            # AI often phrases price-derived theft/lock suspicion as
+            # "Price suggests potential stolen / iCloud-locked / water-damaged".
+            # On a live auction the bid is supposed to start low — that's not
+            # evidence of any of those things.
+            "price suggests", "price indicates", "price implies",
+            "low price suggests", "low price indicates",
+            "suspiciously low", "unrealistically low",
         )
         def _is_price_anomaly_flag(flag: str) -> bool:
             low = flag.lower()

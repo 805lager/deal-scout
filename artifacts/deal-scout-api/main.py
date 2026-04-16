@@ -257,8 +257,15 @@ class ListingRequest(BaseModel):
     photo_count:    int  = 0               # True number of listing photos (carousel total, not just sent to API)
     platform:       str  = "facebook_marketplace"  # Source platform: facebook_marketplace | craigslist | ebay | offerup
 
-    class Config:
-        json_schema_extra = {
+    # Allow ad-hoc attributes (auction_current_bid, raw_text, etc.) to be
+    # attached to instances via setattr after construction. Pydantic v2
+    # rejects unknown-field setattr by default — without extra="allow", the
+    # try/except blocks in the streaming pipeline silently swallow the
+    # failure and the security scorer never sees the data. This is a v2
+    # behavior change vs v1, hence the explicit override.
+    model_config = {
+        "extra": "allow",
+        "json_schema_extra": {
             "example": {
                 "title":       "Orion SkyQuest XT8 Intelliscope Dobsonian Telescope",
                 "price":       500.0,
@@ -269,7 +276,8 @@ class ListingRequest(BaseModel):
                 "seller_name": "Tyler O'Connor-Hoy",
                 "listing_url": "https://www.facebook.com/marketplace/item/123"
             }
-        }
+        },
+    }
 
 
 class RawListingRequest(BaseModel):
@@ -1329,8 +1337,21 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                 "shipping_cost":  listing.shipping_cost,
                 "image_urls":     listing.image_urls or [],
                 "photo_count":    listing.photo_count,
+                # Pass the raw page text through so the deal scorer can see
+                # item specifics, return policy, shipping etc. that were
+                # stripped from the summarized `description`.
+                "raw_text":       raw.raw_text,
             }
             all_image_urls = listing.image_urls or []
+
+            # Also surface raw_text on the listing object so the security
+            # scorer's Layer 2 prompt can quote item specifics directly and
+            # stop hallucinating "no specs / no return policy" when the page
+            # actually contains them.
+            try:
+                setattr(listing, "raw_text", raw.raw_text)
+            except Exception:
+                pass
 
             _prelim_category = detect_category(product_info)
             _SPECIFIC_VEHICLE_CATS_S = {"cars", "trucks", "rvs", "trailers", "boats"}
@@ -1850,7 +1871,7 @@ async def test_claude(
     except Exception as e:
         return {"status": "error", "detail": str(e)}
 
-BACKEND_VERSION = "0.42.1"
+BACKEND_VERSION = "0.42.2"
 
 @app.get("/privacy", response_class=HTMLResponse)
 async def privacy_policy():

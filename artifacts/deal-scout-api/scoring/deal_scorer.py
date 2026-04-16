@@ -93,6 +93,31 @@ class DealScore:
 
 # ── Prompt Builder ────────────────────────────────────────────────────────────
 
+def _page_text_block(listing: dict) -> str:
+    """
+    Return a labeled excerpt of the raw page text (Item specifics, returns,
+    shipping etc.) when present. The summarized `description` field strips
+    these details and Claude then hallucinates "no specs / no return policy"
+    flags. Capped at ~2400 chars so we leave room for the rest of the prompt.
+    """
+    raw = (listing.get("raw_text") or "").strip()
+    if not raw:
+        return ""
+    excerpt = raw[:2400]
+    return (
+        "Page text (raw, includes Item specifics / shipping / returns):\n"
+        "-----\n"
+        f"{excerpt}\n"
+        "-----\n"
+        "If the page text above lists specs (Brand, Model, Storage, RAM, "
+        "MPN, UPC, Color etc.), do NOT flag 'no specs', 'minimal description' "
+        "or 'no model/storage details'. If it shows a return policy, do NOT "
+        "flag 'no mention of return policy' — note the actual policy instead. "
+        "Only flag information that is genuinely absent from BOTH the "
+        "Description AND the page text above."
+    )
+
+
 def _format_seller_trust(trust: dict) -> str:
     """
     Format seller trust data for the Claude prompt.
@@ -312,7 +337,7 @@ Location:     {listing.get('location', 'Unknown')}
 Seller:       {listing.get('seller_name', 'Unknown')}
 Bundle/Set:   {'Yes — see multi-item instructions above' if is_multi else 'No — single item'}{photos_line}
 Description:  {listing.get('description', 'No description provided')}
-
+{_page_text_block(listing)}
 ## SELLER TRUST
 {_format_seller_trust(listing.get('seller_trust', {}))}
 

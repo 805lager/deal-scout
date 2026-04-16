@@ -135,7 +135,41 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 ## Extension Version
 
-Current: **v0.42.1** (extension) / **v0.42.1** (API)
+Current: **v0.42.2** (extension) / **v0.42.2** (API)
+
+### v0.42.2 eBay Auction Mode — Pydantic v2 setattr fix + AI hallucination filter
+- **ROOT CAUSE: Pydantic v2 silently rejected setattr** — `ListingRequest`
+  used legacy `class Config` syntax. In Pydantic v2 (vs v1), setting
+  attributes that aren't declared fields raises an exception. The streaming
+  pipeline wraps both `setattr(listing, "auction_current_bid", ...)` and the
+  new `setattr(listing, "raw_text", ...)` in `try/except: pass` blocks, so
+  the failures were silent — the security scorer never saw the auction
+  current bid OR the raw page text. Fixed by switching to
+  `model_config = {"extra": "allow", ...}`.
+- **Page text now flows to scorers**: With setattr working, `raw_text`
+  reaches both `score_security` (via listing attribute) and `score_deal`
+  (via `listing_dict["raw_text"]`). The Layer 2 prompt now includes a
+  dedicated "Listing page text" block with item specifics, return policy,
+  and shipping info that the summarized `description` field had been
+  stripping out.
+- **Page-text-aware hallucination filter** in `security_scorer.run_layer2`:
+  Even with the page text in the prompt, Claude Haiku still emits boilerplate
+  "missing specs / no storage / no return policy" warnings driven by
+  category priors. Added a post-process filter that drops any AI flag or
+  item_risk that claims "missing X" or "no X" when the raw page text
+  actually contains tokens proving X is present. Examples:
+    * "no storage details" + page contains "SSD"/"256 GB" → dropped
+    * "no return policy" + page contains "Returns:"/"30-day return" → dropped
+    * "no model number" + page contains "MPN"/"UPC" → dropped
+- **Expanded auction price-anomaly patterns**: Added "price suggests",
+  "price indicates", "price implies", "suspiciously low", "unrealistically
+  low" so AI flags like "Price suggests potential stolen / iCloud-locked
+  / water-damaged unit" no longer leak through on auctions where the
+  current bid is supposed to start low.
+- **Result on the user-reported MacBook M1 auction** ($152.50, 8 bids):
+  security score went from 6/medium with 6 mostly-hallucinated warnings
+  to 8/low with 4 real concerns (no specs section, no photos, BIOS lock
+  reminder, request cosmetic photos).
 
 ### v0.42.1 eBay Auction Mode — DOM extraction + display consistency
 - **Extractor robustness in `extension/content/ebay.js`**: Modern eBay auction
