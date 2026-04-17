@@ -135,7 +135,28 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 ## Extension Version
 
-Current: **v0.42.3** (extension) / **v0.42.3** (API)
+Current: **v0.42.4** (extension) / **v0.42.4** (API)
+
+### v0.42.4 Auto-score on/off toggle in popup
+- **User request**: Some users browse listings without wanting the Deal Scout
+  panel to pop up automatically — they only want to score on demand.
+- **Popup UI**: Added a labeled switch ("Auto-score on page load") in
+  `extension/popup/popup.html` + `popup.js`. State is persisted in
+  `chrome.storage.local` under `ds_auto_score` (default ON / true). Toggle
+  is read on popup open and written on change.
+- **Content-script gating** (all 4 scripts): Added a `_dsAutoScoreEnabled()`
+  helper that reads the same key. Gated the auto-trigger sites only:
+    * `fbm.js`: initial `autoScore()` on listing load + bg-reinjection rescan
+      timer
+    * `craigslist.js`: `tryInit()` initial scoring
+    * `offerup.js`: `waitForContent()` -> auto-score on title-change &
+      fallback timeout
+    * `ebay.js`: initial 1500ms auto-score timer
+  The `RESCORE` message handler (used by the popup's "Score Current Listing"
+  button) and the in-panel manual RESCORE button continue to fire
+  unconditionally, so users can still score on demand when auto-score is OFF.
+- **No backend changes** — purely a client-side gating change. API call is
+  never made when auto-score is off and the user doesn't click the button.
 
 ### v0.42.3 Thin-comp market guard — stop single-comp AVOID verdicts
 - **User report**: Nephrite jade money toad listing ($399 + $60.51 ship, 25 lb

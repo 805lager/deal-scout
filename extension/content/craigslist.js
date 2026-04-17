@@ -919,11 +919,23 @@
     return true;
   });
 
+  // ── Auto-score preference ──────────────────────────────────────────────────
+  function _dsAutoScoreEnabled() {
+    return new Promise(resolve => {
+      try {
+        chrome.storage.local.get("ds_auto_score", (result) => {
+          resolve(!result || result.ds_auto_score !== false);
+        });
+      } catch { resolve(true); }
+    });
+  }
+
   // ── Init ───────────────────────────────────────────────────────────────────
   let _initiated = false;
-  function tryInit() {
+  async function tryInit() {
     if (_initiated) return;
     if (!isListingPage()) return;
+    if (!(await _dsAutoScoreEnabled())) return;
     _initiated = true;
     autoScore();
   }

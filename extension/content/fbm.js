@@ -142,7 +142,7 @@
       _dsDebugPost('inject-bg', { currListingId: _currListingId });
       renderNavigating();
       clearTimeout(window.__dealScoutRescanTimer);
-      window.__dealScoutRescanTimer = setTimeout(autoScore, 100);
+      window.__dealScoutRescanTimer = setTimeout(() => _dsAutoIfEnabled(() => autoScore()), 100);
     }
     return;
   }
@@ -156,6 +156,20 @@
     });
   } catch (e) {}
 
+  // ── Auto-score preference ─────────────────────────────────────────────────────
+  function _dsAutoScoreEnabled() {
+    return new Promise(resolve => {
+      try {
+        chrome.storage.local.get("ds_auto_score", (result) => {
+          resolve(!result || result.ds_auto_score !== false);
+        });
+      } catch { resolve(true); }
+    });
+  }
+  async function _dsAutoIfEnabled(fn) {
+    if (await _dsAutoScoreEnabled()) fn();
+  }
+
   // ── Page Detection ────────────────────────────────────────────────────────────
 
   function isListingPage() {
@@ -165,7 +179,7 @@
   // ── Auto-score on listing pages ───────────────────────────────────────────────
 
   if (isListingPage()) {
-    autoScore();
+    _dsAutoIfEnabled(() => autoScore());
   }
 
   // ── Message Handler (from background.js / popup) ──────────────────────────────

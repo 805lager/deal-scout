@@ -773,6 +773,19 @@
     }
   }
 
+  function _dsAutoScoreEnabled() {
+    return new Promise(resolve => {
+      try {
+        chrome.storage.local.get("ds_auto_score", (result) => {
+          resolve(!result || result.ds_auto_score !== false);
+        });
+      } catch { resolve(true); }
+    });
+  }
+  async function _dsAutoScoreIfEnabled() {
+    if (await _dsAutoScoreEnabled()) autoScore();
+  }
+
   function waitForContent() {
     // OfferUp React SPA — wait for a NEW title to appear (different from the old listing).
     // window.__dsOUPrevTitle holds the old listing's title (set in onUrlChange).
@@ -786,11 +799,11 @@
       const hasContent    = (document.body.innerText || "").length > 300;
       if (currentTitle && titleChanged && hasContent) {
         window.__dsOUPrevTitle = undefined;
-        autoScore();
+        _dsAutoScoreIfEnabled();
         return;
       }
       if (attempts < 30) setTimeout(check, 400);
-      else autoScore(); // fallback after 12s
+      else _dsAutoScoreIfEnabled(); // fallback after 12s
     };
     check();
   }

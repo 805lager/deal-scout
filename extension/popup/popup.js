@@ -319,5 +319,22 @@ document.getElementById("settings-save").addEventListener("click", async () => {
   checkAPIHealth();
 });
 
+// ── Auto-score toggle ────────────────────────────────────────────────────────
+async function loadAutoScoreToggle() {
+  const cb = document.getElementById("auto-score-toggle");
+  try {
+    const stored = await chrome.storage.local.get("ds_auto_score");
+    cb.checked = stored.ds_auto_score !== false; // default ON
+  } catch {
+    cb.checked = true;
+  }
+  cb.addEventListener("change", async () => {
+    try {
+      await chrome.storage.local.set({ ds_auto_score: cb.checked });
+    } catch {}
+  });
+}
+
+loadAutoScoreToggle();
 checkAPIHealth();
 document.getElementById("version-label").textContent = "v" + EXT_VERSION;
