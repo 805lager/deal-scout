@@ -30,3 +30,4 @@ Use these for DMs to admins, replies to "what tools do you use" threads, and war
 - Always personalize the first line ("saw your post about the [item]")
 - Never paste the Chrome Web Store link in the first message — wait for a yes
 - If they decline, thank them and move on. Do not follow up twice.
+- Reply-to email: dealscout@proton.me
