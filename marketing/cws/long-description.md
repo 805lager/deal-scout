@@ -1,21 +1,3 @@
-# Chrome Web Store Listing Copy
-
-## Title (max 75 chars)
-Deal Scout — AI Deal Scorer for Marketplace, eBay, Craigslist & OfferUp
-
-## Short description (max 132 chars)
-Score Facebook Marketplace, eBay, Craigslist & OfferUp listings with AI + real sold prices. Know if it's a deal — instantly.
-
-## Category
-Shopping
-
-## Language
-English (United States)
-
----
-
-## Detailed description
-
 Stop wondering if you're overpaying. Deal Scout scores secondhand listings the moment you open them, using AI plus real eBay sold-price data — so you walk into every conversation knowing what the item is actually worth.
 
 **Works on the sites you already use**
@@ -49,4 +31,4 @@ Deal Scout is free to use forever. We earn a small affiliate commission only if 
 
 That's it. No copy-pasting titles into another tab, no manual price searches, no spreadsheets. Just open a listing and you'll know if it's worth your message.
 
-Built and updated weekly. Questions, bug reports, or feature requests: hello@dealscout.app
+Built and updated weekly. Questions, bug reports, or feature requests: dealscout@proton.me
