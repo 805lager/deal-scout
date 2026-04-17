@@ -169,7 +169,11 @@
     });
   }
   async function _dsAutoIfEnabled(fn) {
-    if (await _dsAutoScoreEnabled()) fn();
+    if (await _dsAutoScoreEnabled()) {
+      fn();
+    } else {
+      try { removePanel(); } catch (_e) {}
+    }
   }
 
   // ── Page Detection ────────────────────────────────────────────────────────────

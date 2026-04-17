@@ -135,7 +135,17 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 ## Extension Version
 
-Current: **v0.42.4** (extension) / **v0.42.4** (API)
+Current: **v0.42.5** (extension) / **v0.42.4** (API)
+
+### v0.42.5 Auto-score OFF — clean up residual panels
+- **Bug**: With auto-score OFF, a small "📊 Deal Scout ⟳ Loading…" panel
+  could still appear on listings. Cause: residual panels from before the
+  toggle was flipped, or from a navigation that fired before the gate
+  resolved, were left in the DOM.
+- **Fix**: When `_dsAutoIfEnabled` (fbm.js) and `_dsMaybeScore` (offerup.js)
+  see auto-score is OFF, they now `removePanel()` to clear any stale panel
+  in addition to skipping scoring. RESCORE handlers continue to work
+  unconditionally.
 
 ### v0.42.4 Auto-score on/off toggle in popup
 - **User request**: Some users browse listings without wanting the Deal Scout

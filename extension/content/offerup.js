@@ -783,7 +783,11 @@
     });
   }
   async function _dsMaybeScore(force) {
-    if (force || await _dsAutoScoreEnabled()) autoScore();
+    if (force || await _dsAutoScoreEnabled()) {
+      autoScore();
+    } else {
+      try { removePanel(); } catch (_e) {}
+    }
   }
 
   function waitForContent(force = false) {
