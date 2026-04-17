@@ -320,6 +320,14 @@ document.getElementById("settings-save").addEventListener("click", async () => {
 });
 
 // ── Auto-score toggle ────────────────────────────────────────────────────────
+function updateFooterHint(enabled) {
+  const hint = document.getElementById("footer-hint");
+  if (!hint) return;
+  hint.innerHTML = enabled
+    ? 'Navigate to a listing \u2014 scored automatically.<br>Or click <strong>Score Current Listing</strong>.'
+    : 'Auto-score is <strong>off</strong>. Click <strong>Score Current Listing</strong> to score this page.';
+}
+
 async function loadAutoScoreToggle() {
   const cb = document.getElementById("auto-score-toggle");
   try {
@@ -328,10 +336,12 @@ async function loadAutoScoreToggle() {
   } catch {
     cb.checked = true;
   }
+  updateFooterHint(cb.checked);
   cb.addEventListener("change", async () => {
     try {
       await chrome.storage.local.set({ ds_auto_score: cb.checked });
     } catch {}
+    updateFooterHint(cb.checked);
   });
 }
 
