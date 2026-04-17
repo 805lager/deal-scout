@@ -7,7 +7,7 @@ This folder contains the canonical CWS submission copy and assets. Paste fields 
 | `title.txt` | Item name |
 | `short-description.txt` | Summary |
 | `long-description.md` | Detailed description (paste body, drop the markdown bold markers if needed) |
-| `promo_tile_440x280.png` | Small promotional tile (440 × 280) |
+| `promo-tile-440x280.png` | Small promotional tile (440 × 280) |
 | `screenshots/01_fbm_watch.png` | Screenshot 1 (1280 × 800) |
 | `screenshots/02_fbm_guitar.png` | Screenshot 2 |
 | `screenshots/03_ebay_ipad.png` | Screenshot 3 |
