@@ -782,14 +782,15 @@
       } catch { resolve(true); }
     });
   }
-  async function _dsAutoScoreIfEnabled() {
-    if (await _dsAutoScoreEnabled()) autoScore();
+  async function _dsMaybeScore(force) {
+    if (force || await _dsAutoScoreEnabled()) autoScore();
   }
 
-  function waitForContent() {
+  function waitForContent(force = false) {
     // OfferUp React SPA — wait for a NEW title to appear (different from the old listing).
     // window.__dsOUPrevTitle holds the old listing's title (set in onUrlChange).
     // No longer waiting for price — Claude extracts it server-side.
+    // `force=true` bypasses the auto-score preference (used by manual RESCORE).
     const prevTitle = window.__dsOUPrevTitle; // undefined on fresh page load
     let attempts = 0;
     const check = () => {
@@ -799,11 +800,11 @@
       const hasContent    = (document.body.innerText || "").length > 300;
       if (currentTitle && titleChanged && hasContent) {
         window.__dsOUPrevTitle = undefined;
-        _dsAutoScoreIfEnabled();
+        _dsMaybeScore(force);
         return;
       }
       if (attempts < 30) setTimeout(check, 400);
-      else _dsAutoScoreIfEnabled(); // fallback after 12s
+      else _dsMaybeScore(force); // fallback after 12s
     };
     check();
   }
@@ -813,7 +814,7 @@
     if (message.type === "RESCORE") {
       _scored = false;
       removePanel();
-      setTimeout(waitForContent, 400);
+      setTimeout(() => waitForContent(true), 400);
       sendResponse({ ok: true });
     }
     return true;
