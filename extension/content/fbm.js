@@ -2159,7 +2159,9 @@
       _dsDebugPost('pushstate-nav', { from: oldId, to: newId, prevTitle: snapTitle.slice(0, 50) });
 
       const panel = document.getElementById(PANEL_ID);
-      if (panel) renderNavigating();
+      if (panel) {
+        _dsAutoIfEnabled(() => renderNavigating());
+      }
     }
   }
 
