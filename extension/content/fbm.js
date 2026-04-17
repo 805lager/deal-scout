@@ -140,9 +140,11 @@
       window.__dealScoutBgReinjected = true;
       _dsNavLog('bgReinjection', { url: location.href.slice(0, 120), isListing: true });
       _dsDebugPost('inject-bg', { currListingId: _currListingId });
-      renderNavigating();
       clearTimeout(window.__dealScoutRescanTimer);
-      window.__dealScoutRescanTimer = setTimeout(() => _dsAutoIfEnabled(() => autoScore()), 100);
+      window.__dealScoutRescanTimer = setTimeout(() => _dsAutoIfEnabled(() => {
+        renderNavigating();
+        autoScore();
+      }), 100);
     }
     return;
   }

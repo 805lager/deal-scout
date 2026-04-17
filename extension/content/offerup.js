@@ -831,9 +831,12 @@
     _lastUrl = cur;
     _scored = false;
     if (isListingPage()) {
-      // Show spinner immediately — clears stale score before new listing loads.
-      renderNavigating();
-      setTimeout(waitForContent, 200);
+      _dsAutoScoreEnabled().then(enabled => {
+        if (!enabled) { removePanel(); return; }
+        // Show spinner immediately — clears stale score before new listing loads.
+        renderNavigating();
+        setTimeout(() => waitForContent(false), 200);
+      });
     } else {
       removePanel();
     }
