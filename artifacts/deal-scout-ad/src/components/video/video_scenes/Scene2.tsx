@@ -40,7 +40,7 @@ export function Scene2() {
         </motion.h2>
 
         <div className="grid grid-cols-3 gap-6 mt-12">
-          {['Instantly scores deals', 'Compares real sold data', 'Flags scams on the fly'].map((text, i) => (
+          {['Scores every deal', 'Compares real sold data', 'Flags scams on the fly'].map((text, i) => (
             <motion.div
               key={i}
               className="bg-bg-light/80 backdrop-blur-md border border-white/10 p-6 rounded-2xl flex flex-col items-center gap-4 shadow-xl"

@@ -1,6 +1,6 @@
 # Deal Scout — AI-Powered Deal Scoring Chrome Extension
 
-Score deals instantly on Facebook Marketplace, Craigslist, eBay, and OfferUp. Powered by Claude AI with real-time eBay sold comps, a 3-layer scam detection engine, and smart affiliate recommendations.
+Score deals on Facebook Marketplace, Craigslist, eBay, and OfferUp. Powered by Claude AI with real-time eBay sold comps, a 3-layer scam detection engine, and smart affiliate recommendations.
 
 **Extension version:** v0.32.0 &nbsp;|&nbsp; **API version:** v0.33.1 &nbsp;|&nbsp; **Chrome Web Store:** *Pending review*
 

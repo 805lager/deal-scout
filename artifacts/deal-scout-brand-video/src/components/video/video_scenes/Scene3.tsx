@@ -47,7 +47,7 @@ export function Scene3() {
         animate={phase >= 3 ? { opacity: 1 } : {}}
         transition={{ duration: 0.8 }}
       >
-        AI that scores every deal instantly.
+        AI that scores every deal for you.
       </motion.p>
     </motion.div>
   );

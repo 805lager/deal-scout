@@ -41,7 +41,7 @@ def text_w(draw, txt, f):
 SCREENS = [
     ("Screenshot_2026-04-17_111154_1776449524121.png",
      "Know if it's a fair deal",
-     "Instantly scored by AI",
+     "Scored by AI",
      "01_fbm_watch.png"),
     ("Screenshot_2026-04-17_110548_1776449448291.png",
      "Backed by real eBay sold-price data",
