@@ -135,7 +135,22 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 ## Extension Version
 
-Current: **v0.42.5** (extension) / **v0.42.4** (API)
+Current: **v0.42.6** (extension) / **v0.42.5** (API)
+
+### v0.42.6 Restore thumbs UI + daily cost reporting
+- Extension: drop the `score_id`-required gate on the FB score-card thumbs
+  feedback. Buttons now always render; click handler logs (and skips the
+  POST) when score_id is missing instead of silently hiding the entire
+  feedback section. Fixes "thumbs missing" caused by upstream DB write
+  failures returning `score_id=0`.
+- API: add **💰 Cost & Usage** field to the daily Discord summary. Reports
+  estimated Anthropic spend today / month-to-date / projected, plus
+  Claude API call counts and raw scoring run counts. Estimate uses
+  calibrated $0.015/score (Haiku 4.5 ~7k in / 800 out × ~3.5 calls per
+  scoring run). Adjust `ANTHROPIC_MONTHLY_LIMIT_USD` in main.py to match
+  your actual plan. Add precise per-call token tracking as a follow-up
+  for true accuracy.
+
 
 ### v0.42.5 Auto-score OFF — clean up residual panels
 - **Bug**: With auto-score OFF, a small "📊 Deal Scout ⟳ Loading…" panel

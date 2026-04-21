@@ -3359,6 +3359,18 @@ function navTo(idx) {
 
 import asyncio as _asyncio
 
+# --- Cost estimation constants ---------------------------------------------
+# Each "score" in the deal_scores table corresponds to roughly 3-4 Anthropic
+# Claude Haiku 4.5 calls across the full scoring pipeline (deal_scorer,
+# product_extractor, product_evaluator, occasionally vision + claude_pricer).
+# Calibrated against typical token usage ~7000 in / ~800 out per scoring run.
+# Haiku 4.5 pricing: $1/Mtok input, $5/Mtok output.
+# 7000 * $1/M + 800 * $5/M = $0.007 + $0.004 = ~$0.011, rounded up for vision.
+CLAUDE_CALLS_PER_SCORE = 3.5         # avg main + extractor + evaluator (+ sometimes vision)
+COST_PER_SCORE_USD     = 0.015       # estimated all-in Anthropic spend per score
+# Anthropic monthly soft limit (set this to your actual plan limit if known).
+ANTHROPIC_MONTHLY_LIMIT_USD = 100.0  # adjust to match your Anthropic credit balance
+
 async def _build_daily_summary() -> dict:
     from scoring.data_pipeline import _get_pool
     pool = await _get_pool()
@@ -3471,6 +3483,47 @@ async def _build_daily_summary() -> dict:
     except Exception as e:
         log.warning(f"[DailySummary] Categories query failed: {e}")
 
+    # --- Anthropic cost / API-call estimate ---------------------------------
+    try:
+        cost_row = await pool.fetchrow(
+            """SELECT
+                 COUNT(*) FILTER (WHERE created_at > now() - interval '24 hours') AS scores_24h,
+                 COUNT(*) FILTER (WHERE created_at > date_trunc('month', now())) AS scores_mtd,
+                 COUNT(*) FILTER (WHERE created_at > now() - interval '30 days') AS scores_30d
+               FROM deal_scores"""
+        )
+        if cost_row:
+            scores_24h = cost_row["scores_24h"] or 0
+            scores_mtd = cost_row["scores_mtd"] or 0
+            scores_30d = cost_row["scores_30d"] or 0
+
+            from datetime import datetime as _dt
+            now_utc = _dt.utcnow()
+            day_of_month = now_utc.day
+            days_in_month = 30  # rough — good enough for projection
+            avg_daily_mtd = (scores_mtd / day_of_month) if day_of_month else 0
+            projected_month = avg_daily_mtd * days_in_month
+
+            cost_today_usd     = scores_24h * COST_PER_SCORE_USD
+            cost_mtd_usd       = scores_mtd * COST_PER_SCORE_USD
+            cost_projected_usd = projected_month * COST_PER_SCORE_USD
+            limit_pct          = (cost_projected_usd / ANTHROPIC_MONTHLY_LIMIT_USD * 100) if ANTHROPIC_MONTHLY_LIMIT_USD else 0
+
+            summary["costs"] = {
+                "scores_24h":         scores_24h,
+                "scores_mtd":         scores_mtd,
+                "scores_30d":         scores_30d,
+                "claude_calls_24h":   int(scores_24h * CLAUDE_CALLS_PER_SCORE),
+                "claude_calls_mtd":   int(scores_mtd * CLAUDE_CALLS_PER_SCORE),
+                "cost_today_usd":     round(cost_today_usd, 2),
+                "cost_mtd_usd":       round(cost_mtd_usd, 2),
+                "cost_projected_usd": round(cost_projected_usd, 2),
+                "monthly_limit_usd":  ANTHROPIC_MONTHLY_LIMIT_USD,
+                "limit_pct":          round(limit_pct, 1),
+            }
+    except Exception as e:
+        log.warning(f"[DailySummary] Costs query failed: {e}")
+
     try:
         user_row = await pool.fetchrow(
             """SELECT
@@ -3524,6 +3577,7 @@ async def _send_daily_discord_summary():
     corr_count = summary.get("corrections", 0)
     cats = summary.get("top_categories", {})
     u = summary.get("users", {})
+    c = summary.get("costs", {})
 
     total = s.get("total", 0)
 
@@ -3559,10 +3613,23 @@ async def _send_daily_discord_summary():
         {"name": "👥 Users", "value": users_line, "inline": False},
         {"name": "📊 Scores", "value": f"**{total}** total  ·  avg **{s.get('avg_score', '—')}**/10\n{platform_line}", "inline": False},
         {"name": "👍 Feedback", "value": thumbs_line, "inline": True},
+    ]
+
+    if c:
+        limit_emoji = "🟢" if c["limit_pct"] < 70 else ("🟡" if c["limit_pct"] < 90 else "🔴")
+        cost_lines = [
+            f"**Today:** ~${c['cost_today_usd']:.2f}  ·  **MTD:** ~${c['cost_mtd_usd']:.2f}",
+            f"**Projected month:** ~${c['cost_projected_usd']:.2f} / ${c['monthly_limit_usd']:.0f} limit  {limit_emoji} **{c['limit_pct']:.0f}%**",
+            f"**Claude calls:** ~{c['claude_calls_24h']:,} today  ·  ~{c['claude_calls_mtd']:,} MTD",
+            f"**Scoring runs:** {c['scores_24h']:,} today  ·  {c['scores_mtd']:,} MTD  ·  {c['scores_30d']:,} last 30d",
+        ]
+        fields.append({"name": "💰 Cost & Usage (estimated)", "value": "\n".join(cost_lines), "inline": False})
+
+    fields.extend([
         {"name": "🔗 Affiliate", "value": "\n".join(aff_lines), "inline": False},
         {"name": "📁 Top Categories", "value": cat_line, "inline": False},
         {"name": "✏️ Corrections", "value": f"{corr_count} new today", "inline": True},
-    ]
+    ])
     if risk_line:
         fields.append({"name": "⚠️ Security", "value": risk_line, "inline": True})
 

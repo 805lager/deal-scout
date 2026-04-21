@@ -2038,7 +2038,19 @@
     const footer = document.createElement('div');
     footer.style.cssText = 'border-top:1px solid rgba(255,255,255,0.06);margin-top:4px;padding:10px 12px';
 
-    if (r && r.score_id) {
+    if (r) {
+      const hasScoreId = !!r.score_id;
+      const sendThumbs = (thumbs, reason) => {
+        if (!hasScoreId) {
+          console.debug('[DealScout] Thumbs feedback skipped — no score_id (DB write may have failed upstream)');
+          return;
+        }
+        fetch(API_BASE + '/thumbs', {
+          method: 'POST', headers: {'Content-Type': 'application/json', 'X-DS-Key': DS_API_KEY, 'X-DS-Ext-Version': VERSION},
+          body: JSON.stringify({score_id: r.score_id, thumbs: thumbs, reason: reason}),
+          signal: AbortSignal.timeout(5000),
+        }).catch(() => {});
+      };
       const thumbSection = document.createElement('div');
       thumbSection.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:6px';
       const prompt = document.createElement('div');
@@ -2052,11 +2064,7 @@
         btn.innerHTML = DOMPurify.sanitize(emoji + ' <span style="font-size:11px">' + label + '</span>');
         btn.addEventListener('click', () => {
           if (val === 1) {
-            fetch(API_BASE + '/thumbs', {
-              method: 'POST', headers: {'Content-Type': 'application/json', 'X-DS-Key': DS_API_KEY, 'X-DS-Ext-Version': VERSION},
-              body: JSON.stringify({score_id: r.score_id, thumbs: 1, reason: ''}),
-              signal: AbortSignal.timeout(5000),
-            }).catch(() => {});
+            sendThumbs(1, '');
             thumbWrap.innerHTML = DOMPurify.sanitize('<span style="font-size:12px;color:#6ee7b7">\u2713 Thanks!</span>');
           } else {
             thumbWrap.textContent = "";
@@ -2070,11 +2078,7 @@
               pill.textContent = lbl;
               pill.addEventListener('click', (e) => {
                 e.stopPropagation();
-                fetch(API_BASE + '/thumbs', {
-                  method: 'POST', headers: {'Content-Type': 'application/json', 'X-DS-Key': DS_API_KEY, 'X-DS-Ext-Version': VERSION},
-                  body: JSON.stringify({score_id: r.score_id, thumbs: -1, reason: key}),
-                  signal: AbortSignal.timeout(5000),
-                }).catch(() => {});
+                sendThumbs(-1, key);
                 thumbWrap.innerHTML = DOMPurify.sanitize('<span style="font-size:12px;color:#6ee7b7">\u2713 Got it, thanks!</span>');
               });
               reasonRow.appendChild(pill);
@@ -2091,7 +2095,7 @@
       footer.appendChild(thumbSection);
     }
     const versionEl = document.createElement('div');
-    versionEl.style.cssText = 'text-align:center;font-size:10px;color:#374151;margin-top:' + (r && r.score_id ? '8px' : '0');
+    versionEl.style.cssText = 'text-align:center;font-size:10px;color:#374151;margin-top:' + (r ? '8px' : '0');
     versionEl.textContent = `Deal Scout v${VERSION}`;
     footer.appendChild(versionEl);
     container.appendChild(footer);
