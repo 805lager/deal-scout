@@ -233,7 +233,7 @@ body:not(.show-extra) .col-extra{display:none}
   <th data-col="verdict">Verdict</th>
   <th data-col="data_source">Source</th>
   <th data-col="market_confidence">Conf</th>
-  <th data-col="estimated_value">Est Value</th>
+  <th data-col="estimated_value" class="col-extra">Est Value</th>
   <th data-col="sold_avg">Sold Avg</th>
   <th data-col="sold_count">Sold#</th>
   <th data-col="active_count" class="col-extra">Active#</th>
@@ -454,7 +454,7 @@ function renderTable() {
       <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:#94a3b8" title="${esc(ds.verdict)}">${esc(ds.verdict)||'—'}</td>
       <td style="font-size:11px">${esc(pc.data_source)||'—'}</td>
       <td style="font-size:11px;color:${pc.market_confidence==='high'?'#10b981':pc.market_confidence==='medium'?'#f59e0b':'#ef4444'}">${esc(pc.market_confidence)||'—'}</td>
-      <td>${fmt$(pc.estimated_value)}</td>
+      <td class="col-extra">${fmt$(pc.estimated_value)}</td>
       <td>${fmt$(pc.sold_avg)}</td>
       <td>${pc.sold_count||0}</td>
       <td class="col-extra">${pc.active_count||0}</td>
