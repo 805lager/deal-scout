@@ -9,8 +9,9 @@
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f1117;color:#e0e0e0;padding:20px;line-height:1.5}
 a{color:#7c8cf8;text-decoration:none}
 h1{font-size:22px;color:#fff;margin-bottom:4px}
-.subtitle{color:#888;font-size:13px;margin-bottom:20px}
-.top-bar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:20px}
+.subtitle{color:#888;font-size:13px}
+
+.top-bar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:18px}
 .top-bar-left{display:flex;align-items:center;gap:16px}
 .badge{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:2px 10px;font-size:12px;color:#94a3b8}
 .badge.new{background:#10b981;color:#fff;border-color:#10b981;font-weight:600}
@@ -21,16 +22,30 @@ h1{font-size:22px;color:#fff;margin-bottom:4px}
 .btn-sm{padding:4px 12px;font-size:11px}
 .btn-danger{background:#dc2626;color:#fff}.btn-danger:hover{background:#b91c1c}
 
-.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:20px}
-.card{background:#1a1d27;border:1px solid #2a2d3a;border-radius:8px;padding:14px}
-.card-label{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.5px}
-.card-value{font-size:24px;font-weight:700;color:#fff;margin-top:2px}
-.card-sub{font-size:11px;color:#64748b;margin-top:2px}
-.card-value.green{color:#10b981}
-.card-value.red{color:#ef4444}
-.card-value.yellow{color:#f59e0b}
+/* Health Snapshot */
+.snapshot{background:linear-gradient(180deg,#161b22 0%,#1a1d27 100%);border:1px solid #2a2d3a;border-radius:10px;padding:16px 18px;margin-bottom:18px}
+.snapshot-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px}
+.snapshot-status{display:flex;align-items:center;gap:10px;font-size:15px;font-weight:600}
+.status-dot{width:10px;height:10px;border-radius:50%;display:inline-block}
+.status-dot.healthy{background:#10b981;box-shadow:0 0 8px #10b98166}
+.status-dot.warning{background:#f59e0b;box-shadow:0 0 8px #f59e0b66}
+.status-dot.critical{background:#ef4444;box-shadow:0 0 8px #ef444466}
+.status-dot.unknown{background:#64748b}
+.status-text.healthy{color:#10b981}
+.status-text.warning{color:#f59e0b}
+.status-text.critical{color:#ef4444}
+.status-text.unknown{color:#94a3b8}
+.snapshot-meta{font-size:11px;color:#64748b}
+.snapshot-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
+.snap-cell{background:#0f1117;border:1px solid #2a2d3a;border-radius:8px;padding:10px 12px}
+.snap-label{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+.snap-value{font-size:20px;font-weight:700;color:#fff;line-height:1.1}
+.snap-value.green{color:#10b981}
+.snap-value.yellow{color:#f59e0b}
+.snap-value.red{color:#ef4444}
+.snap-sub{font-size:10px;color:#64748b;margin-top:3px}
 
-.findings-panel{background:#1a1d27;border:1px solid #2a2d3a;border-radius:8px;padding:16px;margin-bottom:20px;display:none}
+.findings-panel{background:#1a1d27;border:1px solid #2a2d3a;border-radius:8px;padding:16px;margin-bottom:18px;display:none}
 .findings-panel.visible{display:block}
 .findings-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
 .findings-header h2{font-size:16px;color:#fff}
@@ -47,12 +62,28 @@ h1{font-size:22px;color:#fff;margin-bottom:4px}
 .sev-badge.warning{background:#f59e0b33;color:#f59e0b}
 .sev-badge.info{background:#3b82f633;color:#3b82f6}
 
+/* Tabbed telemetry */
+.telemetry-section{background:#161b22;border:1px solid #2a2d3a;border-radius:8px;margin-bottom:18px;overflow:hidden}
+.tab-bar{display:flex;border-bottom:1px solid #2a2d3a;background:#1a1d27}
+.tab{padding:10px 18px;font-size:12px;font-weight:600;color:#64748b;cursor:pointer;border-right:1px solid #2a2d3a;text-transform:uppercase;letter-spacing:.4px;transition:all .15s;user-select:none}
+.tab:hover{color:#94a3b8;background:#1e293b}
+.tab.active{color:#10b981;background:#161b22;border-bottom:2px solid #10b981;margin-bottom:-1px}
+.tab-content{display:none;padding:14px}
+.tab-content.active{display:block}
+.tab-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
+.telem-card{background:#0f1117;border:1px solid #2a2d3a;border-radius:8px;padding:12px}
+.telem-card h3{font-size:11px;color:#64748b;text-transform:uppercase;margin-bottom:8px;letter-spacing:.4px}
+.telem-bar{display:flex;align-items:center;gap:8px;margin:3px 0;font-size:12px}
+.telem-bar-fill{height:6px;border-radius:3px;background:#10b981}
+.telem-bar-label{min-width:90px;color:#94a3b8;text-transform:capitalize}
+.telem-bar-val{color:#fff;font-weight:600;min-width:30px;text-align:right}
+
 .filters{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:center}
 .filters select,.filters input{background:#1a1d27;border:1px solid #334155;color:#e0e0e0;padding:5px 8px;border-radius:4px;font-size:12px}
 .filters label{font-size:11px;color:#64748b}
 
 table{width:100%;border-collapse:collapse;font-size:12px}
-th{background:#1a1d27;color:#64748b;text-align:left;padding:8px 6px;font-size:11px;text-transform:uppercase;letter-spacing:.3px;position:sticky;top:0;cursor:pointer;user-select:none;border-bottom:1px solid #2a2d3a}
+th{background:#1a1d27;color:#64748b;text-align:left;padding:8px 6px;font-size:11px;text-transform:uppercase;letter-spacing:.3px;position:sticky;top:0;cursor:pointer;user-select:none;border-bottom:1px solid #2a2d3a;z-index:1}
 th:hover{color:#94a3b8}
 td{padding:6px;border-bottom:1px solid #1a1d27;vertical-align:top}
 tr.anomaly-critical{background:#dc262610}
@@ -62,6 +93,8 @@ tr.expanded{background:#1a1d27}
 .expand-row{display:none}
 .expand-row.visible{display:table-row}
 .expand-content{padding:16px;background:#0f1117;border-radius:6px}
+/* Hideable columns — toggled by .show-extra on body */
+body:not(.show-extra) .col-extra{display:none}
 
 .score-pill{display:inline-block;padding:2px 8px;border-radius:10px;font-weight:700;font-size:11px}
 .score-pill.great{background:#10b98133;color:#10b981}
@@ -93,14 +126,6 @@ tr.expanded{background:#1a1d27}
 .loading{display:inline-block;width:16px;height:16px;border:2px solid #334155;border-top-color:#10b981;border-radius:50%;animation:spin .6s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 
-.telemetry{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px;margin-bottom:20px}
-.telem-card{background:#1a1d27;border:1px solid #2a2d3a;border-radius:8px;padding:14px}
-.telem-card h3{font-size:12px;color:#64748b;text-transform:uppercase;margin-bottom:8px;letter-spacing:.3px}
-.telem-bar{display:flex;align-items:center;gap:8px;margin:3px 0;font-size:12px}
-.telem-bar-fill{height:6px;border-radius:3px;background:#10b981}
-.telem-bar-label{min-width:100px;color:#94a3b8}
-.telem-bar-val{color:#fff;font-weight:600;min-width:30px;text-align:right}
-
 .empty-state{text-align:center;padding:40px;color:#64748b;font-size:14px}
 .table-wrap{overflow-x:auto;max-height:70vh;overflow-y:auto;border:1px solid #2a2d3a;border-radius:8px}
 </style>
@@ -112,9 +137,8 @@ tr.expanded{background:#1a1d27}
       <h1>Score Audit Dashboard</h1>
       <div class="subtitle">Review scoring quality, spot issues, verify fixes</div>
     </div>
-    <span class="badge" id="newBadge">loading...</span>
   </div>
-  <div style="display:flex;gap:8px;align-items:center">
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
     <select id="versionFilter" title="Backend version filter" onchange="loadData()">
       <option value="">All versions</option>
     </select>
@@ -127,7 +151,17 @@ tr.expanded{background:#1a1d27}
   </div>
 </div>
 
-<div class="cards" id="summaryCards"></div>
+<!-- Health Snapshot -->
+<div class="snapshot">
+  <div class="snapshot-head">
+    <div class="snapshot-status">
+      <span class="status-dot unknown" id="statusDot"></span>
+      <span class="status-text unknown" id="statusText">Loading…</span>
+    </div>
+    <div class="snapshot-meta" id="statusMeta"></div>
+  </div>
+  <div class="snapshot-grid" id="snapshotGrid"></div>
+</div>
 
 <div class="findings-panel" id="findingsPanel">
   <div class="findings-header">
@@ -137,7 +171,17 @@ tr.expanded{background:#1a1d27}
   <div id="findingsList"></div>
 </div>
 
-<div class="telemetry" id="telemetryPanel"></div>
+<!-- Tabbed telemetry -->
+<div class="telemetry-section">
+  <div class="tab-bar">
+    <div class="tab active" data-tab="quality" onclick="switchTab('quality')">Quality</div>
+    <div class="tab" data-tab="performance" onclick="switchTab('performance')">Performance</div>
+    <div class="tab" data-tab="versions" onclick="switchTab('versions')">Versions</div>
+  </div>
+  <div class="tab-content active" id="tab-quality"></div>
+  <div class="tab-content" id="tab-performance"></div>
+  <div class="tab-content" id="tab-versions"></div>
+</div>
 
 <div class="filters">
   <label>Platform:
@@ -171,6 +215,9 @@ tr.expanded{background:#1a1d27}
     <span style="color:#64748b">-</span>
     <input type="date" id="fDateTo" style="width:120px">
   </label>
+  <label style="margin-left:auto">
+    <input type="checkbox" id="showExtra" style="margin-right:4px" onchange="toggleExtraCols()">Show all columns
+  </label>
 </div>
 
 <div class="table-wrap">
@@ -189,12 +236,12 @@ tr.expanded{background:#1a1d27}
   <th data-col="estimated_value">Est Value</th>
   <th data-col="sold_avg">Sold Avg</th>
   <th data-col="sold_count">Sold#</th>
-  <th data-col="active_count">Active#</th>
-  <th data-col="security_score">Sec</th>
-  <th data-col="photo_count">Photos</th>
-  <th data-col="category">Category</th>
-  <th data-col="total_ms">Time(ms)</th>
-  <th data-col="backend_version">Ver</th>
+  <th data-col="active_count" class="col-extra">Active#</th>
+  <th data-col="security_score" class="col-extra">Sec</th>
+  <th data-col="photo_count" class="col-extra">Photos</th>
+  <th data-col="category" class="col-extra">Category</th>
+  <th data-col="total_ms" class="col-extra">Time(ms)</th>
+  <th data-col="backend_version" class="col-extra">Ver</th>
 </tr>
 </thead>
 <tbody id="scoreBody"></tbody>
@@ -208,8 +255,32 @@ const BASE = window.location.pathname.replace(/\/admin\/audit\/?$/, '');
 
 let allScorecards = [];
 let allReview = null;
+let lastTelem = null;
 let sortCol = '_server_ts';
 let sortAsc = false;
+
+// Restore "show all columns" pref
+try {
+  if (localStorage.getItem('ds_audit_show_extra') === '1') {
+    document.body.classList.add('show-extra');
+  }
+} catch(_) {}
+document.addEventListener('DOMContentLoaded', () => {
+  const cb = document.getElementById('showExtra');
+  if (cb) cb.checked = document.body.classList.contains('show-extra');
+});
+
+function toggleExtraCols() {
+  const on = document.getElementById('showExtra').checked;
+  document.body.classList.toggle('show-extra', on);
+  try { localStorage.setItem('ds_audit_show_extra', on ? '1' : '0'); } catch(_) {}
+}
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === 'tab-' + name));
+  try { localStorage.setItem('ds_audit_tab', name); } catch(_) {}
+}
 
 function headers() {
   return {'Content-Type':'application/json','X-DS-Key':API_KEY};
@@ -351,7 +422,7 @@ function renderTable() {
   body.innerHTML = '';
 
   if (filtered.length === 0) {
-    body.innerHTML = '<tr><td colspan="16" class="empty-state">No scores match filters</td></tr>';
+    body.innerHTML = '<tr><td colspan="18" class="empty-state">No scores match the current filters. Try clearing the version or date filter, or scoring a few listings to populate this view.</td></tr>';
     return;
   }
 
@@ -386,12 +457,12 @@ function renderTable() {
       <td>${fmt$(pc.estimated_value)}</td>
       <td>${fmt$(pc.sold_avg)}</td>
       <td>${pc.sold_count||0}</td>
-      <td>${pc.active_count||0}</td>
-      <td>${secScore!=null?scorePill(secScore):'—'}</td>
-      <td>${l.photo_count||'?'}</td>
-      <td style="font-size:11px">${esc(category)||'—'}</td>
-      <td style="font-size:11px;color:#64748b">${meta.total_ms ? meta.total_ms+'ms' : '—'}</td>
-      <td>${versionBadge(meta.backend_version)}</td>
+      <td class="col-extra">${pc.active_count||0}</td>
+      <td class="col-extra">${secScore!=null?scorePill(secScore):'—'}</td>
+      <td class="col-extra">${l.photo_count||'?'}</td>
+      <td class="col-extra" style="font-size:11px">${esc(category)||'—'}</td>
+      <td class="col-extra" style="font-size:11px;color:#64748b">${meta.total_ms ? meta.total_ms+'ms' : '—'}</td>
+      <td class="col-extra">${versionBadge(meta.backend_version)}</td>
     `;
     body.appendChild(tr);
 
@@ -590,7 +661,6 @@ async function runCheck() {
 
   const version = document.getElementById('versionFilter').value || null;
   const reviewAll = document.getElementById('reviewAll').checked;
-  const sinceId = reviewAll ? 0 : undefined;
 
   try {
     const resp = await fetch(`${BASE}/admin/audit/check`, {
@@ -647,98 +717,189 @@ async function runCheck() {
   btn.textContent = 'Check Scores Now';
 }
 
+function barChart(data) {
+  const entries = Object.entries(data || {});
+  if (!entries.length) return '<div style="color:#64748b;font-size:12px">No data</div>';
+  const maxVal = Math.max(...entries.map(([,v]) => v), 1);
+  return entries.map(([k,v]) =>
+    `<div class="telem-bar">
+      <span class="telem-bar-label">${esc(k)||'unknown'}</span>
+      <div style="flex:1;background:#1e293b;border-radius:3px;height:6px">
+        <div class="telem-bar-fill" style="width:${Math.round(v/maxVal*100)}%"></div>
+      </div>
+      <span class="telem-bar-val">${v}</span>
+    </div>`
+  ).join('');
+}
+
 function renderTelemetry(telem) {
-  const panel = document.getElementById('telemetryPanel');
   const ds = telem.deal_scores || {};
   const timing = telem.timing || {};
   const cache = telem.price_cache || {};
   const versions = telem.versions || [];
+  const trend = telem.daily_trend || [];
 
-  function barChart(data, maxVal) {
-    if (!maxVal) maxVal = Math.max(...Object.values(data), 1);
-    return Object.entries(data).map(([k,v]) =>
-      `<div class="telem-bar">
-        <span class="telem-bar-label">${k||'unknown'}</span>
-        <div style="flex:1;background:#1e293b;border-radius:3px;height:6px">
-          <div class="telem-bar-fill" style="width:${Math.round(v/maxVal*100)}%"></div>
-        </div>
-        <span class="telem-bar-val">${v}</span>
-      </div>`
-    ).join('');
-  }
+  // QUALITY tab
+  const qualityTrend = trend.length
+    ? trend.slice(0, 14).map(d =>
+        `<div class="detail-row"><span class="label">${d.date}</span><span class="value">${d.count} · avg ${d.avg_score??'—'}</span></div>`
+      ).join('')
+    : '<div style="color:#64748b;font-size:12px">No data yet</div>';
 
-  panel.innerHTML = `
-    <div class="telem-card">
-      <h3>Data Sources</h3>
-      ${barChart(telem.data_sources || {})}
+  document.getElementById('tab-quality').innerHTML = `
+    <div class="tab-grid">
+      <div class="telem-card">
+        <h3>Data Sources</h3>
+        ${barChart(telem.data_sources)}
+      </div>
+      <div class="telem-card">
+        <h3>Confidence</h3>
+        ${barChart(telem.confidence)}
+      </div>
+      <div class="telem-card">
+        <h3>Platforms</h3>
+        ${barChart(telem.platforms)}
+      </div>
+      <div class="telem-card">
+        <h3>Scores / Day (14d)</h3>
+        ${qualityTrend}
+      </div>
+      <div class="telem-card">
+        <h3>User Feedback</h3>
+        <div class="detail-row"><span class="label">Total Scored</span><span class="value">${ds.total||0}</span></div>
+        <div class="detail-row"><span class="label">Avg Score</span><span class="value">${ds.avg_score??'—'}</span></div>
+        <div class="detail-row"><span class="label">👍 Thumbs Up</span><span class="value" style="color:#10b981">${ds.thumbs_up||0}</span></div>
+        <div class="detail-row"><span class="label">👎 Thumbs Down</span><span class="value" style="color:#ef4444">${ds.thumbs_down||0}</span></div>
+        <div class="detail-row"><span class="label">Unrated</span><span class="value">${ds.unrated||0}</span></div>
+      </div>
     </div>
-    <div class="telem-card">
-      <h3>Confidence</h3>
-      ${barChart(telem.confidence || {})}
+  `;
+
+  // PERFORMANCE tab
+  document.getElementById('tab-performance').innerHTML = `
+    <div class="tab-grid">
+      <div class="telem-card">
+        <h3>Pipeline Timing</h3>
+        <div class="detail-row"><span class="label">Avg</span><span class="value">${timing.avg_ms?timing.avg_ms+'ms':'—'}</span></div>
+        <div class="detail-row"><span class="label">P95</span><span class="value">${timing.p95_ms?timing.p95_ms+'ms':'—'}</span></div>
+        <div class="detail-row"><span class="label">Max</span><span class="value">${timing.max_ms?timing.max_ms+'ms':'—'}</span></div>
+      </div>
+      <div class="telem-card">
+        <h3>Price Cache</h3>
+        <div class="detail-row"><span class="label">Total Entries</span><span class="value">${cache.total||cache.count||0}</span></div>
+        <div class="detail-row"><span class="label">Fresh (&lt;24h)</span><span class="value" style="color:#10b981">${cache.fresh_24h||0}</span></div>
+        <div class="detail-row"><span class="label">Fresh (&lt;48h)</span><span class="value" style="color:#22d3ee">${cache.fresh_48h||0}</span></div>
+        <div class="detail-row"><span class="label">Avg Age</span><span class="value">${cache.avg_age_hours ? cache.avg_age_hours+'h' : '—'}</span></div>
+      </div>
+      <div class="telem-card">
+        <h3>Market Signals</h3>
+        <div class="detail-row"><span class="label">Total Recorded</span><span class="value">${telem.market_signals_count||0}</span></div>
+      </div>
     </div>
-    <div class="telem-card">
-      <h3>Platforms</h3>
-      ${barChart(telem.platforms || {})}
-    </div>
-    <div class="telem-card">
-      <h3>Pipeline Timing</h3>
-      <div class="detail-row"><span class="label">Avg</span><span class="value">${timing.avg_ms?timing.avg_ms+'ms':'—'}</span></div>
-      <div class="detail-row"><span class="label">P95</span><span class="value">${timing.p95_ms?timing.p95_ms+'ms':'—'}</span></div>
-      <div class="detail-row"><span class="label">Max</span><span class="value">${timing.max_ms?timing.max_ms+'ms':'—'}</span></div>
-    </div>
-    <div class="telem-card">
-      <h3>Feedback</h3>
-      <div class="detail-row"><span class="label">Total Scored</span><span class="value">${ds.total||0}</span></div>
-      <div class="detail-row"><span class="label">Avg Score</span><span class="value">${ds.avg_score??'—'}</span></div>
-      <div class="detail-row"><span class="label">👍 Thumbs Up</span><span class="value" style="color:#10b981">${ds.thumbs_up||0}</span></div>
-      <div class="detail-row"><span class="label">👎 Thumbs Down</span><span class="value" style="color:#ef4444">${ds.thumbs_down||0}</span></div>
-      <div class="detail-row"><span class="label">Unrated</span><span class="value">${ds.unrated||0}</span></div>
-    </div>
-    <div class="telem-card">
-      <h3>Versions</h3>
-      ${versions.map(v => `
+  `;
+
+  // VERSIONS tab
+  const versionRows = versions.length
+    ? versions.map(v => `
         <div class="detail-row">
           <span class="label">${versionBadge(v.version)}</span>
-          <span class="value">${v.count} scores (avg ${v.avg_score??'—'}) · conf ${v.confidence_quality??0}% · anomaly ${v.anomaly_rate??0}%</span>
+          <span class="value">${v.count} scores · avg ${v.avg_score??'—'} · conf ${v.confidence_quality??0}% · anomaly ${v.anomaly_rate??0}%</span>
         </div>
-      `).join('')}
-      ${telem.version_comparison ? `
-        <div style="margin-top:10px;padding:8px;background:#1e293b;border-radius:6px;font-size:12px">
-          <strong style="color:#f59e0b">Version Comparison: ${esc(telem.version_comparison.current)} vs ${esc(telem.version_comparison.previous)}</strong>
-          <div class="detail-row"><span class="label">Score Δ</span><span class="value" style="color:${(telem.version_comparison.score_delta||0)>=0?'#10b981':'#ef4444'}">${telem.version_comparison.score_delta>0?'+':''}${telem.version_comparison.score_delta??'—'}</span></div>
-          <div class="detail-row"><span class="label">Confidence Δ</span><span class="value" style="color:${(telem.version_comparison.confidence_delta||0)>=0?'#10b981':'#ef4444'}">${telem.version_comparison.confidence_delta>0?'+':''}${telem.version_comparison.confidence_delta??'—'}%</span></div>
-          <div class="detail-row"><span class="label">Anomaly Rate Δ</span><span class="value" style="color:${(telem.version_comparison.anomaly_rate_delta||0)<=0?'#10b981':'#ef4444'}">${telem.version_comparison.anomaly_rate_delta>0?'+':''}${telem.version_comparison.anomaly_rate_delta??'—'}%</span></div>
-        </div>
-      ` : ''}
-      <div class="detail-row" style="margin-top:8px"><span class="label">Price Cache</span><span class="value">${cache.total||cache.count||0} entries</span></div>
-      <div class="detail-row"><span class="label">Market Signals</span><span class="value">${telem.market_signals_count||0}</span></div>
+      `).join('')
+    : '<div style="color:#64748b;font-size:12px">No version-stamped scores yet</div>';
+
+  const compHtml = telem.version_comparison ? `
+    <div class="telem-card" style="grid-column:1/-1">
+      <h3>Version Comparison: ${esc(telem.version_comparison.current)} vs ${esc(telem.version_comparison.previous)}</h3>
+      <div class="detail-row"><span class="label">Score Δ</span><span class="value" style="color:${(telem.version_comparison.score_delta||0)>=0?'#10b981':'#ef4444'}">${telem.version_comparison.score_delta>0?'+':''}${telem.version_comparison.score_delta??'—'}</span></div>
+      <div class="detail-row"><span class="label">Confidence Δ</span><span class="value" style="color:${(telem.version_comparison.confidence_delta||0)>=0?'#10b981':'#ef4444'}">${telem.version_comparison.confidence_delta>0?'+':''}${telem.version_comparison.confidence_delta??'—'}%</span></div>
+      <div class="detail-row"><span class="label">Anomaly Rate Δ</span><span class="value" style="color:${(telem.version_comparison.anomaly_rate_delta||0)<=0?'#10b981':'#ef4444'}">${telem.version_comparison.anomaly_rate_delta>0?'+':''}${telem.version_comparison.anomaly_rate_delta??'—'}%</span></div>
     </div>
-    <div class="telem-card">
-      <h3>Price Cache Health</h3>
-      <div class="detail-row"><span class="label">Total Entries</span><span class="value">${cache.total||cache.count||0}</span></div>
-      <div class="detail-row"><span class="label">Fresh (&lt;24h)</span><span class="value" style="color:#10b981">${cache.fresh_24h||0}</span></div>
-      <div class="detail-row"><span class="label">Fresh (&lt;48h)</span><span class="value" style="color:#22d3ee">${cache.fresh_48h||0}</span></div>
-      <div class="detail-row"><span class="label">Avg Age</span><span class="value">${cache.avg_age_hours ? cache.avg_age_hours+'h' : '—'}</span></div>
-    </div>
-    <div class="telem-card">
-      <h3>Scores / Day (14d)</h3>
-      ${(telem.daily_trend||[]).length ? telem.daily_trend.map(d =>
-        `<div class="detail-row"><span class="label">${d.date}</span><span class="value">${d.count} scores · avg ${d.avg_score??'—'}</span></div>`
-      ).join('') : '<div style="color:#64748b">No data yet</div>'}
+  ` : '';
+
+  document.getElementById('tab-versions').innerHTML = `
+    <div class="tab-grid">
+      <div class="telem-card" style="grid-column:1/-1">
+        <h3>Live API Version: ${versionBadge(CURRENT_VERSION)}</h3>
+        <div style="font-size:11px;color:#64748b;margin-top:4px">Stamped on every score from this deploy. If newer scores aren't showing this version, the API hasn't been redeployed since the version bump.</div>
+      </div>
+      <div class="telem-card" style="grid-column:1/-1">
+        <h3>Version History</h3>
+        ${versionRows}
+      </div>
+      ${compHtml}
     </div>
   `;
 }
 
-function renderSummaryCards(review) {
-  const s = review.stats || {};
-  const anomalyRate = s.anomaly_rate || '0%';
-  const anomalyColor = parseFloat(anomalyRate) > 30 ? 'red' : parseFloat(anomalyRate) > 15 ? 'yellow' : 'green';
+function renderHealthSnapshot(reviewData, telem, newCount) {
+  const stats = (reviewData && reviewData.stats) || {};
+  const ds = (telem && telem.deal_scores) || {};
+  const trend = (telem && telem.daily_trend) || [];
 
-  document.getElementById('summaryCards').innerHTML = `
-    <div class="card"><div class="card-label">Total Reviewed</div><div class="card-value">${s.total_reviewed||0}</div></div>
-    <div class="card"><div class="card-label">Anomalies</div><div class="card-value ${anomalyColor}">${s.anomaly_count||0}</div><div class="card-sub">${anomalyRate} of scores</div></div>
-    <div class="card"><div class="card-label">Avg Score</div><div class="card-value">${s.avg_score??'—'}</div></div>
-    <div class="card"><div class="card-label">Data Sources</div><div class="card-value">${Object.keys(s.by_data_source||{}).length}</div><div class="card-sub">${Object.entries(s.by_data_source||{}).slice(0,3).map(([k,v])=>`${k}: ${v}`).join(', ')}</div></div>
+  // Most recent day in trend = "today / last 24h" bucket
+  const today24h = trend.length ? (trend[0].count || 0) : 0;
+  const todayAvg = trend.length ? (trend[0].avg_score) : null;
+
+  const anomalyRateRaw = stats.anomaly_rate || '0%';
+  const anomalyPct = parseFloat(anomalyRateRaw) || 0;
+  const anomalyColor = anomalyPct > 30 ? 'red' : anomalyPct > 15 ? 'yellow' : 'green';
+
+  const statusLevel = anomalyPct > 30 ? 'critical'
+                     : anomalyPct > 15 ? 'warning'
+                     : (ds.total||0) === 0 ? 'unknown'
+                     : 'healthy';
+  const statusLabel = {
+    healthy: 'Healthy — scores look consistent',
+    warning: 'Issues found — review anomalies',
+    critical: 'Critical — high anomaly rate',
+    unknown: 'No score data yet',
+  }[statusLevel];
+
+  const dot = document.getElementById('statusDot');
+  const txt = document.getElementById('statusText');
+  dot.className = 'status-dot ' + statusLevel;
+  txt.className = 'status-text ' + statusLevel;
+  txt.textContent = statusLabel;
+  document.getElementById('statusMeta').textContent =
+    `Reviewed ${stats.total_reviewed||0} of ${ds.total||0} total · refreshed ${new Date().toLocaleTimeString()}`;
+
+  const thumbsUp = ds.thumbs_up || 0;
+  const thumbsDown = ds.thumbs_down || 0;
+  const thumbsTotal = thumbsUp + thumbsDown;
+  const thumbsPct = thumbsTotal ? Math.round(thumbsUp / thumbsTotal * 100) : null;
+
+  document.getElementById('snapshotGrid').innerHTML = `
+    <div class="snap-cell">
+      <div class="snap-label">Live API Version</div>
+      <div class="snap-value">${versionBadge(CURRENT_VERSION)}</div>
+      <div class="snap-sub">From VERSION file</div>
+    </div>
+    <div class="snap-cell">
+      <div class="snap-label">Scores · last 24h</div>
+      <div class="snap-value">${today24h}</div>
+      <div class="snap-sub">avg ${todayAvg??'—'}</div>
+    </div>
+    <div class="snap-cell">
+      <div class="snap-label">Anomaly Rate</div>
+      <div class="snap-value ${anomalyColor}">${anomalyRateRaw}</div>
+      <div class="snap-sub">${stats.anomaly_count||0} of ${stats.total_reviewed||0} reviewed</div>
+    </div>
+    <div class="snap-cell">
+      <div class="snap-label">Avg Score</div>
+      <div class="snap-value">${stats.avg_score ?? ds.avg_score ?? '—'}</div>
+      <div class="snap-sub">All reviewed</div>
+    </div>
+    <div class="snap-cell">
+      <div class="snap-label">User Feedback</div>
+      <div class="snap-value">${thumbsPct!=null?thumbsPct+'%':'—'}</div>
+      <div class="snap-sub">👍 ${thumbsUp} · 👎 ${thumbsDown}</div>
+    </div>
+    <div class="snap-cell">
+      <div class="snap-label">New since review</div>
+      <div class="snap-value ${newCount>0?'yellow':'green'}">${newCount||0}</div>
+      <div class="snap-sub">${newCount>0?'Click "Check Scores Now"':'All reviewed'}</div>
+    </div>
   `;
 }
 
@@ -752,6 +913,7 @@ async function loadData() {
     ]);
     const reviewData = await reviewResp.json();
     const telemData = await telemResp.json();
+    lastTelem = telemData;
 
     const scoreLogResp = await fetch(`${BASE}/score-log`, {headers: headers()});
     const scoreLogData = await scoreLogResp.json();
@@ -786,6 +948,9 @@ async function loadData() {
       const s = (sc.price_comparison||{}).data_source;
       if (s) sources.add(s);
     });
+    // Always include the live API version in the dropdown, even before any
+    // score has been stamped with it (e.g. immediately after a redeploy).
+    if (CURRENT_VERSION) versions.add(CURRENT_VERSION);
 
     const vSel = document.getElementById('versionFilter');
     const prevVal = vSel.value;
@@ -812,23 +977,17 @@ async function loadData() {
     [...sources].sort().forEach(s => { sSel.innerHTML += `<option value="${s}">${s}</option>`; });
 
     allReview = reviewData;
-    renderSummaryCards(reviewData);
-    renderTelemetry(telemData);
-    renderTable();
 
     const lastId = telemData.last_reviewed_id || 0;
     const newCount = allScorecards.filter(sc => sc._id > lastId && (!vf || (sc.metadata||{}).backend_version === vf)).length;
-    const badge = document.getElementById('newBadge');
-    if (newCount > 0) {
-      badge.className = 'badge new';
-      badge.textContent = `${newCount} new since last review`;
-    } else {
-      badge.className = 'badge';
-      badge.textContent = 'All reviewed';
-    }
+
+    renderHealthSnapshot(reviewData, telemData, newCount);
+    renderTelemetry(telemData);
+    renderTable();
   } catch(e) {
     console.error('Load failed:', e);
-    document.getElementById('summaryCards').innerHTML = `<div class="card"><div class="card-label">Error</div><div class="card-value red">${e.message}</div></div>`;
+    document.getElementById('snapshotGrid').innerHTML =
+      `<div class="snap-cell"><div class="snap-label">Error</div><div class="snap-value red">${esc(e.message)}</div></div>`;
   }
 }
 
@@ -845,6 +1004,12 @@ document.querySelectorAll('th[data-col]').forEach(th => {
 document.querySelectorAll('.filters select, .filters input').forEach(el => {
   el.addEventListener('change', renderTable);
 });
+
+// Restore last-active tab
+try {
+  const saved = localStorage.getItem('ds_audit_tab');
+  if (saved && ['quality','performance','versions'].includes(saved)) switchTab(saved);
+} catch(_) {}
 
 loadData();
 </script>

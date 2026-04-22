@@ -135,7 +135,7 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 ## Extension Version
 
-Current: **v0.42.6** (extension) / **v0.42.5** (API)
+Current: **v0.42.6** (extension) / **v0.42.6** (API — read from `artifacts/deal-scout-api/VERSION`)
 
 ### v0.42.6 Restore thumbs UI + daily cost reporting
 - Extension: drop the `score_id`-required gate on the FB score-card thumbs
@@ -361,11 +361,10 @@ All four content scripts use `chrome.runtime.sendMessage({type: 'SCORE_LISTING',
   - When both change in the same session, push both repos in the same step.
   - Rebuild `deal_scout_extension.zip` at the project root whenever any file under `extension/` changes. **Exclude .zip files** when building (never nest a zip inside the zip). Only keep one zip: `deal_scout_extension.zip`. Delete any old versioned zips (e.g. `deal-scout-v0.28.0.zip`).
   - **Always create a Git tag** (`git tag -a vX.Y.Z -m "..."`) for every version bump and push it to both remotes (`git push origin vX.Y.Z && git push api vX.Y.Z`). This ensures releases appear on GitHub.
-  - **Sync ALL version numbers** on every version bump. Update all of these together:
-    1. `extension/manifest.json` → `"version": "X.Y.Z"`
-    2. `artifacts/deal-scout-api/main.py` → `BACKEND_VERSION = "X.Y.Z"`
+  - **Sync ALL version numbers** on every version bump. Use `scripts/bump-version.sh X.Y.Z` to do steps 1+2 in one shot — it updates `extension/manifest.json` and `artifacts/deal-scout-api/VERSION` (the single source of truth that `main.py:BACKEND_VERSION` reads at startup; the audit dashboard reads it too, so it never lags behind a release). Then manually:
     3. `replit.md` → Extension Version section
     4. Rebuild `deal_scout_extension.zip`
+  - The `BACKEND_VERSION` constant in `main.py` is no longer hand-edited — it is read from `artifacts/deal-scout-api/VERSION` at module load. Do not reintroduce a hardcoded string.
   - **Extension zip contents** (only these files belong in the zip):
     - `manifest.json`
     - `background.js`

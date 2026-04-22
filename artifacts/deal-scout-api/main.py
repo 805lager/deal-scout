@@ -1871,7 +1871,20 @@ async def test_claude(
     except Exception as e:
         return {"status": "error", "detail": str(e)}
 
-BACKEND_VERSION = "0.42.4"
+def _read_backend_version() -> str:
+    """Read API version from the VERSION file (single source of truth).
+
+    Updated by `scripts/bump-version.sh` so the audit dashboard, score
+    metadata, and /health endpoint never drift behind a hand-edited constant.
+    """
+    from pathlib import Path as _P
+    try:
+        return (_P(__file__).parent / "VERSION").read_text().strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+BACKEND_VERSION = _read_backend_version()
 
 @app.get("/privacy", response_class=HTMLResponse)
 async def privacy_policy():
