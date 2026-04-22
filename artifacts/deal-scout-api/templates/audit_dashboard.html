@@ -931,6 +931,16 @@ function renderHealthSnapshot(reviewData, telem, newCount, versionFilter) {
   `;
 }
 
+async function _safeFetchJson(url) {
+  try {
+    const r = await fetch(url, {headers: headers()});
+    if (!r.ok) return {__error: `HTTP ${r.status}`};
+    return await r.json();
+  } catch(e) {
+    return {__error: e.message || String(e)};
+  }
+}
+
 async function loadData() {
   try {
     const vSelEl = document.getElementById('versionFilter');
@@ -949,21 +959,27 @@ async function loadData() {
     }
     const vf = vSelEl.value;
     const reviewUrl = vf ? `${BASE}/admin/audit/review?version=${encodeURIComponent(vf)}` : `${BASE}/admin/audit/review`;
-    const [reviewResp, telemResp] = await Promise.all([
-      fetch(reviewUrl, {headers: headers()}),
-      fetch(`${BASE}/admin/audit/telemetry`, {headers: headers()}),
-    ]);
-    const reviewData = await reviewResp.json();
-    const telemData = await telemResp.json();
-    lastTelem = telemData;
 
-    const scoreLogResp = await fetch(`${BASE}/score-log`, {headers: headers()});
-    const scoreLogData = await scoreLogResp.json();
-    allScorecards = scoreLogData.scorecards || [];
+    // Fetch all three independently so a failure in one panel (e.g.
+    // telemetry) doesn't blank the whole dashboard. Each panel renders
+    // with whatever data successfully loaded; failed sections show an
+    // inline notice instead of taking down the table.
+    const [reviewData, telemData, scoreLogData] = await Promise.all([
+      _safeFetchJson(reviewUrl),
+      _safeFetchJson(`${BASE}/admin/audit/telemetry`),
+      _safeFetchJson(`${BASE}/score-log`),
+    ]);
+    const reviewErr = reviewData.__error;
+    const telemErr = telemData.__error;
+    const scoreLogErr = scoreLogData.__error;
+    const reviewSafe = reviewErr ? {anomalies: [], stats: {}} : reviewData;
+    const telemSafe = telemErr ? {deal_scores:{}, daily_trend:[], data_sources:{}, confidence:{}, platforms:{}, timing:{}, price_cache:{}, versions:[]} : telemData;
+    lastTelem = telemSafe;
+    allScorecards = scoreLogErr ? [] : (scoreLogData.scorecards || []);
 
     const feedbackById = {};
     const feedbackByUrl = {};
-    (reviewData.anomalies || []).forEach(a => {
+    (reviewSafe.anomalies || []).forEach(a => {
       const sc = a.scorecard;
       if (sc && sc.metadata && sc.metadata.user_feedback) {
         if (sc._id) feedbackById[sc._id] = sc.metadata.user_feedback;
@@ -1016,14 +1032,28 @@ async function loadData() {
     sSel.innerHTML = '<option value="">All</option>';
     [...sources].sort().forEach(s => { sSel.innerHTML += `<option value="${s}">${s}</option>`; });
 
-    allReview = reviewData;
+    allReview = reviewSafe;
 
-    const lastId = telemData.last_reviewed_id || 0;
+    const lastId = telemSafe.last_reviewed_id || 0;
     const newCount = allScorecards.filter(sc => sc._id > lastId && (!vf || (sc.metadata||{}).backend_version === vf)).length;
 
-    renderHealthSnapshot(reviewData, telemData, newCount, vf);
-    renderTelemetry(telemData);
+    renderHealthSnapshot(reviewSafe, telemSafe, newCount, vf);
+    renderTelemetry(telemSafe);
     renderTable();
+
+    // Surface per-panel failures inline without blanking the rest of the UI.
+    if (telemErr) {
+      const note = `<div style="background:#dc262622;border:1px solid #ef4444;color:#fca5a5;padding:8px 12px;border-radius:6px;margin-top:8px;font-size:12px">Telemetry unavailable: ${esc(telemErr)} (charts/cards will be empty until the next reload)</div>`;
+      document.getElementById('tab-quality').insertAdjacentHTML('afterbegin', note);
+    }
+    if (reviewErr) {
+      const note = `<div style="background:#dc262622;border:1px solid #ef4444;color:#fca5a5;padding:8px 12px;border-radius:6px;margin-top:8px;font-size:12px">Review data unavailable: ${esc(reviewErr)}</div>`;
+      document.getElementById('snapshotGrid').insertAdjacentHTML('afterend', note);
+    }
+    if (scoreLogErr) {
+      const body = document.getElementById('scoreBody');
+      body.innerHTML = `<tr><td colspan="18" class="empty-state" style="color:#ef4444">Score log unavailable: ${esc(scoreLogErr)}</td></tr>`;
+    }
   } catch(e) {
     console.error('Load failed:', e);
     document.getElementById('snapshotGrid').innerHTML =
