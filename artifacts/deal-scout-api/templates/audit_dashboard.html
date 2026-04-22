@@ -941,7 +941,13 @@ async function _safeFetchJson(url) {
   }
 }
 
+let _loadDataSeq = 0;
 async function loadData() {
+  // Monotonic request token: if a newer loadData() starts while we're
+  // awaiting fetches, the older response must not overwrite the UI
+  // (otherwise rapidly switching the version filter, or auto-refresh
+  // racing a manual reload, can briefly flash stale data).
+  const myReq = ++_loadDataSeq;
   try {
     const vSelEl = document.getElementById('versionFilter');
     // First-load default: pre-seed CURRENT_VERSION into the dropdown BEFORE
@@ -969,6 +975,8 @@ async function loadData() {
       _safeFetchJson(`${BASE}/admin/audit/telemetry`),
       _safeFetchJson(`${BASE}/score-log`),
     ]);
+    // Discard stale responses: a newer loadData() has already started.
+    if (myReq !== _loadDataSeq) return;
     const reviewErr = reviewData.__error;
     const telemErr = telemData.__error;
     const scoreLogErr = scoreLogData.__error;
