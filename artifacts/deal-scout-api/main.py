@@ -420,6 +420,13 @@ async def score_listing(listing: ListingRequest, request: Request):
             log.info(f"[Cache] HIT for '{listing.title}' @ ${listing.price} — returning cached score")
             return _cached
 
+    # Begin per-run Anthropic token accounting. ContextVar lives on the
+    # current asyncio task and is reclaimed when the request task ends, so
+    # no explicit reset is required (and try/finally would force a giant
+    # indent of the rest of this function).
+    from scoring import claude_usage as _claude_usage
+    _claude_usage.start_run()
+
     # Guard: reject obviously bad titles that indicate a broken extraction
     _generic_titles = {"marketplace", "facebook marketplace", "facebook", "craigslist", "offerup", ""}
     if (listing.title or "").strip().lower() in _generic_titles:
@@ -996,6 +1003,9 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
 
     async def event_stream():
         _stream_scoring_start = _time.time()
+        # Begin per-run Anthropic token accounting (see /score for details).
+        from scoring import claude_usage as _claude_usage
+        _claude_usage.start_run()
         try:
             # ── Step 1: Claude Haiku extracts structured listing data ─────────
             extracted = await extract_listing_from_text(
@@ -1731,6 +1741,11 @@ async def _validate_query_background(
                 messages   = [{"role": "user", "content": prompt}],
             ),
         )
+        try:
+            from scoring import claude_usage as _cu
+            _cu.record(resp, label="QueryValidator")
+        except Exception:
+            pass
         import json as _json2
         raw = resp.content[0].text.strip()
         # Strip markdown fences if present
@@ -2992,7 +3007,17 @@ def _build_scorecard(
             "extension_version": extension_version,
             "total_ms": round((_time.time() - scoring_start_ts) * 1000) if scoring_start_ts > 0 else None,
         },
+        "claude_usage": _current_claude_usage(),
     }
+
+
+def _current_claude_usage() -> dict:
+    """Snapshot Anthropic token usage for the in-flight scoring run."""
+    try:
+        from scoring import claude_usage as _cu
+        return _cu.totals() or {}
+    except Exception:
+        return {}
 
 
 async def _save_score_log(scorecard: dict):
@@ -3023,8 +3048,13 @@ def _score_log_summary(r: dict) -> dict:
     aff = r.get("affiliate_cards", [])
     pe = r.get("product_evaluation", {})
     pi = r.get("product_info", {})
+    cu = r.get("claude_usage", {}) or {}
     return {
         "title":           listing.get("title"),
+        "claude_input_tokens":  cu.get("input_tokens"),
+        "claude_output_tokens": cu.get("output_tokens"),
+        "claude_calls":         cu.get("calls"),
+        "claude_cost_usd":      cu.get("cost_usd"),
         "price":           listing.get("price"),
         "platform":        listing.get("platform"),
         "condition":       listing.get("condition"),
@@ -3496,44 +3526,117 @@ async def _build_daily_summary() -> dict:
     except Exception as e:
         log.warning(f"[DailySummary] Categories query failed: {e}")
 
-    # --- Anthropic cost / API-call estimate ---------------------------------
+    # --- Anthropic cost / API-call (from real token usage) ------------------
+    # Per-score Claude token totals are persisted into score_log.payload
+    # under the "claude_usage" key (see _build_scorecard / claude_usage.py).
+    # We sum those for accurate $$ instead of multiplying by a flat estimate.
+    # Falls back to the legacy COST_PER_SCORE_USD multiplier for any score
+    # that pre-dates this tracking.
     try:
-        cost_row = await pool.fetchrow(
+        await _ensure_score_log_table()
+
+        deal_row = await pool.fetchrow(
             """SELECT
                  COUNT(*) FILTER (WHERE created_at > now() - interval '24 hours') AS scores_24h,
                  COUNT(*) FILTER (WHERE created_at > date_trunc('month', now())) AS scores_mtd,
                  COUNT(*) FILTER (WHERE created_at > now() - interval '30 days') AS scores_30d
                FROM deal_scores"""
         )
-        if cost_row:
-            scores_24h = cost_row["scores_24h"] or 0
-            scores_mtd = cost_row["scores_mtd"] or 0
-            scores_30d = cost_row["scores_30d"] or 0
+        scores_24h = (deal_row and deal_row["scores_24h"]) or 0
+        scores_mtd = (deal_row and deal_row["scores_mtd"]) or 0
+        scores_30d = (deal_row and deal_row["scores_30d"]) or 0
 
-            from datetime import datetime as _dt
-            now_utc = _dt.utcnow()
-            day_of_month = now_utc.day
-            days_in_month = 30  # rough — good enough for projection
-            avg_daily_mtd = (scores_mtd / day_of_month) if day_of_month else 0
-            projected_month = avg_daily_mtd * days_in_month
-
-            cost_today_usd     = scores_24h * COST_PER_SCORE_USD
-            cost_mtd_usd       = scores_mtd * COST_PER_SCORE_USD
-            cost_projected_usd = projected_month * COST_PER_SCORE_USD
-            limit_pct          = (cost_projected_usd / ANTHROPIC_MONTHLY_LIMIT_USD * 100) if ANTHROPIC_MONTHLY_LIMIT_USD else 0
-
-            summary["costs"] = {
-                "scores_24h":         scores_24h,
-                "scores_mtd":         scores_mtd,
-                "scores_30d":         scores_30d,
-                "claude_calls_24h":   int(scores_24h * CLAUDE_CALLS_PER_SCORE),
-                "claude_calls_mtd":   int(scores_mtd * CLAUDE_CALLS_PER_SCORE),
-                "cost_today_usd":     round(cost_today_usd, 2),
-                "cost_mtd_usd":       round(cost_mtd_usd, 2),
-                "cost_projected_usd": round(cost_projected_usd, 2),
-                "monthly_limit_usd":  ANTHROPIC_MONTHLY_LIMIT_USD,
-                "limit_pct":          round(limit_pct, 1),
+        async def _usage_window(interval_sql: str) -> dict:
+            row = await pool.fetchrow(
+                f"""SELECT
+                       COUNT(*)                                                       AS rows_with_usage,
+                       COALESCE(SUM((payload->'claude_usage'->>'input_tokens')::bigint),  0) AS in_tok,
+                       COALESCE(SUM((payload->'claude_usage'->>'output_tokens')::bigint), 0) AS out_tok,
+                       COALESCE(SUM((payload->'claude_usage'->>'calls')::bigint),         0) AS calls,
+                       COALESCE(SUM((payload->'claude_usage'->>'cost_usd')::numeric),     0) AS cost_usd
+                     FROM score_log
+                     WHERE server_ts > now() - interval '{interval_sql}'
+                       AND payload ? 'claude_usage'
+                       AND payload->'claude_usage' ? 'input_tokens'"""
+            )
+            return {
+                "rows":     int(row["rows_with_usage"] or 0) if row else 0,
+                "in_tok":   int(row["in_tok"] or 0) if row else 0,
+                "out_tok":  int(row["out_tok"] or 0) if row else 0,
+                "calls":    int(row["calls"] or 0) if row else 0,
+                "cost_usd": float(row["cost_usd"] or 0.0) if row else 0.0,
             }
+
+        async def _usage_mtd() -> dict:
+            row = await pool.fetchrow(
+                """SELECT
+                       COUNT(*)                                                       AS rows_with_usage,
+                       COALESCE(SUM((payload->'claude_usage'->>'input_tokens')::bigint),  0) AS in_tok,
+                       COALESCE(SUM((payload->'claude_usage'->>'output_tokens')::bigint), 0) AS out_tok,
+                       COALESCE(SUM((payload->'claude_usage'->>'calls')::bigint),         0) AS calls,
+                       COALESCE(SUM((payload->'claude_usage'->>'cost_usd')::numeric),     0) AS cost_usd
+                     FROM score_log
+                     WHERE server_ts > date_trunc('month', now())
+                       AND payload ? 'claude_usage'
+                       AND payload->'claude_usage' ? 'input_tokens'"""
+            )
+            return {
+                "rows":     int(row["rows_with_usage"] or 0) if row else 0,
+                "in_tok":   int(row["in_tok"] or 0) if row else 0,
+                "out_tok":  int(row["out_tok"] or 0) if row else 0,
+                "calls":    int(row["calls"] or 0) if row else 0,
+                "cost_usd": float(row["cost_usd"] or 0.0) if row else 0.0,
+            }
+
+        u_24h = await _usage_window("24 hours")
+        u_mtd = await _usage_mtd()
+
+        # Blend real token cost with legacy estimate for any scores still
+        # missing claude_usage (e.g. pre-rollout entries).
+        legacy_24h = max(scores_24h - u_24h["rows"], 0) * COST_PER_SCORE_USD
+        legacy_mtd = max(scores_mtd - u_mtd["rows"], 0) * COST_PER_SCORE_USD
+        cost_today_usd = u_24h["cost_usd"] + legacy_24h
+        cost_mtd_usd   = u_mtd["cost_usd"] + legacy_mtd
+
+        from datetime import datetime as _dt
+        day_of_month  = _dt.utcnow().day or 1
+        days_in_month = 30  # rough — good enough for projection
+        cost_projected_usd = (cost_mtd_usd / day_of_month) * days_in_month
+        limit_pct = (cost_projected_usd / ANTHROPIC_MONTHLY_LIMIT_USD * 100) if ANTHROPIC_MONTHLY_LIMIT_USD else 0
+
+        # Real Claude call counts (from token usage), with legacy estimate
+        # filling in for scores that lack tracked usage.
+        calls_24h = u_24h["calls"] + int(max(scores_24h - u_24h["rows"], 0) * CLAUDE_CALLS_PER_SCORE)
+        calls_mtd = u_mtd["calls"] + int(max(scores_mtd - u_mtd["rows"], 0) * CLAUDE_CALLS_PER_SCORE)
+
+        # Per-score actuals (only over scores with real tracking) help us
+        # see if a code change is making each run cheaper or more expensive.
+        per_score_today = round(u_24h["cost_usd"] / u_24h["rows"], 4) if u_24h["rows"] else None
+        per_score_mtd   = round(u_mtd["cost_usd"] / u_mtd["rows"], 4) if u_mtd["rows"] else None
+
+        coverage_24h = (u_24h["rows"] / scores_24h * 100) if scores_24h else 0.0
+        coverage_mtd = (u_mtd["rows"] / scores_mtd * 100) if scores_mtd else 0.0
+
+        summary["costs"] = {
+            "scores_24h":         scores_24h,
+            "scores_mtd":         scores_mtd,
+            "scores_30d":         scores_30d,
+            "claude_calls_24h":   calls_24h,
+            "claude_calls_mtd":   calls_mtd,
+            "input_tokens_24h":   u_24h["in_tok"],
+            "output_tokens_24h":  u_24h["out_tok"],
+            "input_tokens_mtd":   u_mtd["in_tok"],
+            "output_tokens_mtd":  u_mtd["out_tok"],
+            "cost_today_usd":     round(cost_today_usd, 2),
+            "cost_mtd_usd":       round(cost_mtd_usd, 2),
+            "cost_projected_usd": round(cost_projected_usd, 2),
+            "monthly_limit_usd":  ANTHROPIC_MONTHLY_LIMIT_USD,
+            "limit_pct":          round(limit_pct, 1),
+            "per_score_today_usd": per_score_today,
+            "per_score_mtd_usd":   per_score_mtd,
+            "tracked_coverage_24h_pct": round(coverage_24h, 1),
+            "tracked_coverage_mtd_pct": round(coverage_mtd, 1),
+        }
     except Exception as e:
         log.warning(f"[DailySummary] Costs query failed: {e}")
 
@@ -3630,13 +3733,23 @@ async def _send_daily_discord_summary():
 
     if c:
         limit_emoji = "🟢" if c["limit_pct"] < 70 else ("🟡" if c["limit_pct"] < 90 else "🔴")
+        coverage = c.get("tracked_coverage_24h_pct", 0.0)
+        title_suffix = "" if coverage >= 99 else f" ({coverage:.0f}% measured)"
         cost_lines = [
-            f"**Today:** ~${c['cost_today_usd']:.2f}  ·  **MTD:** ~${c['cost_mtd_usd']:.2f}",
-            f"**Projected month:** ~${c['cost_projected_usd']:.2f} / ${c['monthly_limit_usd']:.0f} limit  {limit_emoji} **{c['limit_pct']:.0f}%**",
-            f"**Claude calls:** ~{c['claude_calls_24h']:,} today  ·  ~{c['claude_calls_mtd']:,} MTD",
-            f"**Scoring runs:** {c['scores_24h']:,} today  ·  {c['scores_mtd']:,} MTD  ·  {c['scores_30d']:,} last 30d",
+            f"**Today:** ${c['cost_today_usd']:.2f}  ·  **MTD:** ${c['cost_mtd_usd']:.2f}",
+            f"**Projected month:** ${c['cost_projected_usd']:.2f} / ${c['monthly_limit_usd']:.0f} limit  {limit_emoji} **{c['limit_pct']:.0f}%**",
         ]
-        fields.append({"name": "💰 Cost & Usage (estimated)", "value": "\n".join(cost_lines), "inline": False})
+        per_score = c.get("per_score_today_usd")
+        if per_score is not None:
+            cost_lines.append(f"**Avg / score:** ${per_score:.4f}  ·  Claude calls: {c['claude_calls_24h']:,} today · {c['claude_calls_mtd']:,} MTD")
+        else:
+            cost_lines.append(f"**Claude calls:** ~{c['claude_calls_24h']:,} today  ·  ~{c['claude_calls_mtd']:,} MTD")
+        in_tok = c.get("input_tokens_24h", 0)
+        out_tok = c.get("output_tokens_24h", 0)
+        if in_tok or out_tok:
+            cost_lines.append(f"**Tokens today:** {in_tok:,} in · {out_tok:,} out")
+        cost_lines.append(f"**Scoring runs:** {c['scores_24h']:,} today  ·  {c['scores_mtd']:,} MTD  ·  {c['scores_30d']:,} last 30d")
+        fields.append({"name": f"💰 Cost & Usage{title_suffix}", "value": "\n".join(cost_lines), "inline": False})
 
     fields.extend([
         {"name": "🔗 Affiliate", "value": "\n".join(aff_lines), "inline": False},

@@ -2,6 +2,8 @@ import asyncio
 import logging
 import anthropic
 
+from . import claude_usage
+
 log = logging.getLogger(__name__)
 
 async def claude_call_with_retry(fn, *, retries=2, delay=1.0, label="Claude"):
@@ -9,7 +11,9 @@ async def claude_call_with_retry(fn, *, retries=2, delay=1.0, label="Claude"):
     for attempt in range(retries + 1):
         try:
             loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(None, fn)
+            response = await loop.run_in_executor(None, fn)
+            claude_usage.record(response, label=label)
+            return response
         except anthropic.AuthenticationError as e:
             last_err = e
             if attempt < retries:

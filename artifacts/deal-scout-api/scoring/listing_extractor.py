@@ -181,6 +181,11 @@ async def extract_listing_from_text(
                 max_tokens=600,
                 messages=[{"role": "user", "content": prompt}],
             )
+            try:
+                from scoring import claude_usage
+                claude_usage.record(msg, label="ListingExtractor")
+            except Exception:
+                pass
             text = msg.content[0].text.strip()
 
             if text.startswith("```"):
