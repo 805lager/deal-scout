@@ -837,9 +837,12 @@ function renderHealthSnapshot(reviewData, telem, newCount) {
   const ds = (telem && telem.deal_scores) || {};
   const trend = (telem && telem.daily_trend) || [];
 
-  // Most recent day in trend = "today / last 24h" bucket
-  const today24h = trend.length ? (trend[0].count || 0) : 0;
-  const todayAvg = trend.length ? (trend[0].avg_score) : null;
+  // Most recent day in trend = "today / last 24h" bucket.
+  // /admin/audit/telemetry returns daily_trend in ASC order (ORDER BY day),
+  // so the latest day is the LAST element, not the first.
+  const latest = trend.length ? trend[trend.length - 1] : null;
+  const today24h = latest ? (latest.count || 0) : 0;
+  const todayAvg = latest ? latest.avg_score : null;
 
   const anomalyRateRaw = stats.anomaly_rate || '0%';
   const anomalyPct = parseFloat(anomalyRateRaw) || 0;
@@ -905,7 +908,21 @@ function renderHealthSnapshot(reviewData, telem, newCount) {
 
 async function loadData() {
   try {
-    const vf = document.getElementById('versionFilter').value;
+    const vSelEl = document.getElementById('versionFilter');
+    // First-load default: pre-seed CURRENT_VERSION into the dropdown BEFORE
+    // computing `vf`, so review/snapshot/new-since-review data is filtered
+    // to match the version that the UI is showing as selected. Without this,
+    // the first fetch would be unfiltered ("All versions") while the dropdown
+    // visually shows the current version, misleading the snapshot stats.
+    const isFirstLoad = vSelEl.options.length <= 1;
+    if (isFirstLoad && CURRENT_VERSION) {
+      const opt = document.createElement('option');
+      opt.value = CURRENT_VERSION;
+      opt.textContent = CURRENT_VERSION + ' (current)';
+      vSelEl.appendChild(opt);
+      vSelEl.value = CURRENT_VERSION;
+    }
+    const vf = vSelEl.value;
     const reviewUrl = vf ? `${BASE}/admin/audit/review?version=${encodeURIComponent(vf)}` : `${BASE}/admin/audit/review`;
     const [reviewResp, telemResp] = await Promise.all([
       fetch(reviewUrl, {headers: headers()}),
@@ -952,9 +969,11 @@ async function loadData() {
     // score has been stamped with it (e.g. immediately after a redeploy).
     if (CURRENT_VERSION) versions.add(CURRENT_VERSION);
 
-    const vSel = document.getElementById('versionFilter');
+    // Rebuild the version dropdown with the full list, preserving whatever is
+    // currently selected (which on first load is already CURRENT_VERSION,
+    // pre-seeded above so the data fetch matched the UI selection).
+    const vSel = vSelEl;
     const prevVal = vSel.value;
-    const isFirstLoad = vSel.options.length <= 1;
     vSel.innerHTML = '<option value="">All versions</option>';
     [...versions].sort().reverse().forEach(v => {
       const opt = document.createElement('option');
@@ -962,11 +981,7 @@ async function loadData() {
       opt.textContent = v + (v === CURRENT_VERSION ? ' (current)' : '');
       vSel.appendChild(opt);
     });
-    if (isFirstLoad) {
-      vSel.value = CURRENT_VERSION;
-    } else {
-      vSel.value = prevVal;
-    }
+    vSel.value = prevVal;
 
     const pSel = document.getElementById('fPlatform');
     pSel.innerHTML = '<option value="">All</option>';
