@@ -832,10 +832,34 @@ function renderTelemetry(telem) {
   `;
 }
 
-function renderHealthSnapshot(reviewData, telem, newCount) {
+function renderHealthSnapshot(reviewData, telem, newCount, versionFilter) {
   const stats = (reviewData && reviewData.stats) || {};
-  const ds = (telem && telem.deal_scores) || {};
+  const dsGlobal = (telem && telem.deal_scores) || {};
   const trend = (telem && telem.daily_trend) || [];
+
+  // When a version filter is active, derive total / thumbs / avg from the
+  // version-scoped scorecards so snapshot numbers don't mix filtered review
+  // stats with unfiltered telemetry totals (e.g. avoids showing
+  // "Reviewed 3 of 480" where 480 is all-version total but the 3 is v-only).
+  let ds = dsGlobal;
+  if (versionFilter) {
+    const scoped = (allScorecards || []).filter(sc => (sc.metadata||{}).backend_version === versionFilter);
+    let up = 0, down = 0, scoreSum = 0, scoreN = 0;
+    scoped.forEach(sc => {
+      const fb = (sc.metadata||{}).user_feedback;
+      if (fb === 'up') up++;
+      else if (fb === 'down') down++;
+      const s = (sc.deal_score||{}).score;
+      if (typeof s === 'number') { scoreSum += s; scoreN++; }
+    });
+    ds = {
+      total: scoped.length,
+      avg_score: scoreN ? +(scoreSum/scoreN).toFixed(2) : null,
+      thumbs_up: up,
+      thumbs_down: down,
+      unrated: scoped.length - up - down,
+    };
+  }
 
   // Most recent day in trend = "today / last 24h" bucket.
   // /admin/audit/telemetry returns daily_trend in ASC order (ORDER BY day),
@@ -864,8 +888,9 @@ function renderHealthSnapshot(reviewData, telem, newCount) {
   dot.className = 'status-dot ' + statusLevel;
   txt.className = 'status-text ' + statusLevel;
   txt.textContent = statusLabel;
+  const scopeLabel = versionFilter ? `version ${versionFilter}` : 'all versions';
   document.getElementById('statusMeta').textContent =
-    `Reviewed ${stats.total_reviewed||0} of ${ds.total||0} total · refreshed ${new Date().toLocaleTimeString()}`;
+    `Reviewed ${stats.total_reviewed||0} of ${ds.total||0} ${scopeLabel} · refreshed ${new Date().toLocaleTimeString()}`;
 
   const thumbsUp = ds.thumbs_up || 0;
   const thumbsDown = ds.thumbs_down || 0;
@@ -996,7 +1021,7 @@ async function loadData() {
     const lastId = telemData.last_reviewed_id || 0;
     const newCount = allScorecards.filter(sc => sc._id > lastId && (!vf || (sc.metadata||{}).backend_version === vf)).length;
 
-    renderHealthSnapshot(reviewData, telemData, newCount);
+    renderHealthSnapshot(reviewData, telemData, newCount, vf);
     renderTelemetry(telemData);
     renderTable();
   } catch(e) {
