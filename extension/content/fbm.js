@@ -452,9 +452,15 @@
     }
 
     const vehicleText = title + ' ' + description.slice(0, 300);
-    const isVehicle =
+    // Micromobility (e-bikes, e-trikes, e-scooters, Surrons, electric dirt bikes)
+    // are NOT vehicles — they have eBay/Google comps and should NOT route through
+    // the CarGurus vehicle pricer (which returns vehicle_not_applicable + $0 value).
+    const isMicromobility =
+      /\b(e[-\s]?bike|ebike|electric\s+bike|electric\s+bicycle|e[-\s]?trike|electric\s+tricycle|e[-\s]?scooter|electric\s+scooter|electric\s+moped|sur.?ron|talaria|onewheel|hoverboard)\b/i.test(vehicleText);
+    const isVehicle = !isMicromobility && (
       /\b(20\d\d|19\d\d)\s+[A-Z][a-z]+\s+[A-Z][a-z]+/.test(title) ||
-      /\b(odometer|vin\b|title\s+status|sedan|suv\b|pickup\s+truck|hatchback|minivan|motorcycle|atv\b|dirt\s*bike|sur.?ron|electric\s+bike|convertible\s+top|carfax|clean\s+title|salvage\s+title|lien\b)\b/i.test(vehicleText);
+      /\b(odometer|vin\b|title\s+status|sedan|suv\b|pickup\s+truck|hatchback|minivan|motorcycle|atv\b|convertible\s+top|carfax|clean\s+title|salvage\s+title|lien\b)\b/i.test(vehicleText)
+    );
 
     const isMultiItem = /\b(bundle|lot\b|set\b|pack\b|pair\b|\d+\s*pcs|pieces|assorted|collection)\b/i.test(title + ' ' + description.slice(0, 200));
 

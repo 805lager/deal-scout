@@ -758,6 +758,22 @@ async def score_listing(listing: ListingRequest, request: Request):
         deal_score.score = min(deal_score.score, 6)
         log.info(f"[SecurityCap] Score capped to {deal_score.score} (security={_sec_score})")
 
+    # ── Step 4c.5: No-data guard ─────────────────────────────────────────────
+    # If pricing pipeline returned no usable market data (vehicle_not_applicable
+    # stub, confidence="none", or estimated_value=0), Claude's score is purely
+    # speculative — never recommend buying. Cap score at 5 and force should_buy=False.
+    if (market_value.data_source == "vehicle_not_applicable"
+        or market_value.confidence == "none"
+        or market_value.estimated_value <= 0):
+        if deal_score.should_buy or deal_score.score > 5:
+            _old = deal_score.score
+            deal_score.score = min(deal_score.score, 5)
+            deal_score.should_buy = False
+            if not deal_score.red_flags:
+                deal_score.red_flags = []
+            deal_score.red_flags.insert(0, "No reliable market comps available — score is uncertain")
+            log.info(f"[NoDataGuard] No market data (source={market_value.data_source}, conf={market_value.confidence}, ev=${market_value.estimated_value:.0f}) — score {_old} → {deal_score.score}, should_buy=False")
+
     # ── Step 4d: Price-to-market ratio adjustment ────────────────────────────
     # Catches cases where AI scored opposite to the objective price gap.
     # Example: listing at $175 vs market $85 → overpriced, but AI gave 7/10.
@@ -1483,6 +1499,21 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
             elif _sec_score <= 4 and deal_score.score > 6:
                 deal_score.score = min(deal_score.score, 6)
                 log.info(f"[SecurityCap] Score capped to {deal_score.score} (security={_sec_score})")
+
+            # ── Step 4b.5: No-data guard ──────────────────────────────────────
+            # Mirror of Step 4c.5 in /score: never recommend buying when the
+            # pricing pipeline returned no usable market data.
+            if (market_value.data_source == "vehicle_not_applicable"
+                or market_value.confidence == "none"
+                or market_value.estimated_value <= 0):
+                if deal_score.should_buy or deal_score.score > 5:
+                    _old = deal_score.score
+                    deal_score.score = min(deal_score.score, 5)
+                    deal_score.should_buy = False
+                    if not deal_score.red_flags:
+                        deal_score.red_flags = []
+                    deal_score.red_flags.insert(0, "No reliable market comps available — score is uncertain")
+                    log.info(f"[NoDataGuard] No market data (source={market_value.data_source}, conf={market_value.confidence}, ev=${market_value.estimated_value:.0f}) — score {_old} → {deal_score.score}, should_buy=False")
 
             # ── Step 4c: Price-to-market ratio adjustment ─────────────────────
             _ev = market_value.estimated_value

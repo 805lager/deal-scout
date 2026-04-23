@@ -866,9 +866,34 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
                    "kayak", "canoe", "jet ski", "pwc", "waverunner",
                    "keystone", "jayco", "winnebago", "airstream", "coachmen",
                    "forest river", "fleetwood", "thor", "dutchmen"}
+    # Micromobility (e-bikes, e-trikes, e-scooters, Surrons, etc.) are sometimes
+    # flagged is_vehicle=True by the content script or Claude extractor (e.g. an
+    # "electric motorcycle" titled "Surron"), but CarGurus/Craigslist auto-comps
+    # don't cover them. Route them through the normal eBay+Google pipeline which
+    # has real comps for these items.
+    # Brand keywords (literal substring match — these are unambiguously micromobility).
+    _micromobility_brand_kw = {"surron", "sur-ron", "sur ron", "talaria",
+                                "super73", "super 73", "rad power", "radpower",
+                                "onewheel", "one wheel", "hoverboard"}
+    # Generic "electric <anything> <vehicle-noun>" or "e-<noun>" patterns.
+    # Allows up to 3 intervening words between "electric" and the noun
+    # (e.g. "Electric Fat Tire Tricycle", "Electric Folding Mountain Bike").
+    import re as _re
+    _micromobility_re = _re.compile(
+        r"\b("
+        r"e[-\s]?(?:bike|bicycle|trike|tricycle|scooter|moto|moped)"
+        r"|ebike|etrike|escooter|emoto"
+        r"|electric(?:\s+\w+){0,3}\s+(?:bike|bicycle|trike|tricycle|scooter|moped|moto|motorcycle|dirt\s+bike)"
+        r")\b",
+        _re.IGNORECASE,
+    )
     _title_lower = listing_title.lower()
     _is_rv_boat = any(kw in _title_lower for kw in _rv_boat_kw)
-    if is_vehicle and not _is_rv_boat:
+    _is_micromobility = (
+        any(kw in _title_lower for kw in _micromobility_brand_kw)
+        or bool(_micromobility_re.search(listing_title))
+    )
+    if is_vehicle and not _is_rv_boat and not _is_micromobility:
         try:
             from scoring.vehicle_pricer import get_vehicle_market_value
             vdata = await get_vehicle_market_value(

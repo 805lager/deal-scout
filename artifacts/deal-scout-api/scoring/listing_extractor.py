@@ -82,7 +82,8 @@ Rules:
   Use null ONLY if there is absolutely no price information anywhere on the page.
   Handles formats: "$145", "$145 · In stock", "$145$200" (dual-price — use the lower).
 - photo_count: look for "1/5", "3/8", "3 photos", "5 pictures" etc. 0 if unclear.
-- is_vehicle: true only for cars, trucks, motorcycles, boats, RVs, ATVs, trailers.
+- is_vehicle: true ONLY for road-registered/titled vehicles: cars, trucks, gas motorcycles (Harley/Honda/Yamaha/etc.), boats, RVs, ATVs, trailers.
+  is_vehicle MUST be FALSE for: e-bikes, electric bicycles, e-trikes, electric tricycles, e-scooters, electric scooters, Surron / Talaria / electric dirt bikes, hoverboards, OneWheel, electric mopeds. These items have eBay/Google comps and are NOT vehicles for pricing purposes.
 - is_multi_item: true if the listing sells a bundle, lot, or set of multiple items together.
 - original_price: the crossed-out or "was" price if seller reduced it, else 0.0.
 - shipping_cost: 0.0 for free shipping or local pickup. 0.0 if not mentioned.

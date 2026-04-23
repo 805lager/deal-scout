@@ -135,7 +135,35 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 ## Extension Version
 
-Current: **v0.42.6** (extension) / **v0.42.6** (API — read from `artifacts/deal-scout-api/VERSION`)
+Current: **v0.43.0** (extension) / **v0.43.0** (API — read from `artifacts/deal-scout-api/VERSION`)
+
+### v0.43.0 E-bike / micromobility classification fix
+- **Bug surfaced by audit dashboard**: e-bikes, e-trikes, e-scooters, Surrons,
+  and electric "motorcycles" were being routed through the vehicle pricing
+  pipeline (CarGurus → Craigslist), failing to find auto comps, returning
+  `data_source=vehicle_not_applicable` + `estimated_value=$0` + `confidence=none`.
+  Despite zero market data, Claude was still returning `score=6, should_buy=true`
+  — purely speculative recommendations.
+- **Fix in 4 layers**:
+  1. `extension/content/fbm.js`: added `isMicromobility` regex that negates
+     `isVehicle` for ebike/etrike/escooter/Surron/Talaria/OneWheel/hoverboard.
+     (Defensive only — `extractListing` is dead code; `extractRaw` is live.)
+  2. `scoring/listing_extractor.py`: tightened Claude extraction prompt to
+     explicitly exclude micromobility from `is_vehicle`. **This is the
+     authoritative gate** for FBM/Craigslist/eBay/OfferUp.
+  3. `scoring/ebay_pricer.py`: added micromobility brand keyword set + regex
+     (`electric <0-3 words> <bike|tricycle|scooter|moped|moto|motorcycle|dirt bike>`)
+     that, even when `is_vehicle=True` slips through, skips the vehicle pricer
+     and falls through to the regular eBay+Google pipeline. Verified: Surron,
+     Narrak Electric Fat Tire Tricycle, Super73, Talaria, OneWheel, Wired
+     Freedom, "Electric Folding Mountain Bike" all now return real comps.
+     Real cars (Honda Civic, F-150) still route to CarGurus correctly.
+  4. `main.py`: added "no-data guard" Step 4c.5 (in `/score`) and Step 4b.5
+     (in `/score-stream`) that caps score at 5 and forces `should_buy=False`
+     whenever `data_source=='vehicle_not_applicable'` OR `confidence=='none'`
+     OR `estimated_value<=0`. Adds a red flag so the verdict is honest about
+     the missing data. Backstop for future cases of any item type with no
+     usable comps.
 
 ### v0.42.6 Restore thumbs UI + daily cost reporting
 - Extension: drop the `score_id`-required gate on the FB score-card thumbs
