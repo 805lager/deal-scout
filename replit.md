@@ -135,7 +135,18 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 ## Extension Version
 
-Current: **v0.43.2** (extension) / **v0.43.2** (API — read from `artifacts/deal-scout-api/VERSION`)
+Current: **v0.43.3** (extension) / **v0.43.3** (API — read from `artifacts/deal-scout-api/VERSION`)
+
+### v0.43.3 Rescore Findings — dedupe by score_log_id
+Bug in v0.43.1's rescore button: the audit returns one row per
+finding, so a listing with 3 findings (category_routing +
+score_accuracy + data_source) was getting rescored 3× back-to-back.
+Wasteful and worse — rapid duplicate calls can hit different
+pricing-pipeline branches (rate limits, cache races) and produce
+inconsistent scores for the same listing in the same batch (one user
+saw Talaria #454 rescore 6→7 then 6→2 in the same run). Now dedupes by
+`score_log_id` before iterating; confirm dialog notes how many duplicate
+finding rows were collapsed.
 
 ### v0.43.2 Three audit-driven fixes — affiliate routing, score anchoring, e-bike eBay coverage
 Audit dashboard rescore surfaced three real issues; this release fixes all three.

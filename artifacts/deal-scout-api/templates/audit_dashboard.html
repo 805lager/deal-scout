@@ -661,7 +661,25 @@ async function rescore(id) {
 
 async function rescoreFindings() {
   if (!lastFindings || lastFindings.length === 0) return;
-  if (!confirm(`Re-run the current scoring pipeline on ${lastFindings.length} flagged listing(s)? This may take ~10-20s per listing.`)) return;
+
+  // Dedupe by score_log_id — the same listing often appears in multiple
+  // finding categories (category_routing + score_accuracy + data_source).
+  // Without dedup we'd rescore the same listing 2-3× back-to-back, which
+  // is wasteful and can produce inconsistent results when pricing-pipeline
+  // state varies between rapid calls (rate limits, cache races).
+  const seen = new Set();
+  const uniqueFindings = [];
+  for (const f of lastFindings) {
+    if (seen.has(f.id)) continue;
+    seen.add(f.id);
+    uniqueFindings.push(f);
+  }
+
+  const dupeNote = uniqueFindings.length < lastFindings.length
+    ? ` (${lastFindings.length - uniqueFindings.length} duplicate finding row(s) collapsed)`
+    : '';
+
+  if (!confirm(`Re-run the current scoring pipeline on ${uniqueFindings.length} unique listing(s)${dupeNote}? This may take ~10-20s per listing.`)) return;
 
   const btn = document.getElementById('rescoreFindingsBtn');
   btn.disabled = true;
