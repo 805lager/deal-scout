@@ -1,0 +1,63 @@
+36 inch Blackstone griddle with hood — $180critical
+Score Log #431 — click to view
+Score of 5 and verdict 'Fair price' is inconsistent with the data. Estimated value is $200, but sold_avg is only $71.21. At $180, this is 2.5x the actual market average. The score should be much lower (2-3 range, overpriced by 150%+). The verdict incorrectly states 'fair price' when the listing is significantly overpriced relative to eBay comps.
+Fix: Recalculate score using sold_avg ($71.21) as primary anchor. Score should be 2-3 (overpriced by 150%). Recommended offer should be ~$100-120, not $135.
+Commercial Self-Service Dog Washers — $4,300critical
+Score Log #437 — click to view
+Score of 5 with estimated_value $3,500 suggests overpriced listing. However, query_used is 'commercial self service' (overly generic) and eBay data shows sold_avg only $1,473.45 with 10 comps. At $4,300, this is 3x the actual market average. Security warnings flag price inconsistencies ($4,300 title vs $5,500 listing). Score should be 1-2 (massively overpriced).
+Fix: Use more specific query for dog washer comparables. Recalculate score anchoring to sold_avg ($1,473). Score should be 1-2. Recommended offer should be ~$1,500-1,800, not $3,400.
+Front Bumper Grille Black W/Gold Trim Strip For 2024-2025 Ford F-150 F150 TREMOR — $770critical
+Score Log #441 — click to view
+Verdict correctly identifies this as 'significantly overpriced' and '4-5x market comps', but score of 3 understates how bad a deal this is. Estimated value $150 vs asking $770 is a 414% markup. The recommended_offer of $180 is still 20% above estimated value and doesn't reflect the severity of overpricing.
+Fix: Score of 1-2 is more appropriate for 414% overpricing. Recommended offer should be closer to $150-160 to reflect true market value. Consider flagging as potentially fraudulent listing given extreme markup with no justification.
+Apple iPad 7th Gen. 128GB, Wi-Fi, 10.2 in Space Gray Model A2197 IOS 18.7 — $135warning
+Score Log #429 — click to view
+Score of 6 with verdict 'Fair refurbished iPad at market rate' but red_flag states 'Price at top of market range ($135 vs. $106 average)'. This is a 27% markup, not fair market rate. Score should be 4-5 (overpriced), not 6. The should_buy recommendation of true contradicts the overpricing analysis.
+Fix: Adjust score to 4-5 range. Change should_buy to false. Recommended offer of $115 is reasonable, but current score messaging is inconsistent with the data showing overpricing.
+Front Bumper Upper Grille Lights For 2024 2025 Ford F-150 F150 XL XLT STX TREMOR — $290warning
+Score Log #440 — click to view
+Score of 4 is correct for 48% overpricing, but security_warnings mention 'Unusually low price for M2 MacBook Air' which is clearly copy-pasted from a different listing (ID 434). This is an auto part, not a laptop. Security warnings have wrong content.
+Fix: Replace incorrect security warning (copied from laptop listing). Add relevant warnings about LED condensation issues and known product defects mentioned in red_flags.
+Coleman tent — $50info
+Score Log #435 — click to view
+Score of 7 and should_buy=true are justified, but estimated_value is $75 and sold_avg is $75, making the $50 price 33% below market. Score of 7 is appropriate for this discount. However, red_flags correctly note missing doggy-den pole and frayed pole creating some functional gaps.
+Fix: Score is appropriate. Consider if missing accessories should lower score slightly to 6, given some functionality is incomplete. Current assessment seems fair overall.
+EVH Wolfgang Special Deep Purple Metallic w/ New Case — $900info
+Score Log #444 — click to view
+Score of 7 is justified (39% below market at $900 vs $1,464 avg). Should_buy=true is reasonable given the discount. However, red_flag notes 'No return policy or warranty mentioned' and 'Refuses returns/trades/negotiation' in security warnings - these are significant risks for a $900 purchase that should lower score or make should_buy=false.
+Fix: Consider if inability to return/exchange should lower score to 6 or change should_buy to false. Current recommendation seems optimistic given the risk profile of a local pickup-only, no-return-policy sale of high-value instrument.
+data_source (4)
+Genesis Supreme Overnighter Toy Hauler — $18,000critical
+Score Log #433 — click to view
+Data source listed as 'claude_knowledge' with market_confidence 'medium' and only 3 sold comps with huge variance (sold_avg $22,500 vs active_avg $23,625). No vehicle_not_applicable error despite being a vehicle, but pricing confidence is extremely low. The query_used field shows generic search term that likely doesn't match RV-specific marketplaces.
+Fix: Use proper RV/vehicle valuation source (Autotrader, RVTrader, NADA Guides). Increase sold_count minimum before scoring vehicles. Flag for manual review given high transaction value and data weakness.
+Narrak Electric Fat Tire Tricycle — $850critical
+Score Log #445 — click to view
+Data source shows 'vehicle_not_applicable' with market_confidence 'none' and all pricing metrics at zero. This is marked as is_vehicle=true (electric tricycle), yet pricing pipeline failed to find valid comps. Score of 6 and should_buy=true are based on zero market data. The affiliate program routing includes 'autotrader' and 'cargurus' which are auto-focused and inappropriate for a tricycle.
+Fix: Either reclassify as non-vehicle (bikes category) or find proper vehicle comps for e-tricycles. Cannot score with confidence when estimated_value is $0. Score should be marked 'unable_to_score' pending proper data source. Use bike-focused comps or resale sites like Facebook Marketplace historical data.
+Surron electric bike — $2,500critical
+Score Log #447 — click to view
+Data source shows 'vehicle_not_applicable' with market_confidence 'none' and all pricing metrics at zero. Asking price $2,500 exceeds new retail ($1,600-$1,900), but verdict cannot validate this without comps. Despite zero market data, score is 6 and should_buy is false based on logic rather than data. Affiliate programs incorrectly list 'autotrader' and 'cargurus' for an electric bike.
+Fix: Reclassify from vehicle to bike/sports category. Source proper e-bike resale comps (eBay, Craigslist, specialized e-bike marketplaces). Cannot confidently score without market data. Current scoring appears to be rule-based fallback rather than data-driven.
+2024 Wired Freedom Dual Battery E Bike — $1,600critical
+Score Log #449 — click to view
+Data source shows 'vehicle_not_applicable' with market_confidence 'none' and all pricing metrics at zero. Score of 6 and should_buy=true are assigned despite zero market data to validate pricing. Verdict acknowledges 'limited comp data creates uncertainty' but still recommends purchase. Affiliate programs incorrectly include 'autotrader' and 'cargurus' for an e-bike.
+Fix: Reclassify from vehicle to bike category. Source proper e-bike comparables from eBay, Facebook Marketplace, or specialized retailers. Score should be withheld or marked 'uncertain' until valid comps are obtained. Do not recommend purchase when confidence is 'none'.
+category_routing (1)
+Fender Mustang L25 — $150critical
+Score Log #436 — click to view
+This is a musical instrument (guitar amplifier), not a vehicle, yet is_vehicle field shows mixed signals and security_warnings mention 'If guitar' vs 'If vehicle'. Affiliate programs include 'ebay' and 'sweetwater' (correct), but description and query are inconsistent with item category. The listing itself is confusing about what product is being sold.
+Fix: Clarify item category. Set is_vehicle to false. Verify whether listing is for Fender Mustang guitar or amplifier. Update security warnings to be specific to musical instruments only.
+flag_error (3)
+Macbook Air M2 — $600warning
+Score Log #434 — click to view
+Security warnings include 'Unusually low price for M2 MacBook Air in like-new condition' but the listing is actually 15% OVERPRICED according to the verdict. Asking $600 vs estimated $520 is not 'unusually low'—it's unusually HIGH. This security warning is inverted/incorrect.
+Fix: Remove or correct security warning. Should flag 'Unusually HIGH price' or remove entirely since overpricing is already documented in verdict and red_flags.
+Polk Audio Studio monitor — $100warning
+Score Log #430 — click to view
+Market confidence is 'low' with condition listed as 'Unknown', yet security_score is 6 (medium-low risk). With unknown condition, vague description, minimal photos, and no seller history, security_score should be 3-4 (high risk), not 6. The low confidence + unknown condition should trigger higher security risk.
+Fix: Lower security_score to 3-4 (high risk) due to combination of unknown condition, minimal details, and low market confidence. The score reflects appropriate skepticism but security_score doesn't match the risk profile.
+Vaonis STELLINA Observation Station Hybrid Telescope — $1,000warning
+Score Log #443 — click to view
+Verdict states 'Fair price' and 'condition claim inconsistent with visible wear', yet red_flags document internal optical contamination visible in photos contradicting 'flawless' claim. Score of 6 is too high given the condition misrepresentation. Should be 4-5 range for a used scope with visible contamination at premium pricing.
+Fix: Lower score to 4-5. Verdict should reflect condition fraud risk more prominently. Recommended offer of $850 is appropriate but score should reflect the inconsistency between claims and actual condition.
