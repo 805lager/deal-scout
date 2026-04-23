@@ -1,0 +1,25 @@
+Audit Findings
+5 issue(s) found in 6 scores
+category_routing (1)
+Talaria Sting R MX4 – Clean, Low Miles, Ready to Ride — $3,400warning
+Score Log #454 — click to view
+Talaria Sting R MX4 is an electric motorcycle/moped, not a traditional vehicle. Affiliate programs include 'autotrader' and 'cargurus' which are for cars and trucks, not electric motorcycles. This is category misrouting.
+Fix: Change affiliate_programs to include motorcycle-specific programs like 'ebay', 'facebook_marketplace', or specialized e-motorcycle retailers. Remove 'autotrader' and 'cargurus'.
+score_accuracy (2)
+Talaria Sting R MX4 – Clean, Low Miles, Ready to Ride — $3,400critical
+Score Log #454 — click to view
+Score of 6 with verdict 'Fair deal' does not match the data. Price is $3,400 vs estimated_value of $4,725, meaning the listing is 28% BELOW market value. This should be a score of 7+ (great deal), not 6 (fair deal). The math shows this is underpriced, not fairly priced.
+Fix: Recalculate score. At 28% below estimated value with low mileage and recent service, this should score 7-8 with verdict 'Good value' or 'Exceptional value'. Verify the estimated_value calculation is correct given sparse eBay comp data (only 2 sold).
+E-Lux Electric Bike — $445warning
+Score Log #455 — click to view
+Score calculation appears inconsistent. Listed price $445 vs estimated_value $380 = 17% overpriced. However, sold_avg is $425 and active_avg is $446.25, both higher than estimated_value. This mixed signal makes the score of 5 ('overpriced') questionable. The data sources contradict each other.
+Fix: Clarify which pricing source is authoritative. If sold_avg ($425) is the true market comp, then $445 is only 5% above market (should be score 4-5). If estimated_value ($380) is correct, the sold/active averages need explanation. Reconcile the three pricing signals before finalizing score.
+data_source (2)
+Talaria Sting R MX4 – Clean, Low Miles, Ready to Ride — $3,400warning
+Score Log #454 — click to view
+Data source uses only 2 sold eBay comps for a $3,400+ electric motorcycle. With market_confidence marked 'low' and only 2 sold units, the estimated_value of $4,725 and sold_avg of $4,725 may be unreliable. The sparse data doesn't support high-confidence pricing.
+Fix: Flag the low confidence explicitly in the verdict. Consider using multiple data sources (Google Shopping, specialist e-motorcycle retailers) to validate pricing. The score reliability is questionable with only 2 comps.
+E-Lux Electric Bike — $445critical
+Score Log #455 — click to view
+Data source is listed as 'claude_knowledge' instead of a proper pricing pipeline (ebay_browse, google_shopping, etc.). This indicates the pricing data may not be from real market comps but from an AI knowledge base, which is unreliable for accurate market valuation.
+Fix: Rerun pricing analysis using ebay_browse or google_shopping. Verify estimated_value of $380 against actual recent sold listings for E-Lux Sierra foldable e-bikes. Do not rely on 'claude_knowledge' for marketplace pricing.
