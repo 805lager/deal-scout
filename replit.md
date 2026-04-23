@@ -135,7 +135,47 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 ## Extension Version
 
-Current: **v0.43.1** (extension) / **v0.43.1** (API — read from `artifacts/deal-scout-api/VERSION`)
+Current: **v0.43.2** (extension) / **v0.43.2** (API — read from `artifacts/deal-scout-api/VERSION`)
+
+### v0.43.2 Three audit-driven fixes — affiliate routing, score anchoring, e-bike eBay coverage
+Audit dashboard rescore surfaced three real issues; this release fixes all three.
+
+**Task A — Affiliate cards now follow the micromobility pricing routing.**
+After v0.43.0 the pricing pipeline correctly skipped CarGurus for e-bikes
+and Talarias, but the affiliate router was still detecting them as
+"vehicles" (via the bare "motorcycle" keyword in CATEGORY_MAP) and
+showing autotrader/cargurus cards. `detect_category()` in
+`scoring/affiliate_router.py` now runs the same micromobility brand list
++ regex as `scoring/ebay_pricer.py` BEFORE the keyword loop and forces
+`bikes` for any match — keeping affiliate routing in sync with pricing
+routing. Added e-bike brand coverage: e-lux, aventon, ride1up, juiced,
+bakcou, ariel rider, wired freedom, narrak, lectric.
+
+**Task B — Score anchored on `sold_avg`, not blended `estimated_value`.**
+`_price_direction_hint` in `scoring/deal_scorer.py` now prefers
+`sold_avg` as the price anchor whenever `sold_count >= 3` (real recent
+transactions). When `sold_avg` and `estimated_value` diverge by >15%,
+both numbers are surfaced in a new "PRICING SIGNAL DIVERGENCE" line
+that explicitly tells Claude to treat sold_avg as authoritative. Added
+two new rules to the CRITICAL RULES FOR DATA QUALITY block telling
+Claude to (1) anchor on sold_avg over estimated_value and (2) honor the
+PRICE DIRECTION line literally — a 25%+ discount with reasonable comps
+must score 7+. Also relaxed the low-confidence cap so a meaningfully
+discounted item with no listing-text red flags can still score 6-7
+even with thin comps. Fixes Talaria #454 type cases where 28% below
+sold_avg was scoring 6 ("Fair deal") instead of 7-8.
+
+**Task C — E-bike brands no longer fall through to `claude_knowledge`.**
+Added a "micromobility broaden-and-retry" step in `get_market_value()`
+in `scoring/ebay_pricer.py`: if both the full query and the
+`_build_short_query` retry return 0 sold comps AND the listing matches
+the micromobility brand/regex set, do one final eBay Browse query of
+the form `<first 1-2 brand tokens> ebike` (skipping filler words like
+"electric"/"bike") before falling back to Google Shopping or
+claude_knowledge. Also expanded the micromobility brand keyword set in
+`ebay_pricer.py` to include the e-bike brands the audit caught. Fixes
+E-Lux #455 type cases where data_source was claude_knowledge instead
+of ebay_browse.
 
 ### v0.43.1 Audit dashboard — Rescore Findings button
 - Added a "Rescore Findings" button to the audit dashboard header next to

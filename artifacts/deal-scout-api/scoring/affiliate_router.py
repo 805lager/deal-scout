@@ -1291,6 +1291,9 @@ def detect_category(product_info) -> str:
     Map a ProductInfo object to one of our internal category keys.
 
     Tries (in order):
+      0. Micromobility override (e-bikes, e-motos, Surrons, Talarias, etc.)
+         These often get tagged as "motorcycle" or "vehicle" by Claude, which
+         would route them to autotrader/cargurus — wrong for an e-bike.
       1. product_info.category (Claude-extracted, e.g. "cordless drill")
       2. product_info.brand    (e.g. "RYOBI" → tools)
       3. product_info.model    (partial match)
@@ -1306,6 +1309,33 @@ def detect_category(product_info) -> str:
     ]
 
     combined = " ".join(candidates).lower()
+
+    # ── Micromobility override (Task A — v0.43.2) ────────────────────────────
+    # Mirrors the same brand list + regex used in scoring/ebay_pricer.py to
+    # decide whether to skip the vehicle pricing pipeline. Without this, an
+    # "Electric Motorcycle" Talaria would match the bare "motorcycle" keyword
+    # below and end up in CATEGORY_PROGRAMS["vehicles"] → autotrader/cargurus
+    # affiliate cards. Affiliate routing must match pricing routing.
+    _micromobility_brand_kw = (
+        "surron", "sur-ron", "sur ron", "talaria", "super73", "super 73",
+        "rad power", "radpower", "onewheel", "one wheel", "hoverboard",
+        # Popular e-bike brands that the audit caught misrouting:
+        "e-lux", "elux", "lectric ebikes", "lectric xp", "aventon",
+        "ride1up", "ride 1 up", "juiced bikes", "bakcou", "ariel rider",
+        "wired freedom", "narrak",
+    )
+    import re as _re
+    _micromobility_re = _re.compile(
+        r"\b("
+        r"e[-\s]?(?:bike|bicycle|trike|tricycle|scooter|moto|moped)"
+        r"|ebike|etrike|escooter|emoto"
+        r"|electric(?:\s+\w+){0,3}\s+(?:bike|bicycle|trike|tricycle|scooter|moped|moto|motorcycle|dirt\s+bike)"
+        r")\b",
+        _re.IGNORECASE,
+    )
+    if any(kw in combined for kw in _micromobility_brand_kw) or _micromobility_re.search(combined):
+        log.info(f"[AffiliateRouter] Micromobility detected — forcing category=bikes for '{combined[:80]}'")
+        return "bikes"
 
     # WHY WORD-BOUNDARY (not plain substring):
     # Naive substring matching has a class of false-positive bugs where a short

@@ -874,7 +874,12 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
     # Brand keywords (literal substring match — these are unambiguously micromobility).
     _micromobility_brand_kw = {"surron", "sur-ron", "sur ron", "talaria",
                                 "super73", "super 73", "rad power", "radpower",
-                                "onewheel", "one wheel", "hoverboard"}
+                                "onewheel", "one wheel", "hoverboard",
+                                # Additional e-bike brands flagged by the audit
+                                # falling through to claude_knowledge:
+                                "e-lux", "elux", "lectric ebikes", "lectric xp",
+                                "aventon", "ride1up", "ride 1 up", "juiced bikes",
+                                "bakcou", "ariel rider", "wired freedom", "narrak"}
     # Generic "electric <anything> <vehicle-noun>" or "e-<noun>" patterns.
     # Allows up to 3 intervening words between "electric" and the noun
     # (e.g. "Electric Fat Tire Tricycle", "Electric Folding Mountain Bike").
@@ -962,6 +967,36 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
                         _browse_outcome = "retry_miss"
                     if _retry_active and not _browse_active_result:
                         _browse_active_result = _retry_active
+
+            # ── Micromobility broaden-and-retry (Task C — v0.43.2) ──────────
+            # If both the full and short queries missed AND we know this is a
+            # micromobility brand (E-Lux, Aventon, Wired Freedom, etc.), eBay
+            # often has comps under the generic "<brand> ebike" search even
+            # when the model name doesn't match. Try once more before falling
+            # back to claude_knowledge so we get real comp data.
+            if not _browse_result and _is_micromobility:
+                # Pick the first 1-2 brand tokens (skip "Electric"/"Bike" filler)
+                _filler = {"electric", "ebike", "e-bike", "bike", "bicycle",
+                           "scooter", "moped", "moto", "motorcycle"}
+                _brand_tokens = [t for t in query.split()
+                                 if t.lower() not in _filler and len(t) > 1][:2]
+                if _brand_tokens:
+                    _broad_query = " ".join(_brand_tokens) + " ebike"
+                    if _broad_query.lower() not in (query.lower(),
+                                                    (short_query or "").lower()):
+                        log.info(f"[BrowseAPI MICRO-RETRY] '{query}' missed — broadening to '{_broad_query}'")
+                        _broad_result, _broad_active = await asyncio.gather(
+                            search_ebay_browse(_broad_query, sold=True,  limit=20, condition=listing_condition),
+                            search_ebay_browse(_broad_query, sold=False, limit=20, condition=listing_condition),
+                        )
+                        if _broad_result:
+                            log.info(f"[BrowseAPI MICRO-RETRY] '{_broad_query}' → avg=${_broad_result['avg_price']:.0f} ({_broad_result['count']} sold)")
+                            _browse_result = _broad_result
+                            _browse_outcome = "micro_retry_hit"
+                            query = _broad_query
+                            if _broad_active and not _browse_active_result:
+                                _browse_active_result = _broad_active
+
         log.info(f"[Telemetry] browse_outcome={_browse_outcome} query='{query}'")
     except Exception as e:
         _browse_outcome = "error"

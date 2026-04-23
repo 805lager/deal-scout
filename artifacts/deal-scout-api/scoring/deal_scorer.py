@@ -167,19 +167,67 @@ def _format_seller_trust(trust: dict) -> str:
     return "\n".join(lines)
 
 
-def _price_direction_hint(asking_price: float, estimated_value: float) -> str:
-    if estimated_value <= 0 or asking_price <= 0:
+def _price_direction_hint(asking_price: float, market_value: dict) -> str:
+    """
+    Build the PRICE DIRECTION hint shown to Claude.
+
+    v0.43.2 — Anchor on sold_avg, not estimated_value, when we have ≥3 real
+    sold comps. estimated_value is a blended/synthesized number that can drift
+    away from actual recent transactions (especially with sparse data, where
+    it gets pulled toward retail/active priors). sold_avg is the closest thing
+    we have to ground truth.
+
+    When sold_avg and estimated_value diverge by more than 15%, surface BOTH
+    numbers in the hint and call the discrepancy out explicitly so Claude
+    doesn't anchor on the wrong one.
+    """
+    if asking_price <= 0:
         return ""
-    ratio = asking_price / estimated_value
+
+    estimated_value = float(market_value.get("estimated_value", 0) or 0)
+    sold_avg        = float(market_value.get("sold_avg", 0) or 0)
+    sold_count      = int(market_value.get("sold_count", 0) or 0)
+
+    # Pick the authoritative anchor. sold_avg with ≥3 comps wins over the
+    # blended estimate; otherwise fall back to estimated_value.
+    if sold_avg > 0 and sold_count >= 3:
+        anchor       = sold_avg
+        anchor_label = f"sold avg ${sold_avg:.0f} ({sold_count} real sales)"
+    elif estimated_value > 0:
+        anchor       = estimated_value
+        anchor_label = f"estimated value ${estimated_value:.0f}"
+    elif sold_avg > 0:
+        anchor       = sold_avg
+        anchor_label = f"sold avg ${sold_avg:.0f} (only {sold_count} sale{'s' if sold_count != 1 else ''} — thin data)"
+    else:
+        return ""
+
+    # Detect divergence between sold_avg and estimated_value (both > 0)
+    divergence_note = ""
+    if sold_avg > 0 and estimated_value > 0:
+        gap = abs(sold_avg - estimated_value)
+        gap_pct = (gap / max(sold_avg, estimated_value)) * 100
+        if gap_pct > 15:
+            divergence_note = (
+                f"\n>>> PRICING SIGNAL DIVERGENCE: sold_avg=${sold_avg:.0f} vs "
+                f"estimated_value=${estimated_value:.0f} ({gap_pct:.0f}% apart). "
+                f"sold_avg reflects {sold_count} real recent transactions; "
+                f"estimated_value is a blended figure that may include retail/active priors. "
+                f"Treat sold_avg as authoritative when sold_count >= 3."
+            )
+
+    ratio = asking_price / anchor
     pct = abs(1 - ratio) * 100
     if ratio < 0.5:
-        return f"\n>>> PRICE DIRECTION: Asking ${asking_price:.0f} is {pct:.0f}% BELOW estimated value ${estimated_value:.0f}. This is a DISCOUNTED listing — do NOT say overpriced."
+        line = f"\n>>> PRICE DIRECTION: Asking ${asking_price:.0f} is {pct:.0f}% BELOW {anchor_label}. This is a DISCOUNTED listing — do NOT say overpriced."
     elif ratio < 0.85:
-        return f"\n>>> PRICE DIRECTION: Asking ${asking_price:.0f} is {pct:.0f}% BELOW estimated value ${estimated_value:.0f}. This is a good discount."
+        line = f"\n>>> PRICE DIRECTION: Asking ${asking_price:.0f} is {pct:.0f}% BELOW {anchor_label}. This is a good discount — score should reflect a strong deal."
     elif ratio <= 1.15:
-        return f"\n>>> PRICE DIRECTION: Asking ${asking_price:.0f} is roughly AT estimated value ${estimated_value:.0f} (within 15%)."
+        line = f"\n>>> PRICE DIRECTION: Asking ${asking_price:.0f} is roughly AT {anchor_label} (within 15%)."
     else:
-        return f"\n>>> PRICE DIRECTION: Asking ${asking_price:.0f} is {pct:.0f}% ABOVE estimated value ${estimated_value:.0f}. This is overpriced."
+        line = f"\n>>> PRICE DIRECTION: Asking ${asking_price:.0f} is {pct:.0f}% ABOVE {anchor_label}. This is overpriced."
+
+    return line + divergence_note
 
 
 def _category_specific_rules(listing: dict) -> str:
@@ -349,7 +397,7 @@ eBay lowest active:  ${market_value['active_low']:.2f}
 New retail price:    ${market_value['new_price']:.2f}
 Estimated value:     ${market_value['estimated_value']:.2f}
 Data confidence:     {market_value['confidence']}
-{_price_direction_hint(total_cost, market_value['estimated_value'])}
+{_price_direction_hint(total_cost, market_value)}
 
 ## YOUR TASK
 Analyze this listing holistically. Consider:
@@ -371,7 +419,9 @@ Analyze this listing holistically. Consider:
 - NEVER say "condition must be verified across all N photos" — you either saw the photos or you didn't. If you saw them, report what you observed.
 
 ## CRITICAL RULES FOR DATA QUALITY
-- If Data confidence is "low", do NOT flag price-to-comp mismatch as a red flag. State in value_assessment that comps are limited and you cannot confirm fair pricing, but do not penalize the score for it.
+- **Anchor on sold_avg, not estimated_value, when sold_count >= 3.** sold_avg is what items actually sold for in real recent transactions. estimated_value is a blended figure that incorporates retail and active-listing priors and can drift away from real sold prices when comps are sparse. If a PRICING SIGNAL DIVERGENCE note appears above, follow it: use sold_avg as the price anchor for both `value_assessment` and `recommended_offer`. Do NOT call an item "overpriced" relative to estimated_value if it sits within 10% of sold_avg.
+- **Honor the PRICE DIRECTION line literally.** If it says "X% BELOW", do NOT score the listing as fair or overpriced — a 25%+ discount with reasonable comps should produce a score of 7+ unless there are concrete red flags in the listing text (salvage title, broken parts disclosed, etc.).
+- If Data confidence is "low", do NOT flag price-to-comp mismatch as a red flag. State in value_assessment that comps are limited and you cannot confirm fair pricing, but do not penalize the score for it. **However, if the listing is meaningfully discounted (>20% below the anchor) and there are no red flags in the listing text, you may still score it 6-7 with low confidence — note the thin comps in `value_assessment` rather than capping the score.**
 - Only fire a "price above market" red flag when confidence is "medium" or "high" AND the gap is significant.
 - When confidence is "low", NEVER write phrases like "X% above market", "massively overpriced", "price-to-value ratio is indefensible", or anchor `recommended_offer` to the sold average. Example of what NOT to do when confidence=low: summary="Massively overpriced; 819% above market comp." / red_flag="Price 819% above eBay sold average". Instead say "Comps are thin — fair value cannot be confirmed" and base the offer on condition, description quality, and listed price only.
 - Red flags should be grounded in the listing text itself (vague description, implausible claims, inconsistent details), NOT in weak eBay comp data.
