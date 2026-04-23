@@ -148,6 +148,10 @@ body:not(.show-extra) .col-extra{display:none}
     <button class="btn btn-primary" id="checkBtn" onclick="runCheck()">
       Check Scores Now
     </button>
+    <button class="btn btn-secondary" id="rescoreFindingsBtn" onclick="rescoreFindings()" disabled
+            title="Re-run the current scoring pipeline on every flagged finding from the most recent check">
+      Rescore Findings
+    </button>
   </div>
 </div>
 
@@ -256,6 +260,7 @@ const BASE = window.location.pathname.replace(/\/admin\/audit\/?$/, '');
 let allScorecards = [];
 let allReview = null;
 let lastTelem = null;
+let lastFindings = [];
 let sortCol = '_server_ts';
 let sortAsc = false;
 
@@ -654,6 +659,74 @@ async function rescore(id) {
   }
 }
 
+async function rescoreFindings() {
+  if (!lastFindings || lastFindings.length === 0) return;
+  if (!confirm(`Re-run the current scoring pipeline on ${lastFindings.length} flagged listing(s)? This may take ~10-20s per listing.`)) return;
+
+  const btn = document.getElementById('rescoreFindingsBtn');
+  btn.disabled = true;
+
+  const list = document.getElementById('findingsList');
+  // Inject a summary panel above the findings list
+  let summary = document.getElementById('rescoreSummary');
+  if (!summary) {
+    summary = document.createElement('div');
+    summary.id = 'rescoreSummary';
+    summary.style.cssText = 'background:#1e293b;border:1px solid #334155;border-radius:6px;padding:12px;margin-bottom:12px;font-size:13px';
+    list.parentNode.insertBefore(summary, list);
+  }
+  summary.innerHTML = '<div style="font-weight:600;color:#94a3b8;margin-bottom:8px">Rescore Results</div><div id="rescoreSummaryRows"></div>';
+  const rows = document.getElementById('rescoreSummaryRows');
+
+  let done = 0, changed = 0, unchanged = 0, errored = 0;
+  for (const f of lastFindings) {
+    btn.textContent = `Rescoring ${done + 1} of ${lastFindings.length}…`;
+    const rowEl = document.createElement('div');
+    rowEl.style.cssText = 'padding:6px 0;border-top:1px solid #2a2d3a;display:flex;justify-content:space-between;gap:12px;align-items:center';
+    rowEl.innerHTML = `<span style="color:#94a3b8;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">#${f.id} ${esc(f.title || '')}</span><span style="color:#64748b">scoring…</span>`;
+    rows.appendChild(rowEl);
+
+    try {
+      const resp = await fetch(`${BASE}/admin/audit/rescore`, {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({score_log_id: f.id}),
+      });
+      const data = await resp.json();
+      if (data.error) {
+        errored++;
+        rowEl.lastElementChild.innerHTML = `<span style="color:#ef4444">error: ${esc(data.error)}</span>`;
+      } else {
+        const diff = data.diff || {};
+        const changes = (diff.field_changes || []).length + (diff.green_flags ? 1 : 0) + (diff.red_flags ? 1 : 0) + (diff.affiliate_cards ? 1 : 0);
+        const oldS = diff.score_old, newS = diff.score_new;
+        const oldSrc = diff.data_source_old || '—', newSrc = diff.data_source_new || '—';
+        if (changes === 0 && oldS === newS && oldSrc === newSrc) {
+          unchanged++;
+          rowEl.lastElementChild.innerHTML = `<span style="color:#10b981">✓ unchanged (score ${oldS ?? '—'})</span>`;
+        } else {
+          changed++;
+          const arrow = (oldS !== newS) ? `<strong>${oldS ?? '—'} → ${newS ?? '—'}</strong>` : `score ${newS ?? '—'}`;
+          const srcArrow = (oldSrc !== newSrc) ? ` | <span style="color:#94a3b8">${esc(oldSrc)} → ${esc(newSrc)}</span>` : '';
+          rowEl.lastElementChild.innerHTML = `<span style="color:#f59e0b">${arrow}${srcArrow}</span>`;
+        }
+      }
+    } catch(e) {
+      errored++;
+      rowEl.lastElementChild.innerHTML = `<span style="color:#ef4444">error: ${esc(e.message)}</span>`;
+    }
+    done++;
+  }
+
+  btn.textContent = `Rescore Findings (${lastFindings.length})`;
+  btn.disabled = false;
+  const head = summary.firstElementChild;
+  head.innerHTML = `Rescore Results — <span style="color:#f59e0b">${changed} changed</span>, <span style="color:#10b981">${unchanged} unchanged</span>${errored ? `, <span style="color:#ef4444">${errored} error(s)</span>` : ''}`;
+
+  // Refresh the underlying scorecards so the table reflects the new data
+  loadData();
+}
+
 async function runCheck() {
   const btn = document.getElementById('checkBtn');
   btn.disabled = true;
@@ -683,6 +756,15 @@ async function runCheck() {
 
     panel.classList.add('visible');
     count.textContent = `${data.findings.length} issue(s) found in ${data.reviewed_count} scores`;
+
+    lastFindings = data.findings || [];
+    const rescoreBtn = document.getElementById('rescoreFindingsBtn');
+    if (rescoreBtn) {
+      rescoreBtn.disabled = lastFindings.length === 0;
+      rescoreBtn.textContent = lastFindings.length
+        ? `Rescore Findings (${lastFindings.length})`
+        : 'Rescore Findings';
+    }
 
     if (data.findings.length === 0) {
       list.innerHTML = '<div class="empty-state" style="padding:20px">No issues found — all reviewed scores look correct.</div>';

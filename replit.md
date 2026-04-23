@@ -135,7 +135,17 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 ## Extension Version
 
-Current: **v0.43.0** (extension) / **v0.43.0** (API — read from `artifacts/deal-scout-api/VERSION`)
+Current: **v0.43.1** (extension) / **v0.43.1** (API — read from `artifacts/deal-scout-api/VERSION`)
+
+### v0.43.1 Audit dashboard — Rescore Findings button
+- Added a "Rescore Findings" button to the audit dashboard header next to
+  "Check Scores Now". Disabled until a check has run. Once enabled, it
+  iterates every flagged finding, calls `/admin/audit/rescore` for each
+  score_log_id sequentially, and renders a compact summary panel above
+  the findings list showing per-listing old→new score, data_source
+  changes, and a totals line ("N changed, M unchanged, K errored").
+  Useful after deploying a scoring fix to validate it against historical
+  flagged listings without having to score new items first.
 
 ### v0.43.0 E-bike / micromobility classification fix
 - **Bug surfaced by audit dashboard**: e-bikes, e-trikes, e-scooters, Surrons,
