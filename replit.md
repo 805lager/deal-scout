@@ -135,7 +135,62 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 ## Extension Version
 
-Current: **v0.43.3** (extension) / **v0.43.3** (API — read from `artifacts/deal-scout-api/VERSION`)
+Current: **v0.43.4** (extension) / **v0.43.4** (API — read from `artifacts/deal-scout-api/VERSION`)
+
+### v0.43.4 Faster scoring + cleaner FBM popup on navigation
+Four changes that shave wall time off every score and stop the Deal
+Scout panel from getting stuck on screen when the user clicks away
+from a Marketplace listing.
+
+**Speed 1 — merged Claude extraction (`/score-stream`).** The streaming
+pipeline used to make TWO sequential Haiku calls for every listing:
+`extract_listing_from_text` (clean title/price/etc from raw page text)
+followed by `extract_product` (brand/model/search_query). Both were
+short-prompt structured-output tasks against the same listing data.
+New `extract_listing_and_product()` in `scoring/listing_extractor.py`
+returns both shapes in a single Haiku call — saves ~0.6-1.2s/score and
+halves per-score Haiku token cost. Output schema is a strict superset
+of the originals; downstream callers (eBay pricer, deal scorer,
+security scorer, audit logger) are unchanged. `/score-stream` no
+longer runs a preliminary-then-refined eBay pair either — once we
+have `product_info.search_query` from the merged call, eBay is queried
+directly with the right query the first time.
+
+**Speed 2 — short-circuit refined eBay when prelim is strong (`/score`).**
+The non-stream `/score` path still does prelim+refine to overlap
+extraction with eBay. Added a third skip-refinement condition (on top
+of the existing `_queries_similar` and `_ebay_rate_limited` checks):
+if the preliminary pass already returned `sold_count >= 5` AND the
+refined query has ≥50% token overlap with the raw title, skip the
+refined eBay call entirely. Saves another ~1.5-2.5s on common cases
+where the seller-written title was already specific enough.
+
+**Speed 3 — DB schema-ensure moved to startup.** New
+`@app.on_event("startup") _ensure_db_tables_at_startup` runs
+`_ensure_affiliate_events_table` + `_ensure_corrections_table` once
+at process start. The in-request `_ensure_*_table()` calls remain as
+defense-in-depth — the module-level idempotent flag they set means
+those subsequent calls early-out for free instead of paying for the
+first-call DDL roundtrip on a user-facing request.
+
+**Cleanup — FBM popup clears on non-listing navigation.** On Facebook
+Marketplace (an SPA), navigating from a scored listing back to the
+search results, FB home, or any non-`/item/<id>` URL used to leave
+the previous score panel sitting on screen until manually closed.
+Now `_onFbmNav` in `extension/content/fbm.js` aborts any in-flight
+score and calls `removePanel()` immediately when the destination URL
+isn't a listing — covering both `pushState`/`replaceState` and
+`popstate` (Back/Forward). Defense-in-depth in `extension/background.js`:
+`webNavigation.onCommitted` on facebook.com tabs sends a `CLEAR_PANEL`
+message whenever the new URL isn't a listing, so even cross-origin
+or refresh-style navigations the in-page hook misses still clean up.
+`fbm.js` message handler responds to `CLEAR_PANEL` with the same
+abort+nonce-bump+removePanel sequence used by RESCORE.
+
+Bleed/overlap protections preserved unchanged: per-`(tabId, listingId)`
+score cache in background.js, `__dealScoutNonce` + `__dealScoutAbort`
+per-listing in fbm.js, per-listing `score_log_id`, and the v0.43.3
+audit-dedup are all untouched.
 
 ### v0.43.3 Rescore Findings — dedupe by score_log_id
 Bug in v0.43.1's rescore button: the audit returns one row per

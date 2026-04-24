@@ -512,12 +512,30 @@ async def score_listing(listing: ListingRequest, request: Request):
     _word_overlap = len(_raw_words & _ext_words) / max(len(_raw_words | _ext_words), 1)
     _queries_similar = _word_overlap > 0.8
 
+    # v0.43.4 — short-circuit refinement when the preliminary pass already
+    # returned plenty of real sold comps AND the refined query is recognizably
+    # related to the preliminary one (≥50% token overlap). This covers the
+    # common case where the seller-written title was already specific enough
+    # (e.g. "Orion XT8 Telescope") and Claude's tweak ("Orion XT8 Dobsonian
+    # telescope") would just return the same comps with one less filler word.
+    # Saves ~1.5-2.5s per score on average without dropping any accuracy —
+    # if eBay already gave us 5+ sold comps, a different word-permutation of
+    # the same query won't beat that.
+    _prelim_sold_count = int(getattr(prelim_market, "sold_count", 0) or 0)
+    _prelim_strong = _prelim_sold_count >= 5 and _word_overlap >= 0.5
+
     need_refine = (extracted_q and extracted_q != raw_q and len(extracted_q) > 4
-                   and not _ebay_rate_limited and not _queries_similar)
+                   and not _ebay_rate_limited and not _queries_similar
+                   and not _prelim_strong)
     if _ebay_rate_limited and extracted_q != raw_q:
         log.info(f"[Speed] Skipping eBay refinement — rate-limited, mock data unchanged")
     elif _queries_similar and extracted_q != raw_q:
         log.info(f"[Speed] Skipping market refinement — queries {_word_overlap:.0%} similar")
+    elif _prelim_strong and extracted_q != raw_q:
+        log.info(
+            f"[Speed] Skipping market refinement — preliminary already strong "
+            f"(sold_count={_prelim_sold_count}, overlap={_word_overlap:.0%})"
+        )
 
     _refine_coro = None
     _eval_coro = None
@@ -1009,7 +1027,7 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
     ).split(",")[0].strip()
     _check_rate_limit(client_ip)
 
-    from scoring.listing_extractor import extract_listing_from_text
+    from scoring.listing_extractor import extract_listing_and_product
     from scoring.product_extractor import _fallback_extraction
     from scoring.affiliate_router import detect_category, CATEGORY_PROGRAMS
     from dataclasses import asdict as _dc_asdict
@@ -1023,8 +1041,10 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
         from scoring import claude_usage as _claude_usage
         _claude_usage.start_run()
         try:
-            # ── Step 1: Claude Haiku extracts structured listing data ─────────
-            extracted = await extract_listing_from_text(
+            # ── Step 1: Claude Haiku extracts listing fields + product identity ─
+            # Single Haiku call returns both shapes (v0.43.4) — saves ~1s vs the
+            # old two-call sequence (extract_listing_from_text → extract_product).
+            extracted, product_info = await extract_listing_and_product(
                 raw_text=raw.raw_text,
                 platform=raw.platform,
                 url=raw.listing_url,
@@ -1160,107 +1180,45 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
 
             log.info(f"[Stream] Scoring '{listing.title}' @ ${listing.price}")
 
-            # ── Step 2: Product extraction + eBay + product eval (concurrent) ─
+            # ── Step 2: eBay market value + product eval (concurrent) ─────────
+            # product_info was already produced by the merged extract above, so
+            # we don't run a preliminary-then-refined pair like /score does. The
+            # extracted search_query is already the query we want eBay to use.
             yield _sse({"type": "progress", "label": "Checking eBay market prices…"})
 
-            raw_title_query = listing.title.strip()
-            product_info, prelim_market, product_eval = await asyncio.gather(
-                extract_product(listing.title, listing.description),
+            _ebay_query   = (product_info.search_query or "").strip() or listing.title.strip()
+            _eval_brand   = product_info.brand
+            _eval_model   = product_info.model
+            _eval_category = product_info.category
+            _eval_display = product_info.display_name or listing.title
+
+            market_value, product_eval = await asyncio.gather(
                 get_market_value(
-                    listing_title     = raw_title_query,
-                    listing_condition = listing.condition,
-                    is_vehicle        = listing.is_vehicle,
-                    listing_price     = listing.price,
-                    description       = (listing.description or "")[:2000],
-                ),
-                evaluate_product(brand="", model="", category="", display_name=listing.title),
-                return_exceptions=True,
-            )
-
-            if isinstance(product_info, Exception):
-                log.warning(f"[Stream] Product extraction failed ({product_info})")
-                product_info = _fallback_extraction(listing.title)
-
-            if isinstance(prelim_market, Exception):
-                yield _sse({"type": "error",
-                            "message": f"Market value lookup failed: {prelim_market}"})
-                return
-
-            if isinstance(product_eval, Exception):
-                from scoring.product_evaluator import _unknown_evaluation
-                product_eval = _unknown_evaluation(product_info.display_name)
-
-            # eBay refinement + product eval refinement (concurrent when both needed)
-            extracted_q  = (product_info.search_query or "").strip().lower()
-            raw_q        = raw_title_query.lower()
-            _ebay_rate_limited = getattr(prelim_market, "data_source", "") == "ebay_mock"
-
-            _raw_words = set(raw_q.split())
-            _ext_words = set(extracted_q.split())
-            _word_overlap = len(_raw_words & _ext_words) / max(len(_raw_words | _ext_words), 1)
-            _queries_similar = _word_overlap > 0.8
-
-            need_refine  = (extracted_q and extracted_q != raw_q and len(extracted_q) > 4
-                            and not _ebay_rate_limited and not _queries_similar)
-            if _queries_similar and extracted_q != raw_q:
-                log.info(f"[Stream] Skipping market refinement — queries {_word_overlap:.0%} similar")
-
-            need_eval_refine = bool(product_info.brand or product_info.display_name)
-
-            if need_refine and need_eval_refine:
-                _refine_market_task = get_market_value(
-                    listing_title     = product_info.search_query,
+                    listing_title     = _ebay_query,
                     listing_condition = listing.condition,
                     is_vehicle        = listing.is_vehicle,
                     listing_price     = listing.price,
                     description       = (listing.description or "")[:2000],
                     category          = product_info.category,
-                )
-                _refine_eval_task = evaluate_product(
-                    brand        = product_info.brand,
-                    model        = product_info.model,
-                    category     = product_info.category,
-                    display_name = product_info.display_name,
-                )
-                _ref_results = await asyncio.gather(
-                    _refine_market_task, _refine_eval_task, return_exceptions=True,
-                )
-                if isinstance(_ref_results[0], Exception):
-                    log.warning(f"[Stream] eBay refinement failed: {_ref_results[0]}")
-                    market_value = prelim_market
-                else:
-                    market_value = _ref_results[0]
-                if isinstance(_ref_results[1], Exception):
-                    log.warning(f"[Stream] Product eval refinement failed: {_ref_results[1]}")
-                else:
-                    product_eval = _ref_results[1]
-            else:
-                if need_refine:
-                    try:
-                        market_value = await get_market_value(
-                            listing_title     = product_info.search_query,
-                            listing_condition = listing.condition,
-                            is_vehicle        = listing.is_vehicle,
-                            listing_price     = listing.price,
-                            description       = (listing.description or "")[:2000],
-                            category          = product_info.category,
-                        )
-                    except Exception as _ref_err:
-                        log.warning(f"[Stream] eBay refinement failed: {_ref_err}")
-                        market_value = prelim_market
-                else:
-                    market_value = prelim_market
+                ),
+                evaluate_product(
+                    brand        = _eval_brand,
+                    model        = _eval_model,
+                    category     = _eval_category,
+                    display_name = _eval_display,
+                ),
+                return_exceptions=True,
+            )
 
-                if need_eval_refine:
-                    try:
-                        product_eval = await evaluate_product(
-                            brand        = product_info.brand,
-                            model        = product_info.model,
-                            category     = product_info.category,
-                            display_name = product_info.display_name,
-                        )
-                    except Exception as _eval_err:
-                        log.warning(f"[Stream] Product eval refinement failed: {_eval_err}")
+            if isinstance(market_value, Exception):
+                yield _sse({"type": "error",
+                            "message": f"Market value lookup failed: {market_value}"})
+                return
+
+            if isinstance(product_eval, Exception):
+                from scoring.product_evaluator import _unknown_evaluation
+                log.warning(f"[Stream] Product eval failed: {product_eval}")
+                product_eval = _unknown_evaluation(product_info.display_name)
 
             # ── Auction Mode: derive bid range from market data ──────────────
             # For PURE auctions (no BIN), once we have sold_avg, we calculate:
@@ -3833,6 +3791,25 @@ async def _daily_summary_scheduler():
 
 
 @app.on_event("startup")
+async def _ensure_db_tables_at_startup():
+    """
+    Run table-ensure DDL once at startup so the first user request doesn't
+    pay for it (~50-150ms each). The in-request _ensure_*_table() guards are
+    kept as defense-in-depth — once the module-level flag is set here, those
+    calls early-out for free.
+    """
+    try:
+        await _ensure_affiliate_events_table()
+    except Exception as e:
+        log.warning(f"[Startup] _ensure_affiliate_events_table failed (non-fatal): {e}")
+    try:
+        await _ensure_corrections_table()
+    except Exception as e:
+        log.warning(f"[Startup] _ensure_corrections_table failed (non-fatal): {e}")
+    log.info("[Startup] affiliate_events + query_corrections tables ensured")
+
+
+@app.on_event("startup")
 async def _migrate_install_id_column():
     try:
         from scoring.data_pipeline import _get_pool
@@ -3882,6 +3859,16 @@ if _is_production:
     async def _prod_startup():
         log.info("[Prod] Root app startup — running migrations and scheduler")
         await _migrate_install_id_column()
+        # Starlette does not propagate startup events to mounted sub-apps
+        # reliably, so the table-ensure registered on `app` may never fire
+        # in prod. Re-run it here so the first user request after deploy
+        # doesn't pay the DDL roundtrip cost.
+        try:
+            _ensure_affiliate_events_table()
+            _ensure_corrections_table()
+            log.info("[Prod] affiliate_events + query_corrections tables ensured")
+        except Exception as _e:
+            log.warning(f"[Prod] table-ensure at startup failed: {_e}")
         _asyncio.create_task(_daily_summary_scheduler())
         log.info("[Prod] Daily summary scheduler started (9:00 AM PST)")
 

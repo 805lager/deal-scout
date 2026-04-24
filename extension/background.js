@@ -337,6 +337,17 @@ chrome.webNavigation.onCommitted.addListener((details) => {
     spaLastListingId.set(details.tabId, newId);
   } else {
     spaLastListingId.delete(details.tabId);
+    // Defense-in-depth: tell the FBM content script to clear any stale Deal
+    // Scout panel even if its own pushState/popstate hook missed the event
+    // (happens occasionally on cross-origin or refresh-style navigations).
+    // Marketplace's left-rail search is on facebook.com but isn't a listing
+    // URL, so the message is a no-op when there's no panel to remove.
+    if (details.url.includes("facebook.com")) {
+      try {
+        chrome.tabs.sendMessage(details.tabId, { type: "CLEAR_PANEL" })
+          .catch(() => {});
+      } catch (_e) {}
+    }
   }
   clearTimeout(spaDebounceTimers.get(details.tabId));
   spaDebounceTimers.delete(details.tabId);

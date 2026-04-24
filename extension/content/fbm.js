@@ -210,6 +210,28 @@
       window.__dealScoutRescanTimer = setTimeout(autoScore, 400);
       sendResponse({ ok: true });
     }
+    if (message.type === "CLEAR_PANEL") {
+      // Background-side fallback: webNavigation saw the FB tab leave a listing
+      // URL, so make sure no stale Deal Scout panel is left on screen even if
+      // our in-page pushState/popstate hook missed the event.
+      //
+      // Race guard: a stale CLEAR_PANEL (e.g. from an intermediate non-listing
+      // commit during fast SPA nav) can arrive AFTER the user has already
+      // landed on a NEW listing in the same tab. If we cleared blindly we'd
+      // abort the in-flight score for the new listing. So only act when the
+      // current page URL is also a non-listing.
+      const _curUrl = window.location.href || "";
+      const _onListing = /\/marketplace\/item\/\d+/.test(_curUrl);
+      if (!_onListing) {
+        if (window.__dealScoutAbort) {
+          try { window.__dealScoutAbort.abort(); } catch (_e) {}
+        }
+        window.__dealScoutNonce = (window.__dealScoutNonce || 0) + 1;
+        window.__dealScoutRunning = false;
+        try { removePanel(); } catch (_e) {}
+      }
+      sendResponse({ ok: true, cleared: !_onListing });
+    }
     return true;
   });
 
@@ -2151,10 +2173,39 @@
     const oldId = _listingIdFromUrl(location.href);
     const newId = newHref ? _listingIdFromUrl(newHref) : '';
 
-    if (!isPopstate) {
-      if (!newId || newId === oldId) {
-        return;
+    // Non-listing destination on push/replaceState (e.g. clicking back to the
+    // search results, navigating to FB home, etc.) — kill any in-flight scoring
+    // and clear the panel immediately. Without this, the previous score panel
+    // stays glued to the screen until the user manually closes it.
+    if (!isPopstate && !newId) {
+      if (oldId || document.getElementById(PANEL_ID)) {
+        if (window.__dealScoutAbort) {
+          try { window.__dealScoutAbort.abort(); } catch (_e) {}
+        }
+        window.__dealScoutNonce = (window.__dealScoutNonce || 0) + 1;
+        window.__dealScoutRunning = false;
+        try { removePanel(); } catch (_e) {}
+        _dsNavLog('clearOnLeave', { from: oldId, to: '' });
       }
+      return;
+    }
+
+    if (!isPopstate && newId === oldId) {
+      return;
+    }
+
+    // popstate (Back/Forward) to a non-listing page — same cleanup.
+    if (isPopstate && !newId && !isListingPage()) {
+      if (document.getElementById(PANEL_ID)) {
+        if (window.__dealScoutAbort) {
+          try { window.__dealScoutAbort.abort(); } catch (_e) {}
+        }
+        window.__dealScoutNonce = (window.__dealScoutNonce || 0) + 1;
+        window.__dealScoutRunning = false;
+        try { removePanel(); } catch (_e) {}
+        _dsNavLog('clearOnPopstate', { from: oldId, to: '' });
+      }
+      return;
     }
 
     if (isListingPage() || (newHref && /\/marketplace\/(?:[^/]+\/)?item\/\d+/.test(newHref))) {
