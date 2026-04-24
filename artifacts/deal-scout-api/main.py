@@ -3862,13 +3862,17 @@ if _is_production:
         # Starlette does not propagate startup events to mounted sub-apps
         # reliably, so the table-ensure registered on `app` may never fire
         # in prod. Re-run it here so the first user request after deploy
-        # doesn't pay the DDL roundtrip cost.
+        # doesn't pay the DDL roundtrip cost. Both ensure functions are
+        # async — they MUST be awaited or the coroutines never run.
         try:
-            _ensure_affiliate_events_table()
-            _ensure_corrections_table()
-            log.info("[Prod] affiliate_events + query_corrections tables ensured")
+            await _ensure_affiliate_events_table()
         except Exception as _e:
-            log.warning(f"[Prod] table-ensure at startup failed: {_e}")
+            log.warning(f"[Prod] _ensure_affiliate_events_table failed (non-fatal): {_e}")
+        try:
+            await _ensure_corrections_table()
+        except Exception as _e:
+            log.warning(f"[Prod] _ensure_corrections_table failed (non-fatal): {_e}")
+        log.info("[Prod] affiliate_events + query_corrections tables ensured")
         _asyncio.create_task(_daily_summary_scheduler())
         log.info("[Prod] Daily summary scheduler started (9:00 AM PST)")
 

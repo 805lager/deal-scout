@@ -221,7 +221,12 @@
       // abort the in-flight score for the new listing. So only act when the
       // current page URL is also a non-listing.
       const _curUrl = window.location.href || "";
-      const _onListing = /\/marketplace\/item\/\d+/.test(_curUrl);
+      // Use the same canonical pattern as background.js _bgListingId and
+      // _onFbmNav line 2211 — supports the optional region segment
+      // (e.g. /marketplace/seattle/item/123). A narrower regex would
+      // misclassify region-prefixed listings as non-listings and accidentally
+      // clear a valid panel.
+      const _onListing = /\/marketplace\/(?:[^/]+\/)?item\/\d+/.test(_curUrl);
       if (!_onListing) {
         if (window.__dealScoutAbort) {
           try { window.__dealScoutAbort.abort(); } catch (_e) {}
