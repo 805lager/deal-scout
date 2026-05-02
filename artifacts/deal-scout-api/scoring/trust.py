@@ -15,13 +15,13 @@ Signals (each is a single boolean check; any one fires the line):
   5. duplicate_seller_listing  — placeholder; awaits seller-listings DOM data
   6. photo_text_contradiction  — vision-extracted (passed in)
 
-Severity buckets:
+Severity buckets (per task spec):
   0 fired      → "none"   (no UI line, no score change)
   1 fired      → "info"   (line shown, score untouched)
   2-3 fired    → "warn"   (line shown, score capped at 5,
                             verdict overridden)
-  4-5 fired    → "alert"  (line shown, score capped at 3,
-                            verdict overridden)
+  4-5 fired    → "alert"  (line shown, same cap/verdict as warn —
+                            distinct color only)
   6 fired      → "alert"  (score floored at 1, verdict
                             "Likely scam — do not engage.")
 """
@@ -51,8 +51,10 @@ _SPEC_TOKEN_RE = re.compile(
 )
 
 
-# Severity → score cap / floor / verdict.
-# Stored as a table so the rules stay readable & easy to tweak.
+# Severity → score cap / floor / verdict (per task spec).
+# Per the task: 2+ signals → cap 5, all 6 → floor 1. The "alert" UI color
+# (4-5 signals) shares the same score-cap rules as "warn" (2-3 signals);
+# only the chip color differs.
 SEVERITY_RULES: dict[str, dict[str, Any]] = {
     "none":  {"cap": None, "floor": None, "verdict": None},
     "info":  {"cap": None, "floor": None, "verdict": None},
@@ -62,9 +64,10 @@ SEVERITY_RULES: dict[str, dict[str, Any]] = {
         "verdict": "Verify before buying — multiple trust concerns.",
     },
     "alert": {
-        "cap":     3,
+        # Same caps as warn — spec only differentiates by chip color.
+        "cap":     5,
         "floor":   None,
-        "verdict": "Multiple trust concerns — proceed with caution.",
+        "verdict": "Verify before buying — multiple trust concerns.",
     },
     # Special case: ALL signals firing — strongest negative the model can emit.
     "alert_all": {
