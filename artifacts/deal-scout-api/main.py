@@ -146,7 +146,15 @@ def _cache_get(key: str):
         return None
     return entry["payload"]
 
-def _cache_set(key: str, payload: dict, url_keyed: bool = False):
+def _cache_set(key: str, payload, url_keyed: bool = False):
+    """
+    Store a cache payload. We coerce Pydantic models to dicts at write time
+    so every consumer of `_cache_get(...)` can rely on getting a plain dict
+    back (and can safely use `{**cached, "cached": True}` to stamp the flag
+    without a TypeError on model objects).
+    """
+    if hasattr(payload, "model_dump"):
+        payload = payload.model_dump()
     if len(_score_cache) > 500:
         oldest = min(_score_cache, key=lambda k: _score_cache[k]["ts"])
         del _score_cache[oldest]
@@ -1180,7 +1188,13 @@ async def score_listing(listing: ListingRequest, request: Request):
         except Exception:
             pass
 
-        _cache_set(_ck, response, url_keyed=_url_keyed)
+        # Store the cache entry as a plain dict (not the Pydantic model) so
+        # the `{**_cached, "cached": True}` stamp on hit-paths can't raise
+        # `TypeError: 'DealScoreResponse' object is not a mapping`. This
+        # also keeps both cache layers (in-memory + persistent) symmetric:
+        # they always round-trip through the same dict shape.
+        _response_dict = response.model_dump() if hasattr(response, "model_dump") else dict(response)
+        _cache_set(_ck, _response_dict, url_keyed=_url_keyed)
         # Persistent reproducibility cache write-through. _persist_key is in
         # scope here because Python doesn't have block scope and both this
         # branch and the cache-check branch above are gated by the same
@@ -1188,7 +1202,7 @@ async def score_listing(listing: ListingRequest, request: Request):
         # bypass cache (purpose is to re-evaluate, not reuse).
         await _persist_cache_set(
             _persist_key,
-            response.model_dump() if hasattr(response, "model_dump") else dict(response),
+            _response_dict,
             listing_url=listing.listing_url,
             asking_price=listing.price,
         )
