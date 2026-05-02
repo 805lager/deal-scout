@@ -283,9 +283,18 @@ modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); }
 document.getElementById("modal-send").addEventListener("click", async () => {
   const text = document.getElementById("report-text").value.trim();
   if (!text) return;
-  const API_BASE = await getApiBase();
+  // Route through background so the request carries X-DS-Key (the popup
+  // intentionally has no access to the shared key). After security
+  // hardening, /report rejects unauthenticated requests with 401, so a
+  // direct popup fetch would silently fail and the user would still see
+  // "report sent" — masking real delivery failures. The background handler
+  // returns { ok, status } we can surface if needed.
   try {
-    await fetch(`${API_BASE}/report`, { method: "POST", headers: { "Content-Type": "application/json", "X-DS-Ext-Version": EXT_VERSION }, body: JSON.stringify({ report: text, ts: new Date().toISOString() }), signal: AbortSignal.timeout(4000) });
+    await chrome.runtime.sendMessage({
+      type: "SEND_REPORT",
+      text,
+      ts:   new Date().toISOString(),
+    });
   } catch {}
   modalForm.style.display = "none";
   modalSent.style.display = "block";

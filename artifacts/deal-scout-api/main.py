@@ -33,7 +33,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from typing import Optional
 from collections import defaultdict
@@ -196,6 +196,41 @@ def _check_api_key(request: Request):
     if client_key != _DS_API_KEY:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
+# ── Admin Auth ─────────────────────────────────────────────────────────────────
+# Separate secret from DS_API_KEY. The extension's user-facing key (DS_API_KEY)
+# would be exposed in every install of the extension if shared with admin —
+# admin endpoints (dashboards, audit, telemetry, manual triggers) MUST use a
+# distinct token that never ships in client code.
+#
+# FAIL CLOSED: if ADMIN_TOKEN is unset, admin endpoints return 503. Previously
+# the absence of a key meant "open access" — that footgun let unauthenticated
+# users hit /admin/dashboard, /admin/audit/*, /admin/daily-summary in any env
+# where the operator forgot to configure a key.
+_DS_ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
+
+def _check_admin_token(request: Request):
+    """
+    Gate for /admin/* routes. Requires the ADMIN_TOKEN secret to be set AND
+    a matching value supplied via the X-Admin-Token (preferred) or X-DS-Key
+    (legacy compat — remove next release) header.
+
+    URL/query-param auth was intentionally NOT included: tokens passed via
+    ?admin_token= would leak into request logs, browser history, referrer
+    headers, and any link a dashboard renders. Header auth has none of
+    those failure modes.
+    """
+    if not _DS_ADMIN_TOKEN:
+        raise HTTPException(
+            status_code=503,
+            detail="Admin endpoints disabled — set ADMIN_TOKEN env var to enable.",
+        )
+    provided = (
+        request.headers.get("X-Admin-Token", "")
+        or request.headers.get("X-DS-Key", "")  # legacy compat — remove next release
+    )
+    if provided != _DS_ADMIN_TOKEN:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
 # CORS — configurable via CORS_ORIGINS env var
 #
 # Content scripts run in the context of facebook.com, so every API request
@@ -227,8 +262,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "X-DS-Key", "X-DS-Ext-Version",
-                    "X-DS-Install-Id", "Accept", "Accept-Language", "Content-Language"],
+    allow_headers=["Content-Type", "Authorization", "X-DS-Key", "X-Admin-Token",
+                    "X-DS-Ext-Version", "X-DS-Install-Id",
+                    "Accept", "Accept-Language", "Content-Language"],
 )
 
 
@@ -239,14 +275,18 @@ class ListingRequest(BaseModel):
     What the React UI sends us.
     All fields except title and price are optional — we handle missing data gracefully.
     """
-    title:          str
+    # NOTE: max_length caps below are intentional defense-in-depth. They are
+    # generous (5x the largest legitimate value we've ever seen) so they never
+    # block a real listing — they only stop pathological payloads that would
+    # blow up token cost on the Claude calls.
+    title:          str  = Field(..., max_length=500)
     price:          float
-    raw_price_text: str  = ""
-    description:    str  = ""
-    location:       str  = ""
-    condition:      str  = "Unknown"
-    seller_name:    str  = ""
-    listing_url:    str  = ""
+    raw_price_text: str  = Field("", max_length=120)
+    description:    str  = Field("", max_length=8000)
+    location:       str  = Field("", max_length=200)
+    condition:      str  = Field("Unknown", max_length=80)
+    seller_name:    str  = Field("", max_length=200)
+    listing_url:    str  = Field("", max_length=2000)
     is_multi_item:  bool = False  # True for bundles/sets/lots — adjusts Claude's valuation logic
     is_vehicle:     bool = False  # True for motorcycles/cars/ATVs — suppresses irrelevant flags
     vehicle_details: Optional[dict] = None  # Structured vehicle attrs: mileage, transmission, title_status, owners
@@ -286,7 +326,10 @@ class RawListingRequest(BaseModel):
     The extension sends raw page text + DOM-extracted image URLs.
     Claude Haiku extracts all structured fields server-side.
     """
-    raw_text:    str        # Truncated page text (max 4000 chars, client-side trimmed)
+    # Server-side cap is 16k (4x the client-side trim) so legitimate larger
+    # pages still go through, but a 1MB payload is rejected before hitting
+    # Claude or the database.
+    raw_text:    str  = Field(..., max_length=16000)
     image_urls:  list = []  # DOM-extracted image URLs (position-filtered, max 5)
     photo_count: int  = 0   # True carousel photo count from DOM (may be > len(image_urls))
     platform:    str = "facebook_marketplace"
@@ -2131,11 +2174,14 @@ async def affiliate_status():
 REPORTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "reports.jsonl")
 
 class IssueReport(BaseModel):
-    report: str
-    ts: str = ""
+    # 4000-char cap matches Discord embed's description limit — anything
+    # larger gets sliced anyway. Caps prevent abuse of the Discord webhook
+    # as a free relay.
+    report: str = Field(..., max_length=4000)
+    ts: str = Field("", max_length=64)
 
 @app.post("/report")
-async def submit_report(body: IssueReport):
+async def submit_report(body: IssueReport, request: Request):
     """
     Receives bug reports from the extension popup.
 
@@ -2149,6 +2195,7 @@ async def submit_report(body: IssueReport):
       3. Add to .env:  DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
       4. Add to Railway dashboard env vars (same key/value)
     """
+    _check_api_key(request)
     entry = {
         "ts":     body.ts or datetime.utcnow().isoformat(),
         "report": body.report.strip(),
@@ -2273,11 +2320,12 @@ async def submit_feedback(body: FeedbackRequest, request: Request):
 
 
 def _check_admin_auth(request: Request):
-    if not _DS_API_KEY:
-        return
-    key = request.headers.get("X-DS-Key", "") or request.query_params.get("key", "")
-    if key != _DS_API_KEY:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    """
+    Legacy alias kept so existing /admin/* call sites don't have to change in
+    this PR. Delegates to _check_admin_token, which fails closed when
+    ADMIN_TOKEN is unset (vs the old behavior of opening admin to the world).
+    """
+    _check_admin_token(request)
 
 
 @app.get("/admin")
@@ -2665,8 +2713,11 @@ async def admin_dashboard(request: Request):
     """
     Quick summary stats for the data pipeline admin view.
     Shows total signals collected, 24h and 7d counts, unique categories, etc.
+
+    SECURITY: this is admin-only data, so it uses ADMIN_TOKEN — not the
+    weaker MARKET_DATA_API_KEY which is open-by-default when unset.
     """
-    _check_data_key(request)
+    _check_admin_token(request)
     from scoring.data_pipeline import get_dashboard_summary
     summary = await get_dashboard_summary()
     return {
@@ -3846,12 +3897,19 @@ async def trigger_daily_summary(request: Request):
 _is_production = os.getenv("REPLIT_DEPLOYMENT", "") == "1"
 if _is_production:
     _root_app = FastAPI()
+    # Reuse the same explicit allowlist the dev `app` middleware uses.
+    # Previously this was `allow_origins=["*"]`, which let any origin call
+    # the production API — including authenticated endpoints. The allowlist
+    # covers the 4 marketplace content-script origins, the dashboard,
+    # and the published Chrome extension ID. Override via CORS_ORIGINS env var
+    # if a new extension ID or marketplace gets added.
     _root_app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=cors_origins,
         allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Content-Type", "Authorization", "X-DS-Key", "X-DS-Ext-Version",
-                        "X-DS-Install-Id", "Accept", "Accept-Language", "Content-Language"],
+        allow_headers=["Content-Type", "Authorization", "X-DS-Key", "X-Admin-Token",
+                        "X-DS-Ext-Version", "X-DS-Install-Id",
+                        "Accept", "Accept-Language", "Content-Language"],
     )
     _root_app.mount("/api/ds", app)
 

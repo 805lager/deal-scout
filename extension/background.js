@@ -164,6 +164,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ ok: true });
     return true;
   }
+
+  // Bug-report submission proxied through background so the API key never
+  // leaves this script. Popup posts the user's text via chrome.runtime
+  // .sendMessage; we attach X-DS-Key from this scope and forward to /report.
+  // Server now requires auth (was previously anonymous), so popup direct-
+  // posting would 401 silently after the security hardening.
+  if (message.type === "SEND_REPORT") {
+    (async () => {
+      try {
+        const API_BASE   = await getApiBase();
+        const extVersion = chrome.runtime.getManifest().version;
+        const resp = await fetch(`${API_BASE}/report`, {
+          method:  "POST",
+          headers: {
+            "Content-Type":     "application/json",
+            "X-DS-Key":         DS_API_KEY,
+            "X-DS-Ext-Version": extVersion,
+          },
+          body:   JSON.stringify({ report: message.text || "", ts: message.ts || new Date().toISOString() }),
+          signal: AbortSignal.timeout(5000),
+        });
+        sendResponse({ ok: resp.ok, status: resp.status });
+      } catch (err) {
+        sendResponse({ ok: false, error: err && err.message ? err.message : String(err) });
+      }
+    })();
+    return true;
+  }
 });
 
 

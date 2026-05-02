@@ -25,6 +25,32 @@
 
 # Deal Scout API — Replit Backend
 
+## Security model (as of #54 partial — May 2026)
+
+- **`DS_API_KEY` (secret, set)** — shared between extension and API. All
+  user-facing endpoints (`/score`, `/score/stream`, `/event`, `/thumbs`,
+  `/feedback`, `/report`) require it via `X-DS-Key` header. Dev-mode
+  bypass: if unset, the gate is skipped.
+- **`ADMIN_TOKEN` (secret, MUST be set per environment)** — separate token
+  for `/admin/*` endpoints. Dashboards, audit logs, telemetry, and the
+  daily-summary trigger ALL fail-closed (503) when unset. Sent via
+  `X-Admin-Token` header (header-only — URL params would leak via referrers
+  and request logs). Legacy `X-DS-Key` header accepted for one release of
+  compat — drop next release.
+- **CORS** — explicit allowlist in both dev (`app`) and prod (`_root_app`):
+  4 marketplace origins + dashboard + Chrome extension ID. Override via
+  `CORS_ORIGINS` env var.
+- **Payload caps** — Pydantic `Field(max_length=...)` on every user-supplied
+  string; oversized inputs return 422 before reaching Claude.
+- **Prompt-injection defense (extractor only — evaluator/scorer pending)** —
+  user title/description wrapped in `<listing_title>`/`<listing_description>`
+  tags, `_sanitize_for_prompt` escapes closing tags, system message marks
+  tag content as untrusted.
+
+Pending hardening: per-install token system (replacing static `DS_API_KEY`),
+log scrubbing, prompt-injection wrap in `product_evaluator.py` and
+`deal_scorer.py`. Tracked in `.local/tasks/extension-auth-lockdown.md`.
+
 ## Overview
 
 FastAPI backend for the Deal Scout Chrome extension. Scores deals on Facebook Marketplace, Craigslist, and Amazon using Claude AI + eBay pricing data. Migrated from Railway. Zero external AI API keys needed — uses Replit's built-in Claude AI proxy.
