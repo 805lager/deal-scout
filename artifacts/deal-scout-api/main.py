@@ -2378,6 +2378,10 @@ def _read_backend_version() -> str:
         return "unknown"
 
 
+# Resolved at import-time from artifacts/deal-scout-api/VERSION.
+# Bumped to v0.44.0 with the Approach A score-panel layout (Task #68) —
+# kept in lock-step with extension/manifest.json so the workspace
+# header and /admin/audit telemetry agree on the running build.
 BACKEND_VERSION = _read_backend_version()
 
 @app.get("/privacy", response_class=HTMLResponse)

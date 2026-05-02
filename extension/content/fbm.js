@@ -2473,6 +2473,12 @@
 
   // ── Negotiation Message ────────────────────────────────────────────────────────
 
+  // Renders just the "💬 Copy negotiation message" toggle + message body.
+  // Asking price and recommended offer are intentionally NOT repeated here —
+  // they live exactly once in the sticky digest priceRow above (Task #68
+  // dedupe requirement). The freeform negotiation_message text the user
+  // copies may itself reference numbers, but that's model-generated body
+  // copy, not a duplicate UI row.
   function renderNegotiationMessage(r, container) {
     if (!r.negotiation_message) return;
     const section = document.createElement('div');
