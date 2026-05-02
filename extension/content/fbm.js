@@ -507,6 +507,20 @@
       const days = Math.floor((Date.now() - ts) / 86400000);
       return days >= 0 ? days : null;
     })();
+    // Task #60 — extract "Listed N hours/days/weeks ago" from FBM PDP. The
+    // text appears near the title in a marketplace-tile timestamp span. We
+    // scan the listing container's innerText with a defensive regex —
+    // parse failures silently no-op and the server's parser kicks in.
+    const listedAtRaw = (function () {
+      try {
+        const { el: container } = _getListingContainer();
+        const txt = (container && container.innerText) || document.body.innerText || '';
+        const m = txt.match(/listed\s+(\d+\s*(?:minute|hour|day|week|month|year)s?\s+ago)/i)
+               || txt.match(/(?:listed|posted)\s+(today|yesterday|just\s+now)/i);
+        if (m) return 'Listed ' + m[1];
+        return null;
+      } catch (_e) { return null; }
+    })();
     const listingUrl = location.href;
 
     const photoCount = imageUrls.length;
@@ -529,6 +543,11 @@
       shipping_cost:  shippingCost,
       image_urls:     imageUrls,
       photo_count:    photoCount,
+      // Task #60 — negotiation leverage inputs. listed_at is parsed
+      // server-side; price_history is omitted because FBM only exposes
+      // a single strikethrough peak — the server derives a single-step
+      // drop from `original_price` when this field is absent.
+      listed_at:      listedAtRaw,
     };
   }
 
@@ -639,6 +658,29 @@
 
     const _raw_photoCount = imageUrls.length;
 
+    // Task #60 — also extract leverage inputs from the same container so
+    // /score/stream sees them. Mirrors extractListing's per-platform logic
+    // but defensive: any failure leaves the field null and the server-side
+    // evaluator gracefully degrades.
+    const _raw_listedAt = (function () {
+      try {
+        const txt = (container && container.innerText) || '';
+        const m = txt.match(/listed\s+(\d+\s*(?:minute|hour|day|week|month|year)s?\s+ago)/i)
+               || txt.match(/(?:listed|posted)\s+(today|yesterday|just\s+now)/i);
+        return m ? 'Listed ' + m[1] : null;
+      } catch (_e) { return null; }
+    })();
+    // FBM strikethrough "$X" peak — re-use the same selector family as
+    // extractListing's _findOriginal helper. Cheap, defensive, returns 0
+    // when not present.
+    let _raw_originalPrice = 0;
+    try {
+      const strikeEl = container.querySelector('span[style*="line-through"], s, del');
+      const strikeText = strikeEl?.textContent?.trim() || '';
+      const m = strikeText.match(/\$\s*([\d,]+(?:\.\d{2})?)/);
+      if (m) _raw_originalPrice = parseFloat(m[1].replace(/,/g, '')) || 0;
+    } catch (_e) { /* graceful no-op */ }
+
     return {
       raw_text:    rawText,
       image_urls:  imageUrls,
@@ -646,6 +688,9 @@
       platform:    'facebook_marketplace',
       listing_url: location.href,
       _containerSource: containerSource,
+      // Task #60 — negotiation leverage inputs. listed_at parsed server-side.
+      listed_at:      _raw_listedAt,
+      original_price: _raw_originalPrice,
     };
   }
 
@@ -1301,6 +1346,77 @@
     renderHeader(r, panel);
     renderConfidenceBlock(r, panel);
     renderTrustBlock(r, panel);
+    renderLeverageBlock(r, panel);
+
+    // ── Leverage Block (Task #60) ────────────────────────────────────────
+    // Negotiation leverage digest — up to two lines (price-drop history
+    // + time-on-market) with a motivation_level color chip. Same chip /
+    // [Why?] expand pattern as the trust block, distinct icon. Color is
+    // intentionally inverted vs trust: high motivation = green for the
+    // BUYER (high leverage). Built with createElement + textContent so
+    // any model-emitted strings stay inert in the page DOM.
+    function renderLeverageBlock(r, container) {
+      const lev = (r && r.leverage_signals) || {};
+      const dropLine = (lev.price_drop_summary  || '').trim();
+      const daysLine = (lev.days_listed_summary || '').trim();
+      if (!dropLine && !daysLine) return;
+      const mot    = (lev.motivation_level || 'low').toLowerCase();
+      const colors = { low: '#6b7280', medium: '#fbbf24', high: '#22c55e' };
+      const labels = { low: 'low motivation', medium: 'some motivation', high: 'motivated seller' };
+      const color  = colors[mot] || colors.low;
+      const label  = labels[mot] || mot;
+
+      const wrap = document.createElement('div');
+      wrap.style.cssText = 'margin:8px 12px 0;border:1px solid ' + color + '55;'
+        + 'border-radius:8px;background:' + color + '14;overflow:hidden';
+
+      const chipRow = document.createElement('div');
+      chipRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;'
+        + 'padding:6px 10px;cursor:pointer;font-size:11px;gap:8px';
+
+      const chipLeft = document.createElement('div');
+      chipLeft.style.cssText = 'display:flex;align-items:center;gap:6px;min-width:0';
+
+      const icon = document.createElement('span');
+      icon.style.cssText = 'color:' + color + ';font-weight:700;flex-shrink:0';
+      icon.textContent = '\uD83D\uDCAA Leverage:';
+      chipLeft.appendChild(icon);
+
+      const summary = document.createElement('span');
+      summary.style.cssText = 'color:#e5e7eb;font-size:11px;'
+        + 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+      summary.textContent = label;
+      chipLeft.appendChild(summary);
+
+      const why = document.createElement('span');
+      why.style.cssText = 'color:' + color + ';font-size:10.5px;flex-shrink:0';
+      why.textContent = '[Why?]';
+
+      chipRow.appendChild(chipLeft);
+      chipRow.appendChild(why);
+      wrap.appendChild(chipRow);
+
+      const details = document.createElement('div');
+      details.style.cssText = 'display:none;border-top:1px solid ' + color + '33;'
+        + 'padding:8px 10px;font-size:11px;color:#d1d5db;line-height:1.5';
+      for (const line of [dropLine, daysLine]) {
+        if (!line) continue;
+        const row = document.createElement('div');
+        row.style.cssText = 'margin-bottom:4px';
+        row.textContent = line;
+        details.appendChild(row);
+      }
+      wrap.appendChild(details);
+
+      let open = false;
+      chipRow.addEventListener('click', () => {
+        open = !open;
+        details.style.display = open ? 'block' : 'none';
+        why.textContent = open ? '[Hide]' : '[Why?]';
+      });
+
+      container.appendChild(wrap);
+    }
 
     // ── Trust Block (Task #59) ───────────────────────────────────────────
     // Composite trust / scam digest line. Renders only when ≥1 signal

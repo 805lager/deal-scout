@@ -182,6 +182,26 @@
       });
     }
 
+    // Task #60 — CL exposes the post date as <time datetime="ISO">
+    // inside .postinginfos. This is the most reliable date signal of any
+    // marketplace because the datetime attr is machine-parseable. We
+    // compute days_listed client-side so the server doesn't need to
+    // re-parse, and also pass the raw ISO as a fallback.
+    let listedAtRaw = null;
+    let daysListed  = null;
+    try {
+      const timeEl = document.querySelector(".postinginfos time[datetime], .postinginfo time[datetime], time[datetime]");
+      const iso    = timeEl?.getAttribute("datetime") || "";
+      if (iso) {
+        listedAtRaw = iso;
+        const ts = Date.parse(iso);
+        if (ts) {
+          const d = Math.floor((Date.now() - ts) / 86400000);
+          if (d >= 0) daysListed = d;
+        }
+      }
+    } catch (_e) { /* graceful no-op */ }
+
     const result = {
       title,
       price,
@@ -192,6 +212,11 @@
       image_urls: images.slice(0, 5),
       listing_url: location.href,
       platform: PLATFORM,
+      // Task #60 — leverage inputs. CL lacks a strike-through peak so
+      // price_history / original_price are omitted; the time-on-market
+      // signal alone drives motivation_level here.
+      listed_at:    listedAtRaw,
+      days_listed:  daysListed,
     };
     return result;
   }
@@ -269,11 +294,33 @@
     // CL posts are single-page — body.innerText is clean enough
     const rawText = (document.body.innerText || "").slice(0, 4000);
 
+    // Task #60 — CL exposes the post date as <time datetime="ISO">
+    // inside .postinginfos, the most reliable date signal of any
+    // marketplace. Compute days_listed client-side and also pass the
+    // raw ISO as a fallback so the server can re-parse if needed.
+    let _raw_listedAt = null;
+    let _raw_daysListed = null;
+    try {
+      const timeEl = document.querySelector(".postinginfos time[datetime], .postinginfo time[datetime], time[datetime]");
+      const iso    = timeEl?.getAttribute("datetime") || "";
+      if (iso) {
+        _raw_listedAt = iso;
+        const ts = Date.parse(iso);
+        if (ts) {
+          const d = Math.floor((Date.now() - ts) / 86400000);
+          if (d >= 0) _raw_daysListed = d;
+        }
+      }
+    } catch (_e) { /* graceful no-op */ }
+
     return {
       raw_text:    rawText,
       image_urls:  imageUrls,
       platform:    PLATFORM,
       listing_url: location.href,
+      // Task #60 — leverage inputs (CL has no strikethrough peak)
+      listed_at:   _raw_listedAt,
+      days_listed: _raw_daysListed,
     };
   }
 
@@ -420,6 +467,75 @@
     renderHeader(r, panel);
     renderConfidenceBlock(r, panel);
     renderTrustBlock(r, panel);
+    renderLeverageBlock(r, panel);
+
+    // ── Leverage Block (Task #60) ────────────────────────────────────────
+    // Negotiation leverage digest — up to two lines (price-drop history +
+    // time-on-market) with a motivation_level color chip. Color inverted
+    // vs trust: high motivation = green for the BUYER. createElement +
+    // textContent so model-emitted strings stay inert in the DOM.
+    function renderLeverageBlock(r, container) {
+      const lev = (r && r.leverage_signals) || {};
+      const dropLine = (lev.price_drop_summary  || '').trim();
+      const daysLine = (lev.days_listed_summary || '').trim();
+      if (!dropLine && !daysLine) return;
+      const mot    = (lev.motivation_level || 'low').toLowerCase();
+      const colors = { low: '#6b7280', medium: '#fbbf24', high: '#22c55e' };
+      const labels = { low: 'low motivation', medium: 'some motivation', high: 'motivated seller' };
+      const color  = colors[mot] || colors.low;
+      const label  = labels[mot] || mot;
+
+      const wrap = document.createElement('div');
+      wrap.style.cssText = 'margin:8px 12px 0;border:1px solid ' + color + '55;'
+        + 'border-radius:8px;background:' + color + '14;overflow:hidden';
+
+      const chipRow = document.createElement('div');
+      chipRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;'
+        + 'padding:6px 10px;cursor:pointer;font-size:11px;gap:8px';
+
+      const chipLeft = document.createElement('div');
+      chipLeft.style.cssText = 'display:flex;align-items:center;gap:6px;min-width:0';
+
+      const icon = document.createElement('span');
+      icon.style.cssText = 'color:' + color + ';font-weight:700;flex-shrink:0';
+      icon.textContent = '\uD83D\uDCAA Leverage:';
+      chipLeft.appendChild(icon);
+
+      const summary = document.createElement('span');
+      summary.style.cssText = 'color:#e5e7eb;font-size:11px;'
+        + 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+      summary.textContent = label;
+      chipLeft.appendChild(summary);
+
+      const why = document.createElement('span');
+      why.style.cssText = 'color:' + color + ';font-size:10.5px;flex-shrink:0';
+      why.textContent = '[Why?]';
+
+      chipRow.appendChild(chipLeft);
+      chipRow.appendChild(why);
+      wrap.appendChild(chipRow);
+
+      const details = document.createElement('div');
+      details.style.cssText = 'display:none;border-top:1px solid ' + color + '33;'
+        + 'padding:8px 10px;font-size:11px;color:#d1d5db;line-height:1.5';
+      for (const line of [dropLine, daysLine]) {
+        if (!line) continue;
+        const row = document.createElement('div');
+        row.style.cssText = 'margin-bottom:4px';
+        row.textContent = line;
+        details.appendChild(row);
+      }
+      wrap.appendChild(details);
+
+      let open = false;
+      chipRow.addEventListener('click', () => {
+        open = !open;
+        details.style.display = open ? 'block' : 'none';
+        why.textContent = open ? '[Hide]' : '[Why?]';
+      });
+
+      container.appendChild(wrap);
+    }
 
     // ── Trust Block (Task #59) ───────────────────────────────────────────
     // Composite trust / scam digest line. Renders only when ≥1 signal

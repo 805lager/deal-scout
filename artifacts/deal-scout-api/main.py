@@ -487,6 +487,16 @@ class ListingRequest(BaseModel):
     # is absent, so content scripts that don't compute it (eBay, Craigslist)
     # need no changes — FBM/OfferUp can ship the integer when known.
     seller_account_age_days: Optional[int] = None
+    # Task #60 — negotiation leverage inputs. All optional, all defensive.
+    # `price_history` is a list of {date, price} dicts when the extension
+    # can extract it; the leverage evaluator falls back to a single-step
+    # drop derived from `original_price` → `price` otherwise. `listed_at`
+    # is the raw "Listed N days ago" / ISO date string from the DOM —
+    # parsed server-side. `days_listed` is the extension's pre-parsed
+    # integer when available (preferred over re-parsing `listed_at`).
+    price_history:  Optional[list] = None
+    listed_at:      Optional[str]  = None
+    days_listed:    Optional[int]  = None
     original_price: float = 0.0   # Crossed-out price if seller reduced it (from DOM dual-price container)
     shipping_cost:  float = 0.0   # Cost to ship — 0 means free or local pickup
     image_urls:     Optional[list] = None  # Listing photo URLs — first one sent to Claude Vision
@@ -541,6 +551,16 @@ class RawListingRequest(BaseModel):
     time_left_text:   str   = ""     # Raw "Time left:" text, e.g. "2d 14h", "3h 22m"
     has_buy_it_now:   bool  = False  # True for hybrid listings (auction + Buy It Now)
     buy_it_now_price: float = 0.0    # Buy It Now price in $ (hybrid listings only)
+    # ── Task #60: negotiation leverage inputs ────────────────────────────
+    # All optional and defensively typed. Server still accepts payloads
+    # from older extension builds that don't send these fields. The /score
+    # path Pydantic model uses the same shape — we keep them ad-hoc here
+    # but plumb them into ListingRequest in the stream handler so
+    # evaluate_leverage() sees identical inputs on both endpoints.
+    listed_at:      Optional[str]   = None   # raw ("3 days ago", ISO date)
+    days_listed:    Optional[int]   = None   # client-derived integer when available
+    original_price: float           = 0.0    # strikethrough peak (FBM/eBay)
+    price_history:  Optional[list]  = None   # [{date, price}] when extension can extract
 
 
 class DealScoreResponse(BaseModel):
@@ -618,6 +638,18 @@ class DealScoreResponse(BaseModel):
     # no line is shown — silence is a feature.
     trust_signals:       list  = []    # [{id, label, why}]
     trust_severity:      str   = "none"  # "none" | "info" | "warn" | "alert"
+    # ── Task #60: negotiation leverage digest ──
+    # `leverage_signals` is a single dict (not a list — only one composite
+    # value per response). Shape:
+    #   {price_drop_summary, drop_count, drop_total_amount, drop_total_pct,
+    #    days_listed, typical_days_to_sell, days_listed_summary,
+    #    motivation_level: "low"|"medium"|"high"}
+    # The UI renders up to two digest lines (price-drop + time-on-market)
+    # when the corresponding summary string is non-empty. `motivation_level`
+    # is also surfaced top-level so a future Negotiation v2 (Task #53) can
+    # read it without digging into the dict.
+    leverage_signals:    dict  = {}
+    motivation_level:    str   = "low"   # "low" | "medium" | "high"
     original_price:      float = 0.0  # Seller's original price if reduced (strikethrough)
     shipping_cost:       float = 0.0  # Shipping cost extracted from listing (0 = free/pickup)
 
@@ -1123,6 +1155,21 @@ async def score_listing(listing: ListingRequest, request: Request):
     )
     apply_trust_to_score(deal_score, trust_result)
 
+    # ── Step 4f: Negotiation leverage (Task #60) ─────────────────────────────
+    # Combine the listing's price-drop history (from extension or derived
+    # from `original_price`) with its days-on-market into a composite
+    # `motivation_level`. Purely additive — no score mutation. The
+    # extension renders up to two digest lines from the result. A future
+    # Negotiation v2 (Task #53) is intended to consume motivation_level
+    # to adjust opening offer + walk-away threshold; until #53 ships,
+    # this is informational on the digest only.
+    from scoring.leverage import evaluate_leverage, derive_typical_days_to_sell
+    _typical_dts = derive_typical_days_to_sell(getattr(market_value, "comp_summary", None))
+    leverage_result = evaluate_leverage(
+        listing              = listing.model_dump(),
+        typical_days_to_sell = _typical_dts,
+    )
+
     # ── Step 5: Serialize ────────────────────────────────────────────────────
     from dataclasses import asdict as dc_asdict
     def _to_dict(i):
@@ -1146,6 +1193,9 @@ async def score_listing(listing: ListingRequest, request: Request):
         **_confidence_payload,
         # Task #59 — composite trust signals + severity
         **trust_result.to_response_dict(),
+        # Task #60 — negotiation leverage signals
+        **leverage_result.to_response_dict(),
+        motivation_level    = leverage_result.motivation_level,
 
         # Market value
         estimated_value     = market_value.estimated_value,
@@ -1519,7 +1569,13 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                     log.info(f"[Auction] Aligning price ${price:.0f} → current bid ${_current_bid:.0f}")
                     price = _current_bid
 
-            # Build ListingRequest from extracted data
+            # Build ListingRequest from extracted data.
+            # Task #60 — leverage inputs (listed_at / days_listed / price_history /
+            # original_price) come from the DOM-side extractor, NOT from Claude
+            # extraction. The extension sends them on the raw payload alongside
+            # raw_text. We prefer raw.original_price (DOM strikethrough) over
+            # whatever Claude inferred, since the DOM source is authoritative.
+            _orig_price = float(getattr(raw, "original_price", 0) or extracted.get("original_price", 0) or 0)
             listing = ListingRequest(
                 title          = title,
                 price          = price,
@@ -1533,12 +1589,23 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                 is_vehicle     = bool(extracted.get("is_vehicle", False)),
                 vehicle_details = None,
                 seller_trust   = seller_trust,
-                original_price = float(extracted.get("original_price", 0) or 0),
+                original_price = _orig_price,
                 shipping_cost  = float(extracted.get("shipping_cost", 0) or 0),
                 image_urls     = raw.image_urls or [],
                 photo_count    = int(extracted.get("photo_count", 0) or len(raw.image_urls or [])),
                 platform       = raw.platform,
+                # Task #60 — pass leverage inputs straight through.
+                listed_at      = getattr(raw, "listed_at", None),
+                days_listed    = getattr(raw, "days_listed", None),
+                price_history  = getattr(raw, "price_history", None),
             )
+
+            # Task #60 — snapshot the asking price BEFORE any downstream
+            # mutation. The auction-only flow may overwrite listing.price
+            # with suggested_max_bid (line ~1705), which would skew leverage
+            # drop math against the wrong baseline. Leverage must always
+            # compute drops vs the original asking price the buyer sees.
+            _asking_price_for_leverage = float(listing.price or 0)
 
             log.info(f"[Stream] Scoring '{listing.title}' @ ${listing.price}")
 
@@ -1893,6 +1960,26 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
             )
             _apply_trust_s(deal_score, trust_result_s)
 
+            # ── Step 4e: Negotiation leverage (Task #60) ──────────────────────
+            # Mirror of /score wire-up. Purely additive — no deal_score
+            # mutation. Reads price_history / listed_at / days_listed from
+            # the listing payload (all optional) and pairs with the comp
+            # summary's typical_days_to_sell when available.
+            from scoring.leverage import evaluate_leverage as _eval_leverage_s
+            from scoring.leverage import derive_typical_days_to_sell as _derive_typical_s
+            _typical_dts_s = _derive_typical_s(getattr(market_value, "comp_summary", None))
+            # Task #60 — overlay the pre-auction asking price into the dump
+            # so leverage drop math uses what the buyer sees, not the
+            # internal auction max-bid override. This keeps /score and
+            # /score/stream functionally equivalent for leverage signals
+            # on identical DOM inputs.
+            _leverage_listing_s = listing.model_dump()
+            _leverage_listing_s["price"] = _asking_price_for_leverage
+            leverage_result_s = _eval_leverage_s(
+                listing              = _leverage_listing_s,
+                typical_days_to_sell = _typical_dts_s,
+            )
+
             # Task #58 — derive confidence + comp_summary + can_price block.
             # Use the listing's actual asking price (not _display_price which
             # may be the auction current bid) so the can't-price verdict copy
@@ -1910,6 +1997,9 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                 **_confidence_payload_s,
                 # Task #59 — composite trust signals + severity
                 **trust_result_s.to_response_dict(),
+                # Task #60 — negotiation leverage signals
+                **leverage_result_s.to_response_dict(),
+                motivation_level  = leverage_result_s.motivation_level,
                 estimated_value   = market_value.estimated_value,
                 sold_avg          = market_value.sold_avg,
                 sold_count        = market_value.sold_count,

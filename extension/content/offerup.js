@@ -143,6 +143,14 @@
       return days >= 0 ? days : null;
     })();
 
+    // Task #60 — OfferUp shows "Posted N days/weeks ago" in the meta line
+    // beneath the title. Extract a raw string for server-side parsing.
+    const listedAtRaw = (function () {
+      const m = bodyText.match(/posted\s+(\d+\s*(?:hour|day|week|month|year)s?\s+ago)/i)
+             || bodyText.match(/posted\s+(today|yesterday|just\s+now)/i);
+      return m ? "Posted " + m[1] : null;
+    })();
+
     return {
       title, price, raw_price_text: priceText,
       description, condition,
@@ -153,6 +161,10 @@
       seller_trust: (seller_trust.joined_date || seller_trust.rating || seller_trust.rating_count)
                     ? seller_trust : null,
       seller_account_age_days: sellerAccountAgeDays,
+      // Task #60 — leverage input. OfferUp doesn't expose price-history
+      // or a strike-through peak in the DOM, so price_history / original_price
+      // are omitted; the leverage line still works on time-on-market alone.
+      listed_at: listedAtRaw,
     };
   }
 
@@ -215,11 +227,23 @@
                 || document.body;
     const rawText = (mainEl.innerText || "").slice(0, 4000);
 
+    // Task #60 — leverage input. OfferUp shows "Posted N days/weeks ago"
+    // in the meta line. listed_at is parsed server-side; price_history /
+    // original_price are omitted (no DOM signal for them on OfferUp).
+    const _raw_listedAt = (function () {
+      const t = (mainEl.innerText || document.body.innerText || "");
+      const m = t.match(/posted\s+(\d+\s*(?:hour|day|week|month|year)s?\s+ago)/i)
+             || t.match(/posted\s+(today|yesterday|just\s+now)/i);
+      return m ? "Posted " + m[1] : null;
+    })();
+
     return {
       raw_text:    rawText,
       image_urls:  imageUrls,
       platform:    PLATFORM,
       listing_url: location.href,
+      // Task #60 — leverage inputs (only listed_at extractable on OfferUp)
+      listed_at:   _raw_listedAt,
     };
   }
 
@@ -305,6 +329,75 @@
     renderHeader(r, panel);
     renderConfidenceBlock(r, panel);
     renderTrustBlock(r, panel);
+    renderLeverageBlock(r, panel);
+
+    // ── Leverage Block (Task #60) ────────────────────────────────────────
+    // Negotiation leverage digest — up to two lines (price-drop history +
+    // time-on-market) with a motivation_level color chip. Color inverted
+    // vs trust: high motivation = green for the BUYER. createElement +
+    // textContent so model-emitted strings stay inert in the DOM.
+    function renderLeverageBlock(r, container) {
+      const lev = (r && r.leverage_signals) || {};
+      const dropLine = (lev.price_drop_summary  || '').trim();
+      const daysLine = (lev.days_listed_summary || '').trim();
+      if (!dropLine && !daysLine) return;
+      const mot    = (lev.motivation_level || 'low').toLowerCase();
+      const colors = { low: '#6b7280', medium: '#fbbf24', high: '#22c55e' };
+      const labels = { low: 'low motivation', medium: 'some motivation', high: 'motivated seller' };
+      const color  = colors[mot] || colors.low;
+      const label  = labels[mot] || mot;
+
+      const wrap = document.createElement('div');
+      wrap.style.cssText = 'margin:8px 12px 0;border:1px solid ' + color + '55;'
+        + 'border-radius:8px;background:' + color + '14;overflow:hidden';
+
+      const chipRow = document.createElement('div');
+      chipRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;'
+        + 'padding:6px 10px;cursor:pointer;font-size:11px;gap:8px';
+
+      const chipLeft = document.createElement('div');
+      chipLeft.style.cssText = 'display:flex;align-items:center;gap:6px;min-width:0';
+
+      const icon = document.createElement('span');
+      icon.style.cssText = 'color:' + color + ';font-weight:700;flex-shrink:0';
+      icon.textContent = '\uD83D\uDCAA Leverage:';
+      chipLeft.appendChild(icon);
+
+      const summary = document.createElement('span');
+      summary.style.cssText = 'color:#e5e7eb;font-size:11px;'
+        + 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+      summary.textContent = label;
+      chipLeft.appendChild(summary);
+
+      const why = document.createElement('span');
+      why.style.cssText = 'color:' + color + ';font-size:10.5px;flex-shrink:0';
+      why.textContent = '[Why?]';
+
+      chipRow.appendChild(chipLeft);
+      chipRow.appendChild(why);
+      wrap.appendChild(chipRow);
+
+      const details = document.createElement('div');
+      details.style.cssText = 'display:none;border-top:1px solid ' + color + '33;'
+        + 'padding:8px 10px;font-size:11px;color:#d1d5db;line-height:1.5';
+      for (const line of [dropLine, daysLine]) {
+        if (!line) continue;
+        const row = document.createElement('div');
+        row.style.cssText = 'margin-bottom:4px';
+        row.textContent = line;
+        details.appendChild(row);
+      }
+      wrap.appendChild(details);
+
+      let open = false;
+      chipRow.addEventListener('click', () => {
+        open = !open;
+        details.style.display = open ? 'block' : 'none';
+        why.textContent = open ? '[Hide]' : '[Why?]';
+      });
+
+      container.appendChild(wrap);
+    }
 
     // ── Trust Block (Task #59) ───────────────────────────────────────────
     // Composite trust / scam digest line. Renders only when ≥1 signal

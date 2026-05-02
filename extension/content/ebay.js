@@ -84,6 +84,41 @@
     const shippingMatch = shippingText.match(/\$([0-9]+(?:\.[0-9]{2})?)/);
     const shipping_cost = shippingFree ? 0 : (shippingMatch ? parseFloat(shippingMatch[1]) : 0);
 
+    // Task #60 — pull strikethrough "was $N" peak price (eBay shows it as
+    // .x-additional-info or .ux-textspans--STRIKETHROUGH inside the price
+    // block) so the server can compute a single-step price drop. We do
+    // NOT block listing extraction on parse failure — null is fine.
+    let originalPrice = 0;
+    try {
+      const strikeEl = document.querySelector(
+        ".x-additional-info .ux-textspans--STRIKETHROUGH, " +
+        ".x-price-primary .ux-textspans--STRIKETHROUGH, " +
+        ".x-additional-info s, .x-price-was, [class*='was-price']"
+      );
+      const strikeText = strikeEl?.textContent?.trim() || "";
+      const m = strikeText.match(/\$\s*([\d,]+(?:\.\d{2})?)/);
+      if (m) originalPrice = parseFloat(m[1].replace(/,/g, "")) || 0;
+    } catch (_e) { /* graceful no-op */ }
+
+    // Task #60 — eBay sometimes shows "Listed on Mon, Apr 1, 2024" or a
+    // relative "Listed X days ago" in the item info section. Parse out
+    // a raw string for the server to interpret.
+    const listedAtRaw = (function () {
+      try {
+        const txt = document.body.innerText || "";
+        const rel = txt.match(/listed\s+(\d+\s*(?:hour|day|week|month|year)s?\s+ago)/i);
+        if (rel) return "Listed " + rel[1];
+        // Accept both month-first ("Apr 1, 2024") and weekday-prefixed
+        // ("Mon, Apr 1, 2024") forms — eBay renders both depending on
+        // category/template. Server-side parser handles both.
+        const onMatch = txt.match(
+          /listed\s+on\s+(?:[A-Za-z]{3,9},?\s+)?([A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{4})/i
+        );
+        if (onMatch) return onMatch[1];
+        return null;
+      } catch (_e) { return null; }
+    })();
+
     return {
       title, price,
       raw_price_text: priceText,
@@ -94,6 +129,9 @@
       shipping_cost,
       listing_url: location.href,
       platform: PLATFORM,
+      // Task #60 — leverage inputs (defensive; either may be null)
+      original_price: originalPrice,
+      listed_at:      listedAtRaw,
     };
   }
 
@@ -274,6 +312,37 @@
 
     const auction = extractAuctionData(mainEl);
 
+    // Task #60 — leverage inputs collected alongside raw_text so the
+    // streaming endpoint sees them. listed_at parsed server-side; the
+    // DOM strikethrough gives us a single-step price drop the server
+    // can synthesize when no full price_history is available.
+    let _raw_originalPrice = 0;
+    try {
+      const strikeEl = document.querySelector(
+        ".x-additional-info .ux-textspans--STRIKETHROUGH, " +
+        ".x-price-primary .ux-textspans--STRIKETHROUGH, " +
+        ".x-additional-info s, .x-price-was, [class*='was-price']"
+      );
+      const strikeText = strikeEl?.textContent?.trim() || "";
+      const m = strikeText.match(/\$\s*([\d,]+(?:\.\d{2})?)/);
+      if (m) _raw_originalPrice = parseFloat(m[1].replace(/,/g, "")) || 0;
+    } catch (_e) { /* graceful no-op */ }
+    // Accept both month-first ("Apr 1, 2024") and weekday-prefixed
+    // ("Mon, Apr 1, 2024") forms — eBay renders both depending on
+    // category/template. Server-side parser handles both.
+    const _raw_listedAt = (function () {
+      try {
+        const txt = (mainEl.innerText || "");
+        const rel = txt.match(/listed\s+(\d+\s*(?:hour|day|week|month|year)s?\s+ago)/i);
+        if (rel) return "Listed " + rel[1];
+        const onMatch = txt.match(
+          /listed\s+on\s+(?:[A-Za-z]{3,9},?\s+)?([A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{4})/i
+        );
+        if (onMatch) return onMatch[1];
+        return null;
+      } catch (_e) { return null; }
+    })();
+
     return {
       raw_text:         rawText,
       image_urls:       imageUrls,
@@ -285,6 +354,9 @@
       time_left_text:   auction.time_left_text,
       has_buy_it_now:   auction.has_buy_it_now,
       buy_it_now_price: auction.buy_it_now_price,
+      // Task #60 — leverage inputs
+      listed_at:        _raw_listedAt,
+      original_price:   _raw_originalPrice,
     };
   }
 
@@ -358,6 +430,75 @@
     }
     renderConfidenceBlock(r, panel);
     renderTrustBlock(r, panel);
+    renderLeverageBlock(r, panel);
+
+    // ── Leverage Block (Task #60) ────────────────────────────────────────
+    // Negotiation leverage digest — up to two lines (price-drop history +
+    // time-on-market) with a motivation_level color chip. Color inverted
+    // vs trust: high motivation = green for the BUYER. createElement +
+    // textContent so model-emitted strings stay inert in the DOM.
+    function renderLeverageBlock(r, container) {
+      const lev = (r && r.leverage_signals) || {};
+      const dropLine = (lev.price_drop_summary  || '').trim();
+      const daysLine = (lev.days_listed_summary || '').trim();
+      if (!dropLine && !daysLine) return;
+      const mot    = (lev.motivation_level || 'low').toLowerCase();
+      const colors = { low: '#6b7280', medium: '#fbbf24', high: '#22c55e' };
+      const labels = { low: 'low motivation', medium: 'some motivation', high: 'motivated seller' };
+      const color  = colors[mot] || colors.low;
+      const label  = labels[mot] || mot;
+
+      const wrap = document.createElement('div');
+      wrap.style.cssText = 'margin:8px 12px 0;border:1px solid ' + color + '55;'
+        + 'border-radius:8px;background:' + color + '14;overflow:hidden';
+
+      const chipRow = document.createElement('div');
+      chipRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;'
+        + 'padding:6px 10px;cursor:pointer;font-size:11px;gap:8px';
+
+      const chipLeft = document.createElement('div');
+      chipLeft.style.cssText = 'display:flex;align-items:center;gap:6px;min-width:0';
+
+      const icon = document.createElement('span');
+      icon.style.cssText = 'color:' + color + ';font-weight:700;flex-shrink:0';
+      icon.textContent = '\uD83D\uDCAA Leverage:';
+      chipLeft.appendChild(icon);
+
+      const summary = document.createElement('span');
+      summary.style.cssText = 'color:#e5e7eb;font-size:11px;'
+        + 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+      summary.textContent = label;
+      chipLeft.appendChild(summary);
+
+      const why = document.createElement('span');
+      why.style.cssText = 'color:' + color + ';font-size:10.5px;flex-shrink:0';
+      why.textContent = '[Why?]';
+
+      chipRow.appendChild(chipLeft);
+      chipRow.appendChild(why);
+      wrap.appendChild(chipRow);
+
+      const details = document.createElement('div');
+      details.style.cssText = 'display:none;border-top:1px solid ' + color + '33;'
+        + 'padding:8px 10px;font-size:11px;color:#d1d5db;line-height:1.5';
+      for (const line of [dropLine, daysLine]) {
+        if (!line) continue;
+        const row = document.createElement('div');
+        row.style.cssText = 'margin-bottom:4px';
+        row.textContent = line;
+        details.appendChild(row);
+      }
+      wrap.appendChild(details);
+
+      let open = false;
+      chipRow.addEventListener('click', () => {
+        open = !open;
+        details.style.display = open ? 'block' : 'none';
+        why.textContent = open ? '[Hide]' : '[Why?]';
+      });
+
+      container.appendChild(wrap);
+    }
 
     // ── Trust Block (Task #59) ───────────────────────────────────────────
     // Composite trust / scam digest line. Renders only when ≥1 signal
