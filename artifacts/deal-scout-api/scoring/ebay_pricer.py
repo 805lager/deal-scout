@@ -1401,13 +1401,19 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
                 "count":      len(_cleaned_prices),
             }
         else:
-            # All comps were outliers, condition mismatches, or >180d old —
-            # we don't actually have usable Browse data. Drop _browse_result
-            # so downstream falls through to Google/AI sources, while keeping
-            # _comp_summary so confidence reports "none" cleanly if those
-            # also fail.
+            # All Browse comps were outliers, condition mismatches, or >180d
+            # old — we don't actually have usable Browse data. Drop BOTH
+            # _browse_result AND _comp_summary so downstream falls through
+            # cleanly to Google/AI sources. Keeping the empty (count=0)
+            # _comp_summary would mask the winning source's actual stats in
+            # main.py's _build_confidence_payload and incorrectly force
+            # confidence='none' even when the fallback source has solid data
+            # — that violates the same-cleaned-set invariant. Clearing it
+            # lets the synthesizer rebuild a summary from sold_count/avg/low/
+            # high of whichever source ultimately wins (Google/AI/CL).
             log.info("[CompClean] All Browse comps dropped — falling through to other sources")
             _browse_result = None
+            _comp_summary = None
 
     if _browse_active_result and _browse_active_result.get("items") and os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"):
         _raw_active_items = _browse_active_result["items"]
