@@ -76,6 +76,7 @@ artifacts/deal-scout-api/
     ├── ebay_pricer.py         # Market value orchestrator — multi-source pipeline; clean_browse_comps (Task #58) does stddev outlier rejection + condition-mismatch dropping + 30/90/180-day recency weighting (drops >180d), and emits comp_summary with weighted_avg. Same cleaned set drives both score and confidence (no divergence).
     ├── ebay_browse.py         # eBay Browse API (OAuth2, real sold prices — PRIMARY source)
     ├── confidence.py          # (Task #58) Bucketer: lowest of {comp_count, spread, extraction, market_confidence ceiling} → high|medium|low|none. "none" forces can_price=False with cant_price_message verdict copy.
+    ├── trust.py               # (Task #59) Composite trust/scam evaluator. Combines vision-derived signals (is_stock_photo, photo_text_contradiction from extended deal_scorer prompt) with pure-Python heuristics (vague_description, price_too_good_new_acct, duplicate_seller_listing). Returns trust_signals + trust_severity (none|info|warn|alert); 2+ signals cap score to 5, all 6 floor to 1 with verdict override. Each signal fails open on missing data.
     ├── claude_pricer.py       # Claude AI price estimation + PostgreSQL price cache (48hr TTL)
     ├── craigslist_pricer.py   # Craigslist asking prices via RSS (no API key)
     ├── product_evaluator.py   # Reddit + Google reliability signals

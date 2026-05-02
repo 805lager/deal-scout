@@ -93,6 +93,13 @@ class DealScore:
                                         # (anchored to a number when possible). Distinct from `verdict`
                                         # (label) and `summary` (multi-sentence). Renders under the score
                                         # circle so the user sees "why this number" at a glance.
+    # Task #59 — vision-derived trust signals. Populated only when image_analyzed=True.
+    # Consumed by scoring/trust.py to compose the trust digest line. Defaults are
+    # safe (False / "") so the trust evaluator never fires on text-only listings.
+    is_stock_photo:           bool = False
+    stock_photo_reason:       str  = ""
+    photo_text_contradiction: bool = False
+    contradiction_reason:     str  = ""
 
 
 # ── Prompt Builder ────────────────────────────────────────────────────────────
@@ -456,7 +463,11 @@ Use exactly this structure:
   "confidence": "<high|medium|low>",
   "affiliate_category": "<one of the exact strings below>",
   "negotiation_message": "<see NEGOTIATION MESSAGE instructions below>",
-  "bundle_items": [<see BUNDLE BREAKDOWN instructions below>]
+  "bundle_items": [<see BUNDLE BREAKDOWN instructions below>],
+  "is_stock_photo": <true if the listing photos look like marketing/stock imagery (clean studio shot, product page render, watermark) rather than real phone-camera photos of an actual item the seller owns. false if you see ANY hand-held / in-room / casual photography. Set false when no images are provided.>,
+  "stock_photo_reason": "<≤120 chars; ONE concrete reason if is_stock_photo=true (e.g. 'Studio render with white background, no environment'). Empty string otherwise.>",
+  "photo_text_contradiction": <true if the photos clearly show a different brand/model than the title/description (e.g. listing says 'Samsung 65\" TV' but photo shows an LG logo). false if no contradiction or no photos. Be conservative — only fire on unambiguous mismatches.>,
+  "contradiction_reason": "<≤120 chars; ONE concrete observed mismatch if photo_text_contradiction=true. Empty otherwise.>"
 }}
 
 If red_flags or green_flags are empty, use an empty array [].
@@ -1003,6 +1014,14 @@ async def score_deal(
         else:
             bundle_items = []
 
+        # Task #59 — vision-derived trust booleans. Only honor them when
+        # vision actually ran; a text-only Claude reply with `is_stock_photo`
+        # set is meaningless and would surface a false positive.
+        _is_stock = bool(image_analyzed and data.get("is_stock_photo"))
+        _stock_reason = (data.get("stock_photo_reason") or "").strip()[:120] if _is_stock else ""
+        _contra = bool(image_analyzed and data.get("photo_text_contradiction"))
+        _contra_reason = (data.get("contradiction_reason") or "").strip()[:120] if _contra else ""
+
         return DealScore(
             score               = int(data.get("score", 5)),
             verdict             = data.get("verdict", "No verdict"),
@@ -1020,6 +1039,10 @@ async def score_deal(
             negotiation_message = raw_neg_msg,
             bundle_items        = bundle_items,
             score_rationale     = raw_rationale,
+            is_stock_photo           = _is_stock,
+            stock_photo_reason       = _stock_reason,
+            photo_text_contradiction = _contra,
+            contradiction_reason     = _contra_reason,
         )
 
     except anthropic.AuthenticationError as e:

@@ -482,6 +482,11 @@ class ListingRequest(BaseModel):
     is_vehicle:     bool = False  # True for motorcycles/cars/ATVs — suppresses irrelevant flags
     vehicle_details: Optional[dict] = None  # Structured vehicle attrs: mileage, transmission, title_status, owners
     seller_trust:   Optional[dict] = None   # Seller trust signals extracted by content script
+    # Task #59 — optional client-supplied seller account age. The trust
+    # evaluator falls back to parsing `seller_trust.joined_date` when this
+    # is absent, so content scripts that don't compute it (eBay, Craigslist)
+    # need no changes — FBM/OfferUp can ship the integer when known.
+    seller_account_age_days: Optional[int] = None
     original_price: float = 0.0   # Crossed-out price if seller reduced it (from DOM dual-price container)
     shipping_cost:  float = 0.0   # Cost to ship — 0 means free or local pickup
     image_urls:     Optional[list] = None  # Listing photo URLs — first one sent to Claude Vision
@@ -606,6 +611,13 @@ class DealScoreResponse(BaseModel):
                                        # the score with cant_price_message + "What we tried"
     cant_price_message:  str   = ""    # Verdict copy shown instead of score when can_price=False
     queries_attempted:   list  = []    # [{query, count, source}] for the "What we tried" expandable
+    # ── Task #59: composite trust / scam digest line ──
+    # `trust_signals` is the list of fired heuristics. Each entry is
+    # {id, label, why}. UI renders one digest line per item plus a
+    # color-coded chip from `trust_severity`. Empty list / "none" means
+    # no line is shown — silence is a feature.
+    trust_signals:       list  = []    # [{id, label, why}]
+    trust_severity:      str   = "none"  # "none" | "info" | "warn" | "alert"
     original_price:      float = 0.0  # Seller's original price if reduced (strikethrough)
     shipping_cost:       float = 0.0  # Shipping cost extracted from listing (0 = free/pickup)
 
@@ -1089,6 +1101,28 @@ async def score_listing(listing: ListingRequest, request: Request):
             deal_score.score = max(deal_score.score, 6)
             log.info(f"[RatioAdj] Good discount {_price_ratio:.1f}x market — score {_old} → {deal_score.score}")
 
+    # ── Step 4e: Trust / scam composite (Task #59) ───────────────────────────
+    # Combine vision-derived signals (stock photo, photo/text contradiction)
+    # with pure-Python heuristics (vague description, price-too-good + new
+    # account, dup seller listing) into a severity bucket. The evaluator
+    # mutates the deal_score in place when 2+ signals fire (cap to 5) or
+    # all 6 fire (floor to 1) and overrides the verdict accordingly.
+    from scoring.trust import evaluate_trust, apply_trust_to_score
+    _trust_comp_median = float(
+        (getattr(market_value, "comp_summary", None) or {}).get("median", 0.0)
+        or market_value.sold_avg or 0.0
+    )
+    trust_result = evaluate_trust(
+        listing                   = listing.model_dump(),
+        comp_median               = _trust_comp_median,
+        is_stock_photo            = deal_score.is_stock_photo,
+        stock_photo_reason        = deal_score.stock_photo_reason,
+        photo_text_contradiction  = deal_score.photo_text_contradiction,
+        contradiction_reason      = deal_score.contradiction_reason,
+        reverse_image_match_count = None,  # graceful no-op — lookup not wired yet
+    )
+    apply_trust_to_score(deal_score, trust_result)
+
     # ── Step 5: Serialize ────────────────────────────────────────────────────
     from dataclasses import asdict as dc_asdict
     def _to_dict(i):
@@ -1110,6 +1144,8 @@ async def score_listing(listing: ListingRequest, request: Request):
         shipping_cost  = listing.shipping_cost,
         # Task #58 — splat the confidence fields
         **_confidence_payload,
+        # Task #59 — composite trust signals + severity
+        **trust_result.to_response_dict(),
 
         # Market value
         estimated_value     = market_value.estimated_value,
@@ -1836,6 +1872,27 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
             if _auction_only_mode and _current_bid > 0:
                 _display_price = _current_bid
 
+            # ── Step 4d: Trust / scam composite (Task #59) ────────────────────
+            # Mirror of the /score wire-up: combine vision-derived signals
+            # with pure-Python heuristics, mutate deal_score in place when
+            # severity warrants a cap/floor + verdict override.
+            from scoring.trust import evaluate_trust as _eval_trust_s
+            from scoring.trust import apply_trust_to_score as _apply_trust_s
+            _trust_comp_median_s = float(
+                (getattr(market_value, "comp_summary", None) or {}).get("median", 0.0)
+                or market_value.sold_avg or 0.0
+            )
+            trust_result_s = _eval_trust_s(
+                listing                   = listing.model_dump(),
+                comp_median               = _trust_comp_median_s,
+                is_stock_photo            = deal_score.is_stock_photo,
+                stock_photo_reason        = deal_score.stock_photo_reason,
+                photo_text_contradiction  = deal_score.photo_text_contradiction,
+                contradiction_reason      = deal_score.contradiction_reason,
+                reverse_image_match_count = None,
+            )
+            _apply_trust_s(deal_score, trust_result_s)
+
             # Task #58 — derive confidence + comp_summary + can_price block.
             # Use the listing's actual asking price (not _display_price which
             # may be the auction current bid) so the can't-price verdict copy
@@ -1851,6 +1908,8 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                 shipping_cost     = listing.shipping_cost,
                 # Task #58 — splat the confidence fields
                 **_confidence_payload_s,
+                # Task #59 — composite trust signals + severity
+                **trust_result_s.to_response_dict(),
                 estimated_value   = market_value.estimated_value,
                 sold_avg          = market_value.sold_avg,
                 sold_count        = market_value.sold_count,

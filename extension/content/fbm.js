@@ -1285,6 +1285,77 @@
 
     renderHeader(r, panel);
     renderConfidenceBlock(r, panel);
+    renderTrustBlock(r, panel);
+
+    // ── Trust Block (Task #59) ───────────────────────────────────────────
+    // Composite trust / scam digest line. Renders only when ≥1 signal
+    // fires (severity ∈ {info, warn, alert}). Color-coded chip + tap-to-
+    // expand "Why?" with one line per fired signal. Built with createElement
+    // + textContent (defense-in-depth — never inject model output as HTML).
+    function renderTrustBlock(r, container) {
+      const sigs = Array.isArray(r.trust_signals) ? r.trust_signals : [];
+      if (!sigs.length) return;
+      const sev    = (r.trust_severity || 'info').toLowerCase();
+      const colors = { info: '#fbbf24', warn: '#f97316', alert: '#ef4444' };
+      const color  = colors[sev] || colors.info;
+      const labels = sigs.map(s => s.label || s.id).filter(Boolean);
+
+      const wrap = document.createElement('div');
+      wrap.style.cssText = 'margin:8px 12px 0;border:1px solid ' + color + '55;'
+        + 'border-radius:8px;background:' + color + '14;overflow:hidden';
+
+      const chipRow = document.createElement('div');
+      chipRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;'
+        + 'padding:6px 10px;cursor:pointer;font-size:11px;gap:8px';
+
+      const chipLeft = document.createElement('div');
+      chipLeft.style.cssText = 'display:flex;align-items:center;gap:6px;min-width:0';
+
+      const icon = document.createElement('span');
+      icon.style.cssText = 'color:' + color + ';font-weight:700;flex-shrink:0';
+      icon.textContent = '\u26A0 Trust check:';
+      chipLeft.appendChild(icon);
+
+      const summary = document.createElement('span');
+      summary.style.cssText = 'color:#e5e7eb;font-size:11px;'
+        + 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+      summary.textContent = labels.join(' \u00B7 ');
+      chipLeft.appendChild(summary);
+
+      const why = document.createElement('span');
+      why.style.cssText = 'color:' + color + ';font-size:10.5px;flex-shrink:0';
+      why.textContent = '[Why?]';
+
+      chipRow.appendChild(chipLeft);
+      chipRow.appendChild(why);
+      wrap.appendChild(chipRow);
+
+      const details = document.createElement('div');
+      details.style.cssText = 'display:none;border-top:1px solid ' + color + '33;'
+        + 'padding:8px 10px;font-size:11px;color:#d1d5db;line-height:1.5';
+      for (const s of sigs) {
+        const line = document.createElement('div');
+        line.style.cssText = 'margin-bottom:4px';
+        const lbl = document.createElement('span');
+        lbl.style.cssText = 'color:' + color + ';font-weight:600';
+        lbl.textContent = (s.label || s.id || 'signal') + ': ';
+        const txt = document.createElement('span');
+        txt.textContent = s.why || '';
+        line.appendChild(lbl);
+        line.appendChild(txt);
+        details.appendChild(line);
+      }
+      wrap.appendChild(details);
+
+      let open = false;
+      chipRow.addEventListener('click', () => {
+        open = !open;
+        details.style.display = open ? 'block' : 'none';
+        why.textContent = open ? '[Hide]' : '[Why?]';
+      });
+
+      container.appendChild(wrap);
+    }
     renderAISummary(r, panel);
     renderMarketComparison(r, panel);
     renderQueryFeedback(r, panel);
