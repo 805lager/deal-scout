@@ -1343,10 +1343,17 @@
     const panel = getPanel();
     panel.textContent = "";
 
-    renderHeader(r, panel);
-    renderConfidenceBlock(r, panel);
-    renderTrustBlock(r, panel);
-    renderLeverageBlock(r, panel);
+    // ── Approach A layout (Task #68) ────────────────────────────────────
+    // Sticky digest at the top (header + confidence + trust + leverage +
+    // summary) so the verdict stays readable no matter how far the user
+    // scrolls. Long-tail detail moves into collapsibles below — collapsed
+    // by default, expand state persisted per section name.
+    const digest = window.DealScoutDigest.beginDigest(panel);
+
+    renderHeader(r, digest);
+    renderConfidenceBlock(r, digest);
+    renderTrustBlock(r, digest);
+    renderLeverageBlock(r, digest);
 
     // ── Leverage Block (Task #60) ────────────────────────────────────────
     // Negotiation leverage digest — up to two lines (price-drop history
@@ -1487,14 +1494,113 @@
 
       container.appendChild(wrap);
     }
-    renderAISummary(r, panel);
-    renderMarketComparison(r, panel);
-    renderQueryFeedback(r, panel);
-    renderAIFlags(r, panel);
-    renderBuyNewSection(r, panel);
-    renderSecurityScore(r, panel);
-    renderProductReputation(r, panel);
-    renderBundleBreakdown(r, panel);
+    renderAISummary(r, digest);
+
+    // ── Collapsible sections ────────────────────────────────────────────
+    const sections = document.createElement('div');
+    sections.style.cssText = 'padding-bottom:8px';
+    panel.appendChild(sections);
+
+    // 1. Why this score — pros + cautions + value assessment
+    const _greenN = (r.green_flags && r.green_flags.length) || 0;
+    const _redN   = (r.red_flags   && r.red_flags.length)   || 0;
+    if (_greenN || _redN || r.value_assessment) {
+      const sec = window.DealScoutDigest.openCollapsible(sections, 'why',
+        { title: '\uD83D\uDCDD Why this score' });
+      renderAIFlags(r, sec.body);
+      const parts = [];
+      if (_greenN) parts.push(_greenN + ' pros');
+      if (_redN)   parts.push(_redN + ' cautions');
+      sec.setSummary(parts.join(' \u00B7 '), _greenN >= _redN ? '#86efac' : '#fde68a');
+    }
+
+    // 2. Market Comparison — comp table + query-feedback "fix" form
+    const _hasMarket = !!(r.sold_avg || r.active_avg || r.new_price || r.craigslist_asking_avg);
+    if (_hasMarket) {
+      const sec = window.DealScoutDigest.openCollapsible(sections, 'market',
+        { title: '\uD83D\uDCC8 Market Comparison' });
+      renderMarketComparison(r, sec.body);
+      renderQueryFeedback(r, sec.body);
+      if (r.sold_avg && r.price) {
+        const _delta = r.price - r.sold_avg;
+        const _pct   = Math.abs(Math.round((_delta / r.sold_avg) * 100));
+        const _below = _delta < 0;
+        sec.setSummary('$' + Math.abs(_delta).toFixed(0)
+          + (_below ? ' below' : ' above')
+          + ' (' + (_below ? '-' : '+') + _pct + '%)',
+          _below ? '#86efac' : '#fca5a5');
+      }
+    }
+
+    // 3. Compare Prices — affiliate cards + buy-new alert
+    const _hasCards   = r.affiliate_cards && r.affiliate_cards.length > 0;
+    const _hasNew     = r.new_price && r.new_price > 0;
+    const _ratio      = _hasNew ? (r.price / r.new_price) : 0;
+    const _buyTrigger = r.buy_new_trigger || _ratio >= 0.72;
+    if (_hasCards || _buyTrigger) {
+      const sec = window.DealScoutDigest.openCollapsible(sections, 'compare',
+        { title: '\uD83D\uDD0D Compare Prices' });
+      renderBuyNewSection(r, sec.body);
+      // Best-alt summary: walk every card, pick the cheapest item / hint.
+      let _best = 0;
+      if (_hasCards) {
+        for (const _c of r.affiliate_cards) {
+          const _items = _c.items || [];
+          for (const _it of _items) {
+            if (_it.price > 0 && (_best === 0 || _it.price < _best)) _best = _it.price;
+          }
+          if (!_items.length && _c.product_price > 0
+              && (_best === 0 || _c.product_price < _best)) {
+            _best = _c.product_price;
+          }
+        }
+      }
+      if (_best > 0) {
+        const _save = r.price - _best;
+        sec.setSummary('$' + _best.toFixed(0)
+          + (_save > 0 ? ' \u00B7 $' + _save.toFixed(0) + ' less' : ''),
+          _save > 0 ? '#86efac' : '#9ca3af');
+      } else {
+        sec.setSummary('Compare alternatives');
+      }
+    }
+
+    // 4. Security Check
+    if (r.security_score) {
+      const sec = window.DealScoutDigest.openCollapsible(sections, 'security',
+        { title: '\uD83D\uDD12 Security Check' });
+      renderSecurityScore(r, sec.body);
+      const _sc = r.security_score;
+      const _color = _sc.risk_level === 'low'    ? '#86efac'
+                   : _sc.risk_level === 'medium' ? '#fde68a'
+                   :                               '#fca5a5';
+      sec.setSummary((_sc.score || '?') + '/10 \u00B7 ' + (_sc.risk_level || ''), _color);
+    }
+
+    // 5. Product Reputation
+    if (r.product_evaluation) {
+      const sec = window.DealScoutDigest.openCollapsible(sections, 'reputation',
+        { title: '\u2B50 Product Reputation' });
+      renderProductReputation(r, sec.body);
+      const _pe = r.product_evaluation;
+      const _tier = _pe.reliability_tier || '';
+      const _color = _tier === 'excellent' ? '#86efac'
+                   : _tier === 'good'      ? '#93c5fd'
+                   : _tier === 'average'   ? '#fde68a'
+                   :                         '#fca5a5';
+      sec.setSummary(_tier, _color);
+    }
+
+    // Bundle breakdown — collapsible only when present
+    if (r.bundle_breakdown && r.bundle_breakdown.items && r.bundle_breakdown.items.length) {
+      const sec = window.DealScoutDigest.openCollapsible(sections, 'bundle',
+        { title: '\uD83D\uDCE6 Bundle Breakdown' });
+      renderBundleBreakdown(r, sec.body);
+      sec.setSummary(r.bundle_breakdown.items.length + ' items');
+    }
+
+    // Bottom utilities — keep outside collapsibles so the copy-message
+    // CTA and footer always land at the very end of the panel.
     renderNegotiationMessage(r, panel);
     renderFooter(r, panel);
   }

@@ -164,7 +164,27 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 ## Extension Version
 
-Current: **v0.43.4** (extension) / **v0.43.4** (API — read from `artifacts/deal-scout-api/VERSION`)
+Current: **v0.44.0** (extension) / **v0.44.0** (API — read from `artifacts/deal-scout-api/VERSION`)
+
+### v0.44.0 Score panel — Approach A layout (sticky digest + collapsibles)
+Score panel restructured: sticky digest at top (header, confidence, trust,
+leverage, summary) stays visible while the user scrolls; long-tail detail
+moves into 5 collapsibles below — *Why this score*, *Market Comparison*,
+*Compare Prices*, *Security Check*, *Product Reputation* — collapsed by
+default with a one-line summary on each closed row. Empty sections are
+suppressed entirely. Expand state is persisted **per section name** (not
+per listing) under `ds_section_state` in `chrome.storage.local`, so a
+preference for "always show Market Comparison" sticks across every
+listing on every marketplace. Pure rendering refactor — no backend
+changes. New shared primitive lives at `extension/content/lib/digest.js`
+(loaded via `content_scripts` in manifest before each platform script);
+`fbm.js`, `craigslist.js`, `ebay.js`, and `offerup.js` all call
+`window.DealScoutDigest.beginDigest(panel)` + `openCollapsible(...)`.
+Also fixed a latent drag bug in `craigslist.js` `renderHeader` where the
+mousedown handler stored `_ds_drag` on the header's container instead of
+the panel — only manifested once the container became the new sticky
+digest wrapper.
+
 
 ### v0.43.4 Faster scoring + cleaner FBM popup on navigation
 Four changes that shave wall time off every score and stop the Deal

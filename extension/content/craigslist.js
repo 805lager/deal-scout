@@ -464,10 +464,13 @@
   function renderScore(r) {
     const panel = getPanel();
     panel.textContent = "";
-    renderHeader(r, panel);
-    renderConfidenceBlock(r, panel);
-    renderTrustBlock(r, panel);
-    renderLeverageBlock(r, panel);
+
+    // Approach A layout (Task #68) — sticky digest + collapsibles below.
+    const digest = window.DealScoutDigest.beginDigest(panel);
+    renderHeader(r, digest);
+    renderConfidenceBlock(r, digest);
+    renderTrustBlock(r, digest);
+    renderLeverageBlock(r, digest);
 
     // ── Leverage Block (Task #60) ────────────────────────────────────────
     // Negotiation leverage digest — up to two lines (price-drop history +
@@ -605,12 +608,114 @@
 
       container.appendChild(wrap);
     }
-    renderSummary(r, panel);
-    renderMarketData(r, panel);
-    renderBuyNewSection(r, panel);
-    renderFlags(r, panel);
-    renderSecurityScore(r, panel);
-    renderBundleBreakdown(r, panel);
+    renderSummary(r, digest);
+
+    // ── Collapsible sections (Task #68) ─────────────────────────────────
+    const sections = document.createElement('div');
+    sections.style.cssText = 'padding-bottom:8px';
+    panel.appendChild(sections);
+
+    const _greenN = (r.green_flags && r.green_flags.length) || 0;
+    const _redN   = (r.red_flags   && r.red_flags.length)   || 0;
+    if (_greenN || _redN) {
+      const sec = window.DealScoutDigest.openCollapsible(sections, 'why',
+        { title: '\uD83D\uDCDD Why this score' });
+      renderFlags(r, sec.body);
+      const parts = [];
+      if (_greenN) parts.push(_greenN + ' pros');
+      if (_redN)   parts.push(_redN + ' cautions');
+      sec.setSummary(parts.join(' \u00B7 '), _greenN >= _redN ? '#86efac' : '#fde68a');
+    }
+
+    if (r.sold_avg || r.active_avg || r.new_price || r.craigslist_asking_avg) {
+      const sec = window.DealScoutDigest.openCollapsible(sections, 'market',
+        { title: '\uD83D\uDCC8 Market Comparison' });
+      renderMarketData(r, sec.body);
+      if (r.sold_avg && r.price) {
+        const _delta = r.price - r.sold_avg;
+        const _pct   = Math.abs(Math.round((_delta / r.sold_avg) * 100));
+        const _below = _delta < 0;
+        sec.setSummary('$' + Math.abs(_delta).toFixed(0)
+          + (_below ? ' below' : ' above')
+          + ' (' + (_below ? '-' : '+') + _pct + '%)',
+          _below ? '#86efac' : '#fca5a5');
+      }
+    }
+
+    const _hasCards   = r.affiliate_cards && r.affiliate_cards.length > 0;
+    const _hasNew     = r.new_price && r.new_price > 0;
+    const _ratio      = _hasNew ? (r.price / r.new_price) : 0;
+    const _buyTrigger = r.buy_new_trigger || _ratio >= 0.72;
+    if (_hasCards || _buyTrigger) {
+      const sec = window.DealScoutDigest.openCollapsible(sections, 'compare',
+        { title: '\uD83D\uDD0D Compare Prices' });
+      renderBuyNewSection(r, sec.body);
+      let _best = 0;
+      if (_hasCards) {
+        for (const _c of r.affiliate_cards) {
+          const _items = _c.items || [];
+          for (const _it of _items) {
+            if (_it.price > 0 && (_best === 0 || _it.price < _best)) _best = _it.price;
+          }
+          if (!_items.length && _c.product_price > 0
+              && (_best === 0 || _c.product_price < _best)) {
+            _best = _c.product_price;
+          }
+        }
+      }
+      if (_best > 0) {
+        const _save = r.price - _best;
+        sec.setSummary('$' + _best.toFixed(0)
+          + (_save > 0 ? ' \u00B7 $' + _save.toFixed(0) + ' less' : ''),
+          _save > 0 ? '#86efac' : '#9ca3af');
+      } else {
+        sec.setSummary('Compare alternatives');
+      }
+    }
+
+    if (r.security_score) {
+      const sec = window.DealScoutDigest.openCollapsible(sections, 'security',
+        { title: '\uD83D\uDD12 Security Check' });
+      renderSecurityScore(r, sec.body);
+      const _sc = r.security_score;
+      const _color = _sc.risk_level === 'low'    ? '#86efac'
+                   : _sc.risk_level === 'medium' ? '#fde68a'
+                   :                               '#fca5a5';
+      sec.setSummary((_sc.score || '?') + '/10 \u00B7 ' + (_sc.risk_level || ''), _color);
+    }
+
+    if (r.product_evaluation) {
+      const sec = window.DealScoutDigest.openCollapsible(sections, 'reputation',
+        { title: '\u2B50 Product Reputation' });
+      const _pe = r.product_evaluation;
+      // Inline minimal renderer — craigslist.js doesn't ship its own.
+      const _row = (txt, color) => {
+        if (!txt) return;
+        const el = document.createElement('div');
+        el.style.cssText = 'font-size:12px;color:' + (color || '#d1d5db')
+          + ';margin:4px 12px;line-height:1.4';
+        el.textContent = txt;
+        sec.body.appendChild(el);
+      };
+      _row(_pe.brand_reputation);
+      _row(_pe.model_reputation);
+      (_pe.known_issues || []).slice(0, 3).forEach(i => _row('\u26A0 ' + i, '#fde68a'));
+      if (_pe.expected_lifespan) _row('\u23F3 Expected lifespan: ' + _pe.expected_lifespan, '#9ca3af');
+      const _tier = _pe.reliability_tier || '';
+      const _color = _tier === 'excellent' ? '#86efac'
+                   : _tier === 'good'      ? '#93c5fd'
+                   : _tier === 'average'   ? '#fde68a'
+                   :                         '#fca5a5';
+      sec.setSummary(_tier, _color);
+    }
+
+    if (r.bundle_breakdown && r.bundle_breakdown.items && r.bundle_breakdown.items.length) {
+      const sec = window.DealScoutDigest.openCollapsible(sections, 'bundle',
+        { title: '\uD83D\uDCE6 Bundle Breakdown' });
+      renderBundleBreakdown(r, sec.body);
+      sec.setSummary(r.bundle_breakdown.items.length + ' items');
+    }
+
     renderNegotiationMessage(r, panel);
     renderFooter(r, panel);
   }
@@ -746,8 +851,12 @@
     topRow.appendChild(closeBtn);
     topRow.addEventListener("mousedown", (e) => {
       if (e.target === closeBtn) return;
-      const p = container.closest ? container : getPanel();
-      p._ds_drag = { on: true, ox: e.clientX - p.getBoundingClientRect().left, oy: e.clientY - p.getBoundingClientRect().top };
+      // Always grab the panel itself — `container` may now be the sticky
+      // digest wrapper introduced by the Approach A layout (Task #68).
+      const p = getPanel();
+      if (!p) return;
+      const _rect = p.getBoundingClientRect();
+      p._ds_drag = { on: true, ox: e.clientX - _rect.left, oy: e.clientY - _rect.top };
     });
     hdr.appendChild(topRow);
 
