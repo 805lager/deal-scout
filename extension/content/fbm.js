@@ -1485,17 +1485,23 @@
     chipRow.appendChild(arrow);
     wrap.appendChild(chipRow);
 
-    // Build expandable details
+    // Task #58 — when can_price === false, the verdict copy is the PRIMARY
+    // message the user sees (not hidden behind the expander). It replaces
+    // the score number's role: "Not enough comparable sales — treat as
+    // your reference." The chip above explains WHY ("CAN'T PRICE"); this
+    // banner explains WHAT TO DO. Always-visible, regardless of expand state.
+    if (!canPrice && r.cant_price_message) {
+      const banner = document.createElement('div');
+      banner.style.cssText = 'border-top:1px solid ' + color + '22;'
+        + 'padding:8px 10px;font-size:12px;font-weight:600;color:#fca5a5;line-height:1.4';
+      banner.textContent = r.cant_price_message;
+      wrap.appendChild(banner);
+    }
+
+    // Build expandable details (stats + queries — secondary)
     const details = document.createElement('div');
     details.style.cssText = 'display:none;border-top:1px solid ' + color + '22;'
       + 'padding:8px 10px;font-size:11px;color:#d1d5db;line-height:1.5';
-
-    if (!canPrice && r.cant_price_message) {
-      const msg = document.createElement('div');
-      msg.style.cssText = 'margin-bottom:6px;color:#fca5a5;font-weight:600';
-      msg.textContent = r.cant_price_message;
-      details.appendChild(msg);
-    }
 
     const lines = [];
     if (cs.count > 0)              lines.push('Comps after cleaning: ' + cs.count);

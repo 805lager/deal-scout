@@ -54,6 +54,7 @@ import logging
 import os
 import re
 import statistics
+from datetime import datetime, timezone
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional
@@ -480,18 +481,61 @@ def _listing_condition_class(label: str) -> str:
     return "unknown"
 
 
+def _parse_sold_date(value: str) -> Optional[float]:
+    """
+    Parse an eBay date string and return days-old as a float (older = larger),
+    or None if missing/unparseable. Accepts ISO 8601 with or without 'Z'.
+    Returns None when value is empty so callers can detect "no date available"
+    distinctly from "very recent" (which would be 0.0).
+    """
+    if not value:
+        return None
+    s = value.strip()
+    if not s:
+        return None
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    age_seconds = (datetime.now(timezone.utc) - dt).total_seconds()
+    return max(0.0, age_seconds / 86400.0)
+
+
+# Recency weighting tiers for Browse comps (Task #58)
+#   ≤30d  : weight 1.0 (most recent — best signal)
+#   ≤90d  : weight 0.7
+#   ≤180d : weight 0.4 (acceptable but stale)
+#   >180d : DROPPED entirely (counted in `comps_dropped_old`)
+def _recency_weight(days_old: Optional[float]) -> Optional[float]:
+    if days_old is None:
+        return None  # no date available — caller falls back to uniform
+    if days_old > 180:
+        return 0.0   # 0.0 means "drop"
+    if days_old <= 30:
+        return 1.0
+    if days_old <= 90:
+        return 0.7
+    return 0.4
+
+
 def clean_browse_comps(
     items: list[dict],
     listing_condition: str = "",
 ) -> tuple[list[dict], dict]:
     """
-    Apply per-comp outlier rejection + condition matching to a Browse-API
-    item list. Returns (cleaned_items, comp_summary).
+    Apply per-comp outlier rejection + condition matching + recency weighting
+    to a Browse-API item list. Returns (cleaned_items, comp_summary).
+
+    The returned cleaned_items + comp_summary stats are the SAME set used to
+    drive both the deal score and the confidence bucket — they never disagree.
 
     OUTLIER RULE: drop items whose price is >2σ from the median (after
-    median-bound trim — robust to a few wild values polluting the σ).
-    Falls back to median-bound only when there are <5 items, since stddev
-    is unreliable for very small samples.
+    median-bound trim). Falls back to median-bound only when there are <5
+    items, since stddev is unreliable for very small samples.
 
     CONDITION RULE: when listing_condition maps to a known bucket, drop
     comps whose condition_class is in a different bucket. Specifically:
@@ -499,6 +543,13 @@ def clean_browse_comps(
       - Listing 'used' → drop 'parts' only (used+new often legitimately mix)
       - Listing 'parts' → keep all (parts items are rare enough to need data)
       - Listing 'unknown' → no condition filter
+
+    RECENCY RULE: when items have a sold_date, drop those >180 days old
+    and weight survivors (≤30→1.0, ≤90→0.7, ≤180→0.4). The summary's
+    `weighted_avg` is the recency-weighted mean and is also used to replace
+    the un-weighted avg upstream so the score reflects recency too. When
+    NO items have dates (Browse API doesn't always populate them), this
+    step is skipped entirely and `weighted_avg` equals the plain mean.
     """
     if not items:
         return [], _empty_comp_summary()
@@ -555,28 +606,67 @@ def clean_browse_comps(
         cleaned = trimmed
         condition_dropped = 0
 
-    cleaned_prices = [float(it["price"]) for it in cleaned]
+    # Step 4: recency weighting + drop >180d
+    # We compute days_old once per item, drop the >180d items, then build
+    # a weighted_avg from the survivors. If NO item has a parseable date
+    # (most Browse items, since the API rarely exposes a sold-date field),
+    # we skip the drop and weight everything 1.0 → behaves like uniform.
+    ages = [(_parse_sold_date(it.get("sold_date", ""))) for it in cleaned]
+    have_any_date = any(a is not None for a in ages)
+    dropped_old = 0
+    if have_any_date:
+        kept = []
+        for it, age in zip(cleaned, ages):
+            w = _recency_weight(age)
+            if w == 0.0:               # >180d → drop
+                dropped_old += 1
+                continue
+            # items WITHOUT a date when SOME items DO have one: treat as
+            # acceptable but stale (0.4) rather than dropping silently.
+            it["_recency_weight"] = w if w is not None else 0.4
+            kept.append(it)
+        cleaned = kept
+        recency_window = "30/90/180-day weighted"
+    else:
+        # Uniform fallback — Browse API didn't expose dates for this query.
+        for it in cleaned:
+            it["_recency_weight"] = 1.0
+        recency_window = "uniform (last 90d, no per-item dates)"
+
+    cleaned_prices  = [float(it["price"]) for it in cleaned]
+    cleaned_weights = [float(it.get("_recency_weight", 1.0)) for it in cleaned]
     if cleaned_prices:
         cleaned_median = round(statistics.median(cleaned_prices), 2)
         cleaned_low    = round(min(cleaned_prices), 2)
         cleaned_high   = round(max(cleaned_prices), 2)
+        wsum = sum(cleaned_weights)
+        if wsum > 0:
+            weighted_avg = round(
+                sum(p * w for p, w in zip(cleaned_prices, cleaned_weights)) / wsum, 2
+            )
+        else:
+            weighted_avg = round(statistics.mean(cleaned_prices), 2)
     else:
-        cleaned_median = cleaned_low = cleaned_high = 0.0
+        cleaned_median = cleaned_low = cleaned_high = weighted_avg = 0.0
 
     summary = {
         "count":                        len(cleaned),
         "median":                       cleaned_median,
         "low":                          cleaned_low,
         "high":                         cleaned_high,
+        "weighted_avg":                 weighted_avg,
         "outliers_removed":             outliers_removed,
         "condition_mismatches_removed": condition_dropped,
-        "recency_window":               "last 90 days",   # Browse API default
+        "comps_dropped_old":            dropped_old,
+        "recency_window":               recency_window,
+        "recency_supported":            have_any_date,
     }
 
-    if outliers_removed or condition_dropped:
+    if outliers_removed or condition_dropped or dropped_old:
         log.info(
             f"[CompClean] {len(items)} → {len(cleaned)} comps "
-            f"(outliers={outliers_removed}, cond_mismatch={condition_dropped})"
+            f"(outliers={outliers_removed}, cond_mismatch={condition_dropped}, "
+            f"old={dropped_old}, recency={'date-weighted' if have_any_date else 'uniform'})"
         )
 
     return cleaned, summary
@@ -589,9 +679,12 @@ def _empty_comp_summary(count: int = 0) -> dict:
         "median":                       0.0,
         "low":                          0.0,
         "high":                         0.0,
+        "weighted_avg":                 0.0,
         "outliers_removed":             0,
         "condition_mismatches_removed": 0,
+        "comps_dropped_old":            0,
         "recency_window":               "",
+        "recency_supported":            False,
     }
 
 
@@ -1282,27 +1375,39 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
                 }
 
         # Task #58 — clean the verified comp set further: outlier rejection +
-        # condition matching. The cleaned set is what feeds BOTH the score
-        # number AND the confidence calculation, so they never disagree.
+        # condition matching + recency weighting. The cleaned set is what
+        # feeds BOTH the score number AND the confidence bucket so they
+        # never disagree (per-spec: same set drives both, no divergence).
         _cleaned_items, _comp_summary = clean_browse_comps(
             _browse_result.get("items", []) or [],
             listing_condition=listing_condition,
         )
         _cleaned_prices = [float(it["price"]) for it in _cleaned_items if it.get("price")]
-        # Only swap into _browse_result if we still have at least one comp left
-        # — never let cleaning produce a zero-price stat block. We also require
-        # at least 2 comps before we'll let cleaning override the LLM-verified
-        # avg, since a 1-comp swap can swing the score wildly. With 1 comp the
-        # cleaner's stats stay in comp_summary but the legacy avg/count is kept.
-        if len(_cleaned_prices) >= 2:
+        if _cleaned_prices:
+            # ALWAYS swap — even with a single comp. The confidence bucketer
+            # will correctly downgrade to "low"/"none" for thin sets; the
+            # invariant we MUST preserve is that score and confidence both
+            # see the same comp set.
+            # avg_price uses the recency-weighted mean from the cleaner so
+            # the score is anchored to recent sales rather than ancient ones.
+            _wavg = float(_comp_summary.get("weighted_avg") or 0.0)
+            _avg_for_score = _wavg if _wavg > 0 else round(statistics.mean(_cleaned_prices), 2)
             _browse_result = {
                 **_browse_result,
                 "items":      _cleaned_items,
-                "avg_price":  round(statistics.mean(_cleaned_prices), 2),
+                "avg_price":  _avg_for_score,
                 "low_price":  round(min(_cleaned_prices), 2),
                 "high_price": round(max(_cleaned_prices), 2),
                 "count":      len(_cleaned_prices),
             }
+        else:
+            # All comps were outliers, condition mismatches, or >180d old —
+            # we don't actually have usable Browse data. Drop _browse_result
+            # so downstream falls through to Google/AI sources, while keeping
+            # _comp_summary so confidence reports "none" cleanly if those
+            # also fail.
+            log.info("[CompClean] All Browse comps dropped — falling through to other sources")
+            _browse_result = None
 
     if _browse_active_result and _browse_active_result.get("items") and os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"):
         _raw_active_items = _browse_active_result["items"]

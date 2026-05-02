@@ -217,6 +217,19 @@ async def search_ebay_browse(
                 if not image_url and thumbnails:
                     image_url = thumbnails[0].get("imageUrl", "")
 
+                # Capture sold date when present. The Browse API does NOT
+                # universally expose a sold-date field on completed items —
+                # `itemEndDate` is the closest stable signal, with
+                # `lastSoldDate` as a fallback for the rare items that have
+                # it. clean_browse_comps() uses this for recency weighting
+                # (Task #58 — 30/90/180-day tiers, drop >180); when absent
+                # the cleaner gracefully falls back to uniform weighting.
+                sold_date = (
+                    item.get("itemEndDate")
+                    or item.get("lastSoldDate")
+                    or item.get("itemCreationDate")
+                    or ""
+                )
                 items.append({
                     "title": title[:100],
                     "price": round(price_val, 2),
@@ -224,6 +237,7 @@ async def search_ebay_browse(
                     "url": item_url,
                     "image_url": image_url,
                     "sold": sold,
+                    "sold_date": sold_date,
                 })
                 prices.append(price_val)
             except (KeyError, ValueError, TypeError):

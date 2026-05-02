@@ -73,7 +73,7 @@ artifacts/deal-scout-api/
 └── scoring/                  # Pipeline modules
     ├── deal_scorer.py         # Claude scoring (main AI call)
     ├── product_extractor.py   # Claude extracts brand/model from vague title
-    ├── ebay_pricer.py         # Market value orchestrator — multi-source pipeline; clean_browse_comps (Task #58) does stddev outlier rejection + condition-mismatch dropping and emits comp_summary
+    ├── ebay_pricer.py         # Market value orchestrator — multi-source pipeline; clean_browse_comps (Task #58) does stddev outlier rejection + condition-mismatch dropping + 30/90/180-day recency weighting (drops >180d), and emits comp_summary with weighted_avg. Same cleaned set drives both score and confidence (no divergence).
     ├── ebay_browse.py         # eBay Browse API (OAuth2, real sold prices — PRIMARY source)
     ├── confidence.py          # (Task #58) Bucketer: lowest of {comp_count, spread, extraction, market_confidence ceiling} → high|medium|low|none. "none" forces can_price=False with cant_price_message verdict copy.
     ├── claude_pricer.py       # Claude AI price estimation + PostgreSQL price cache (48hr TTL)
