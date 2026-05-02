@@ -326,9 +326,15 @@
     scoreNum.textContent = score;
     ring.appendChild(scoreNum);
     const meta = document.createElement("div");
+    meta.style.cssText = "flex:1;min-width:0";
+    // Optional rationale row — server already truncates ≤140 chars.
+    const ratHtml = r.score_rationale
+      ? '<div style="font-size:11px;color:#9ca3af;margin-top:4px;line-height:1.4;font-style:italic">' + escHtml(r.score_rationale) + '</div>'
+      : '';
     meta.innerHTML = DOMPurify.sanitize('<div style="font-size:14px;font-weight:800;color:#e2e8f0">' + escHtml(verdict) + "</div>" +
       '<div style="font-size:11px;color:#94a3b8;margin-top:2px">' + (r.should_buy === false ? "⛔ Skip" : r.should_buy ? "✅ Worth buying" : "") + "</div>" +
-      '<div style="font-size:10px;color:#6b7280;margin-top:1px">🏷 OfferUp · $' + (r.price || 0).toFixed(0) + "</div>");
+      '<div style="font-size:10px;color:#6b7280;margin-top:1px">🏷 OfferUp · $' + (r.price || 0).toFixed(0) + "</div>" +
+      ratHtml);
     scoreRow.appendChild(ring);
     scoreRow.appendChild(meta);
 

@@ -101,7 +101,8 @@ artifacts/deal-scout-api/
 - `POST /feedback` — saves query corrections to PostgreSQL `query_corrections` table
 - `GET /admin` — admin dashboard (reads affiliate clicks + corrections from DB)
 - `GET /admin/daily-summary` — manual trigger for daily Discord digest
-- `GET /admin/dashboard` — data pipeline summary stats
+- `GET /admin/dashboard` — data pipeline summary stats + persistent score-cache hit-rate metric
+- `POST /admin/score-cache/clear?url=...` (or `?all=true`) — invalidate persistent score_cache rows (admin-token auth)
 - `GET /score-log` — comprehensive scoring history (last 500 scorecards); each entry has listing info, deal score, security check, affiliate cards, price comparison, product evaluation, product info — for post-browse audit of every feature
 - `DELETE /score-log` — clears scoring history
 - `GET /admin/audit` — score audit dashboard (SPA with telemetry cards, anomaly detection, LLM review, rescore comparison)

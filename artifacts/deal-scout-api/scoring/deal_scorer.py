@@ -89,6 +89,10 @@ class DealScore:
     affiliate_category: str     = ""    # Claude's read on what product category this is for affiliate routing
     negotiation_message: str    = ""    # Ready-to-send buyer message referencing price context
     bundle_items:        list   = None  # [{item, value}] breakdown for multi-item listings
+    score_rationale:     str    = ""    # ≤140 char one-liner: the SINGLE most important driver of the score
+                                        # (anchored to a number when possible). Distinct from `verdict`
+                                        # (label) and `summary` (multi-sentence). Renders under the score
+                                        # circle so the user sees "why this number" at a glance.
 
 
 # ── Prompt Builder ────────────────────────────────────────────────────────────
@@ -441,6 +445,7 @@ Use exactly this structure:
 {{
   "score": <integer 1-10>,
   "verdict": "<10 words or less — e.g. 'Good bundle deal, 30% below aggregate value'>",
+  "score_rationale": "<≤140 chars: ONE sentence pinning down the single most important reason for THIS score, anchored to a number when possible. Distinct from verdict (label) and summary (multi-sentence).>",
   "summary": "<2-3 sentences explaining the score in plain English>",
   "value_assessment": "<1-2 sentences on what this item or bundle is actually worth>",
   "condition_notes": "<1-2 sentences on your read of the condition claim>",
@@ -456,6 +461,19 @@ Use exactly this structure:
 
 If red_flags or green_flags are empty, use an empty array [].
 recommended_offer should be realistic — not insultingly low, not full ask if overpriced.
+
+## SCORE RATIONALE
+score_rationale is a one-liner shown right under the score in the UI. Rules:
+- ≤140 characters. Server hard-truncates anything longer.
+- Single sentence. No line breaks, no bullet points.
+- Anchor on the most decisive driver: comp ratio, condition photo evidence, scam signal, or
+  thin-comp uncertainty — whichever actually moved the score. Examples:
+  Good: "Asking $180 vs $240 sold avg over 14 comps; condition matches photos."
+  Good: "Comps thin (1 sale) — cannot confirm value; price judged on description only."
+  Good: "Above new retail; no warranty, no returns — buying new is cheaper."
+  Bad:  "This is a fair deal." (vague)
+  Bad:  "Score 6 because ..." (don't restate the score)
+- Never restate the verdict or score number — say WHY, not WHAT.
 
 ## AFFILIATE CATEGORY
 Pick exactly ONE affiliate_category from this list that best describes what is being sold.
@@ -649,6 +667,21 @@ def _market_fallback_score(listing: dict, market_value: dict, image_analyzed: bo
 
     offer = price * 0.88 if should_buy else price * 0.80
 
+    # Build a deterministic rationale for the fallback path so the UI still
+    # shows "why" — the AI prose is gone but the comp-ratio reasoning is real.
+    if est > 0 and price > 0:
+        ratio = price / est
+        if ratio < 0.85:
+            fallback_rationale = f"Asking ${price:.0f} vs ~${est:.0f} market ({(1-ratio)*100:.0f}% below). AI offline — score from price ratio only."
+        elif ratio <= 1.15:
+            fallback_rationale = f"Asking ${price:.0f} ≈ ${est:.0f} market. AI offline — no AI condition or red-flag analysis."
+        else:
+            fallback_rationale = f"Asking ${price:.0f} vs ~${est:.0f} market ({(ratio-1)*100:.0f}% above). AI offline — score from price ratio only."
+    else:
+        fallback_rationale = "No market data and AI offline — neutral placeholder score."
+    if len(fallback_rationale) > 140:
+        fallback_rationale = fallback_rationale[:137].rstrip() + "…"
+
     return DealScore(
         score             = score,
         verdict           = verdict,
@@ -662,6 +695,7 @@ def _market_fallback_score(listing: dict, market_value: dict, image_analyzed: bo
         confidence        = "low",
         model_used        = "market-data-fallback",
         image_analyzed    = False,
+        score_rationale   = fallback_rationale,
     )
 
 
@@ -951,6 +985,14 @@ async def score_deal(
 
         raw_aff_cat    = (data.get("affiliate_category") or "").strip().lower()
         raw_neg_msg    = (data.get("negotiation_message") or "").strip()
+        # score_rationale: defensively normalise — Claude occasionally returns
+        # multi-line text or exceeds the 140 char cap despite the prompt rule.
+        # We collapse newlines, trim whitespace, and hard-truncate on the
+        # server so the UI never gets a 3-line "rationale" that breaks layout.
+        raw_rationale  = (data.get("score_rationale") or "").strip()
+        raw_rationale  = " ".join(raw_rationale.split())  # collapse newlines/runs of whitespace
+        if len(raw_rationale) > 140:
+            raw_rationale = raw_rationale[:137].rstrip() + "…"
         raw_bundle     = data.get("bundle_items")
         # bundle_items must be a list of {item, value} dicts; coerce anything else to []
         if isinstance(raw_bundle, list) and raw_bundle:
@@ -977,6 +1019,7 @@ async def score_deal(
             affiliate_category  = raw_aff_cat,
             negotiation_message = raw_neg_msg,
             bundle_items        = bundle_items,
+            score_rationale     = raw_rationale,
         )
 
     except anthropic.AuthenticationError as e:

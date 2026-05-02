@@ -394,11 +394,17 @@
 
     const scoreRow = document.createElement("div");
     scoreRow.style.cssText = "display:flex;align-items:center;gap:10px";
+    // Optional rationale row — server already truncates ≤140 chars, escHtml
+    // keeps it inert in the innerHTML pipeline.
+    const ratHtml = r.score_rationale
+      ? '<div style="font-size:11px;color:#9ca3af;margin-top:4px;line-height:1.4;font-style:italic">' + escHtml(r.score_rationale) + '</div>'
+      : '';
     scoreRow.innerHTML = DOMPurify.sanitize('<div style="width:52px;height:52px;border-radius:50%;border:3px solid ' + scoreColor + ';display:flex;align-items:center;justify-content:center;flex-shrink:0">' +
       '<span style="font-size:22px;font-weight:900;color:' + scoreColor + '">' + score + "</span></div>" +
-      '<div><div style="font-size:14px;font-weight:800;color:#e2e8f0">' + escHtml(verdict) + "</div>" +
+      '<div style="flex:1;min-width:0"><div style="font-size:14px;font-weight:800;color:#e2e8f0">' + escHtml(verdict) + "</div>" +
       '<div style="font-size:11px;color:#94a3b8;margin-top:2px">' + (r.should_buy === false ? "⛔ Skip" : r.should_buy ? "✅ Worth buying" : "") + "</div>" +
-      '<div style="font-size:10px;color:#6b7280;margin-top:1px">🏷 eBay listing · $' + (r.price || 0).toFixed(0) + "</div></div>");
+      '<div style="font-size:10px;color:#6b7280;margin-top:1px">🏷 eBay listing · $' + (r.price || 0).toFixed(0) + "</div>" +
+      ratHtml + "</div>");
     hdr.appendChild(scoreRow);
     container.appendChild(hdr);
   }

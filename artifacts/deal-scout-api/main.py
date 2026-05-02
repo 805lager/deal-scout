@@ -153,6 +153,128 @@ def _cache_set(key: str, payload: dict, url_keyed: bool = False):
     ttl = _SCORE_CACHE_TTL_URL if url_keyed else _SCORE_CACHE_TTL
     _score_cache[key] = {"ts": _time.time(), "payload": payload, "ttl": ttl}
 
+
+# ── Persistent score cache (Postgres) ────────────────────────────────────────
+# Reproducibility-grade cache: keyed by sha256(url + listing_hash + asking_price)
+# so a relisted, re-priced, or photo-edited listing reprices automatically while
+# an unchanged scrape always returns the same score. Survives server restart
+# (the in-memory _score_cache above does not). 24-hour TTL — long enough that
+# casual repeat scrolls never repay Claude, short enough that stale market data
+# (eBay sold comps drift over a few days) gets refreshed.
+#
+# Two layers (in-memory above + persistent here) coexist intentionally:
+#   • in-memory: ~1ms, 20min/2hr TTL, survives nothing — protects against burst
+#     re-scrapes from the same browser tab
+#   • persistent: ~5ms DB read, 24h TTL, survives restarts — guarantees a user
+#     who scores the same unchanged listing tomorrow gets the same number
+import hashlib as _hashlib
+
+_score_cache_table_ensured = False
+_SCORE_CACHE_PERSIST_TTL_SECONDS = 86400  # 24h
+# Hit/miss counters drive the /admin/dashboard hit-rate metric. Process-local
+# so they reset on restart — that's fine, the dashboard reads them as
+# "since-restart" stats, not all-time.
+_score_cache_stats = {"hits": 0, "misses": 0}
+
+def _listing_content_hash(title: str, description: str, image_urls: list) -> str:
+    """
+    Stable fingerprint of the listing's user-visible content. Same scrape →
+    same hash. We deliberately include the first 5 image URLs (not raw bytes)
+    because a relisted item with new photos almost always means new condition
+    info and should reprice; URL-string equality is a cheap proxy that catches
+    that case without paying to fetch images.
+    """
+    parts = [
+        (title or "").strip().lower(),
+        (description or "").strip()[:1000],   # cap so 8k descriptions don't dominate hashing time
+        "|".join((image_urls or [])[:5]),
+    ]
+    return _hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+def _persistent_cache_key(url: str, listing_hash: str, asking_price: float) -> str:
+    """
+    Reproducibility key. URL alone isn't enough (relistings) and content alone
+    isn't enough (price-only edits). All three combined make a stable identity.
+    """
+    raw = f"{(url or '').strip()}|{listing_hash}|{float(asking_price or 0):.2f}"
+    return _hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+async def _ensure_score_cache_table():
+    """Lazy-create the score_cache table on first use (same pattern as
+    affiliate_events / score_log / nav_debug above). Idempotent."""
+    global _score_cache_table_ensured
+    if _score_cache_table_ensured:
+        return
+    from scoring.data_pipeline import _get_pool
+    pool = await _get_pool()
+    if not pool:
+        return
+    await pool.execute("""
+        CREATE TABLE IF NOT EXISTS score_cache (
+            cache_key     text PRIMARY KEY,
+            listing_url   text DEFAULT '',
+            asking_price  float DEFAULT 0,
+            response_json jsonb NOT NULL,
+            created_at    timestamptz DEFAULT now(),
+            expires_at    timestamptz NOT NULL
+        )
+    """)
+    # url index supports targeted invalidation via /admin/score-cache/clear?url=...
+    # expires_at index keeps cleanup queries fast.
+    await pool.execute("CREATE INDEX IF NOT EXISTS idx_score_cache_url     ON score_cache(listing_url)")
+    await pool.execute("CREATE INDEX IF NOT EXISTS idx_score_cache_expires ON score_cache(expires_at)")
+    _score_cache_table_ensured = True
+
+async def _persist_cache_get(cache_key: str) -> Optional[dict]:
+    """
+    Returns cached score payload if non-expired, else None. Failures are
+    swallowed (warning-logged) — a cache lookup must never break scoring.
+    """
+    try:
+        await _ensure_score_cache_table()
+        from scoring.data_pipeline import _get_pool
+        pool = await _get_pool()
+        if not pool:
+            return None
+        row = await pool.fetchrow(
+            "SELECT response_json FROM score_cache WHERE cache_key = $1 AND expires_at > now()",
+            cache_key,
+        )
+        if not row:
+            _score_cache_stats["misses"] += 1
+            return None
+        _score_cache_stats["hits"] += 1
+        # asyncpg returns jsonb as a JSON string by default (no custom codec
+        # registered in this project), hence the json.loads.
+        raw = row["response_json"]
+        return _json.loads(raw) if isinstance(raw, str) else dict(raw)
+    except Exception as e:
+        log.warning(f"[ScoreCache] read failed (non-fatal): {e}")
+        return None
+
+async def _persist_cache_set(cache_key: str, payload: dict, listing_url: str = "", asking_price: float = 0.0):
+    """Upsert (cache_key conflict ⇒ refresh response + bump expires_at)."""
+    try:
+        await _ensure_score_cache_table()
+        from scoring.data_pipeline import _get_pool
+        pool = await _get_pool()
+        if not pool:
+            return
+        from datetime import timedelta, timezone
+        expires = datetime.now(timezone.utc) + timedelta(seconds=_SCORE_CACHE_PERSIST_TTL_SECONDS)
+        await pool.execute(
+            """INSERT INTO score_cache (cache_key, listing_url, asking_price, response_json, expires_at)
+               VALUES ($1, $2, $3, $4::jsonb, $5)
+               ON CONFLICT (cache_key) DO UPDATE SET
+                   response_json = EXCLUDED.response_json,
+                   expires_at    = EXCLUDED.expires_at,
+                   created_at    = now()""",
+            cache_key, listing_url or "", float(asking_price or 0.0),
+            _json.dumps(payload), expires,
+        )
+    except Exception as e:
+        log.warning(f"[ScoreCache] write failed (non-fatal): {e}")
+
 app = FastAPI(
     title="Personal Shopping Bot API",
     description="AI-powered deal scoring for second-hand marketplace listings",
@@ -395,6 +517,7 @@ class DealScoreResponse(BaseModel):
     affiliate_category:  str   = ""    # Category Claude picked for affiliate routing (e.g. "collectibles")
     negotiation_message: str   = ""    # Ready-to-copy buyer message — uses real price context
     bundle_items:        list  = []    # [{item, value}] breakdown for multi-item listings (empty if single item)
+    score_rationale:     str   = ""    # ≤140 char one-liner explaining the score's main driver (rendered under score circle)
     original_price:      float = 0.0  # Seller's original price if reduced (strikethrough)
     shipping_cost:       float = 0.0  # Shipping cost extracted from listing (0 = free/pickup)
 
@@ -462,6 +585,18 @@ async def score_listing(listing: ListingRequest, request: Request):
         if _cached:
             log.info(f"[Cache] HIT for '{listing.title}' @ ${listing.price} — returning cached score")
             return _cached
+        # Persistent (DB) reproducibility cache — survives restart, content-keyed.
+        # Falls through silently on any DB issue so scoring still works.
+        _listing_h = _listing_content_hash(
+            listing.title, listing.description or "", listing.image_urls or [],
+        )
+        _persist_key = _persistent_cache_key(listing.listing_url, _listing_h, listing.price)
+        _persist_cached = await _persist_cache_get(_persist_key)
+        if _persist_cached:
+            log.info(f"[ScoreCache] persistent HIT for '{listing.title}' @ ${listing.price}")
+            # Warm the in-memory layer too so the next hit in this session is even faster.
+            _cache_set(_ck, _persist_cached, url_keyed=_url_keyed)
+            return _persist_cached
 
     # Begin per-run Anthropic token accounting. ContextVar lives on the
     # current asyncio task and is reclaimed when the request task ends, so
@@ -497,6 +632,7 @@ async def score_listing(listing: ListingRequest, request: Request):
             red_flags=["Price is $0 — cannot score deal value"],
             green_flags=[],
             recommended_offer=0,
+            score_rationale="Listing has no price — cannot compare to market. Wait for price to appear or refresh.",
         )
 
     # ── Step 1+2: OVERLAPPED — product extraction + preliminary eBay ────────────
@@ -909,6 +1045,7 @@ async def score_listing(listing: ListingRequest, request: Request):
         affiliate_category  = deal_score.affiliate_category,
         negotiation_message = deal_score.negotiation_message,
         bundle_items        = deal_score.bundle_items or [],
+        score_rationale     = deal_score.score_rationale,
 
         # Product intelligence + affiliate
         product_info       = dc_asdict_top(product_info),
@@ -1035,6 +1172,17 @@ async def score_listing(listing: ListingRequest, request: Request):
             pass
 
         _cache_set(_ck, response, url_keyed=_url_keyed)
+        # Persistent reproducibility cache write-through. _persist_key is in
+        # scope here because Python doesn't have block scope and both this
+        # branch and the cache-check branch above are gated by the same
+        # `if not _is_audit_rescore:` condition. Audit-rescores intentionally
+        # bypass cache (purpose is to re-evaluate, not reuse).
+        await _persist_cache_set(
+            _persist_key,
+            response.model_dump() if hasattr(response, "model_dump") else dict(response),
+            listing_url=listing.listing_url,
+            asking_price=listing.price,
+        )
 
     return response
 
@@ -1153,6 +1301,7 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                     "red_flags": ["Price is $0 — cannot score deal value"],
                     "green_flags": [],
                     "recommended_offer": 0,
+                    "score_rationale": "Listing has no price — cannot compare to market. Wait for price to appear or refresh.",
                 }})
                 return
 
@@ -1164,6 +1313,33 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                 log.info(f"[Stream Cache] HIT for '{title}'")
                 yield _sse({"type": "score", "data": _cached})
                 return  # intentionally not logged to score_log — only fresh scores are auditable
+            # Persistent reproducibility cache — keyed by url + listing-content hash + price.
+            # Hits here when the same listing was scored within the past 24h (across restarts).
+            #
+            # Hash input choice: we deliberately use `raw.raw_text` (the scraper-
+            # captured page text) instead of `extracted["description"]` because
+            # the latter is LLM-generated and slightly varies between identical
+            # scrapes — that variation would silently destroy reproducibility
+            # by yielding different keys for the same physical listing.
+            # raw_text is capped at 1000 chars inside the hash helper anyway,
+            # so it's safe to pass the whole thing here.
+            #
+            # Price-key semantics: we key on the user-visible page price (`price`
+            # extracted from the page), not the auction-mode rewritten price
+            # used internally for scoring further down. This is intentional —
+            # the cache stores "the response we'd give for THIS scrape," so
+            # the same scrape (same visible price) must produce the same key.
+            _stream_listing_h = _listing_content_hash(
+                title, raw.raw_text or extracted.get("description", "") or "", raw.image_urls or [],
+            )
+            _stream_persist_key = _persistent_cache_key(raw.listing_url, _stream_listing_h, price)
+            _stream_persist_cached = await _persist_cache_get(_stream_persist_key)
+            if _stream_persist_cached:
+                log.info(f"[Stream ScoreCache] persistent HIT for '{title}' @ ${price}")
+                # Warm in-memory so the next within-window hit is faster.
+                _cache_set(_ck, _stream_persist_cached, url_keyed=_url_keyed)
+                yield _sse({"type": "score", "data": _stream_persist_cached})
+                return
 
             # Guard: reject generic titles
             _generic = {"marketplace", "facebook marketplace", "facebook",
@@ -1598,6 +1774,7 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                 affiliate_category  = deal_score.affiliate_category,
                 negotiation_message = deal_score.negotiation_message,
                 bundle_items        = deal_score.bundle_items or [],
+                score_rationale     = deal_score.score_rationale,
                 product_info        = dc_asdict_top(product_info),
                 product_evaluation  = dc_asdict_top(product_eval),
                 affiliate_cards     = affiliate_dicts,
@@ -1656,6 +1833,12 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
 
             response_dict = response.model_dump()
             _cache_set(_ck, response_dict, url_keyed=_url_keyed)
+            # Also write through to the persistent cache so a same-content
+            # rescore within 24h returns the identical score without paying Claude.
+            # Uses the key we computed before the pipeline ran (price wasn't
+            # rewritten between then and now for non-auction flows).
+            await _persist_cache_set(_stream_persist_key, response_dict,
+                                     listing_url=raw.listing_url, asking_price=price)
 
             # ── Send the final score ──────────────────────────────────────────
             yield _sse({"type": "score", "data": response_dict})
@@ -2720,11 +2903,83 @@ async def admin_dashboard(request: Request):
     _check_admin_token(request)
     from scoring.data_pipeline import get_dashboard_summary
     summary = await get_dashboard_summary()
+    # Score-cache hit rate metric (process-local since-restart counters).
+    # Surfaces whether the persistent reproducibility cache is paying off —
+    # a low hit rate suggests either listings are short-lived or content
+    # hashes are too fine-grained.
+    _hits   = _score_cache_stats["hits"]
+    _misses = _score_cache_stats["misses"]
+    _total  = _hits + _misses
+    score_cache_metric = {
+        "hits":         _hits,
+        "misses":       _misses,
+        "total_lookups": _total,
+        "hit_rate_pct": round((_hits / _total) * 100, 1) if _total else 0.0,
+        "ttl_hours":    _SCORE_CACHE_PERSIST_TTL_SECONDS // 3600,
+    }
+    # Also try to surface live row count + size from the table itself so
+    # operators can sanity-check growth. Best-effort; failures are silent.
+    try:
+        await _ensure_score_cache_table()
+        from scoring.data_pipeline import _get_pool
+        pool = await _get_pool()
+        if pool:
+            row = await pool.fetchrow(
+                "SELECT COUNT(*) AS total, "
+                "COUNT(*) FILTER (WHERE expires_at > now()) AS live "
+                "FROM score_cache"
+            )
+            if row:
+                score_cache_metric["rows_total"] = int(row["total"])
+                score_cache_metric["rows_live"]  = int(row["live"])
+    except Exception:
+        pass
     return {
         "pipeline": "Deal Scout Market Intelligence",
         "description": "Anonymized used-market price signals. No PII collected.",
         "stats": summary,
+        "score_cache": score_cache_metric,
     }
+
+
+@app.post("/admin/score-cache/clear")
+async def clear_score_cache(request: Request, url: str = "", all: bool = False):
+    """
+    Invalidate persistent score_cache entries.
+
+    Usage:
+      POST /admin/score-cache/clear?url=https://...   → drop one listing's cache
+      POST /admin/score-cache/clear?all=true          → drop the whole table
+
+    SECURITY: header-only admin auth (ADMIN_TOKEN). Requires explicit `url=` or
+    `all=true` so an empty curl can't accidentally wipe the cache.
+    """
+    _check_admin_token(request)
+    if not url and not all:
+        raise HTTPException(
+            status_code=400,
+            detail="Specify ?url=<listing url> to clear one listing, or ?all=true to clear all.",
+        )
+    try:
+        await _ensure_score_cache_table()
+        from scoring.data_pipeline import _get_pool
+        pool = await _get_pool()
+        if not pool:
+            return {"ok": False, "cleared": 0, "error": "DB unavailable"}
+        if all:
+            result = await pool.execute("DELETE FROM score_cache")
+        else:
+            result = await pool.execute("DELETE FROM score_cache WHERE listing_url = $1", url)
+        # asyncpg returns "DELETE <n>" — pull the count off the tail.
+        try:
+            n = int(result.split()[-1])
+        except Exception:
+            n = 0
+        log.info(f"[ScoreCache] cleared {n} rows (url='{url}', all={all})")
+        return {"ok": True, "cleared": n, "scope": "all" if all else "url"}
+    except Exception as e:
+        log.error(f"[ScoreCache] clear failed: {e}")
+        return {"ok": False, "cleared": 0, "error": str(e)}
 
 
 # ── Diagnostic report collection ─────────────────────────────────────────────

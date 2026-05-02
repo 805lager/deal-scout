@@ -1381,6 +1381,15 @@
       + r.model_used.replace('claude-','').replace(/-\d{8}.*$/,'');
     rightCol.appendChild(confEl);
 
+    // Score rationale — one-line "why this score" pinned under the score block.
+    // Uses textContent (not innerHTML) so any model-emitted markup stays inert.
+    if (r.score_rationale) {
+      const ratEl = document.createElement('div');
+      ratEl.style.cssText = 'font-size:11px;color:#9ca3af;margin-top:5px;line-height:1.4;font-style:italic';
+      ratEl.textContent = r.score_rationale;
+      rightCol.appendChild(ratEl);
+    }
+
     topRow.appendChild(rightCol);
     body.appendChild(topRow);
 
