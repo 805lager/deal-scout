@@ -406,14 +406,16 @@ async function renderSavedListings() {
   const titleEl = document.getElementById("saved-title-text");
   const noteEl  = document.getElementById("saved-sync-note");
 
-  // Sync-disabled note — only shown when chrome.storage.sync was
-  // unavailable so the user understands their saves won't follow them
-  // to another Chrome install.
+  // Read first — getStorageMode() only knows about a policy-disabled
+  // chrome.storage.sync after an actual read fails (the API can be
+  // present but blocked by enterprise policy, which only surfaces
+  // through chrome.runtime.lastError on .get()/.set()). Checking the
+  // mode after getSaved() ensures the "Sync disabled" note appears on
+  // the very first popup open in that scenario, not just on a refresh.
+  const arr = await Saved.getSaved();
   if (Saved.getStorageMode() === "local") {
     noteEl.style.display = "block";
   }
-
-  const arr = await Saved.getSaved();
   listEl.textContent = "";
 
   if (!arr.length) {

@@ -327,9 +327,16 @@
     }
 
     // ── Saved Nd ago annotation ───────────────────────────────────
-    // One-line note under the existing header rows: "★ Saved 3 days
-    // ago at $450 (down $25)". The (down $X) segment only appears when
-    // the live asking has actually moved off the original snapshot.
+    // One-line note placed immediately AFTER the header block — i.e.
+    // just below the asking/offer row, per spec — and BEFORE confidence
+    // / trust / leverage / summary. attachSaveStar runs before
+    // renderHeader in each content script, but the snapshot promise
+    // resolves in a microtask after the synchronous render flow has
+    // finished, so by the time we insert the annotation the header
+    // already exists in the DOM. We locate the header by skipping our
+    // own floating controls overlay (the only absolutely-positioned
+    // child we appended) and any toast/picker UI also owned by the
+    // star, then insert right after that first "real" block.
     let annotationEl = null;
     function renderRevisitAnnotation(snap) {
       if (annotationEl) annotationEl.remove();
@@ -348,7 +355,20 @@
       }
       annotationEl.textContent =
         '\u2605 Saved ' + ago + (origAsking > 0 ? ' at $' + Math.round(origAsking) : '') + delta;
-      digest.appendChild(annotationEl);
+
+      // Find the header block — first child of digest that isn't one
+      // of the star's own floating elements (controls, toast, picker).
+      let header = null;
+      for (const child of digest.children) {
+        if (child === controls || child === toastEl || child === pickerEl) continue;
+        header = child;
+        break;
+      }
+      if (header && header.nextSibling) {
+        digest.insertBefore(annotationEl, header.nextSibling);
+      } else {
+        digest.appendChild(annotationEl);
+      }
     }
 
     // ── Swap picker ───────────────────────────────────────────────
