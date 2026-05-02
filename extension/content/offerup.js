@@ -288,6 +288,7 @@
     const panel = getPanel();
     panel.textContent = "";
     renderHeader(r, panel);
+    renderConfidenceBlock(r, panel);
     renderSummary(r, panel);
     renderMarketData(r, panel);
     renderBuyNewSection(r, panel);
@@ -296,6 +297,114 @@
     renderBundleBreakdown(r, panel);
     renderNegotiationMessage(r, panel);
     renderFooter(r, panel);
+  }
+
+  // Task #58 — Confidence chip + tap-to-expand comp summary. createElement +
+  // textContent so any model-emitted strings stay inert in the page DOM.
+  function renderConfidenceBlock(r, container) {
+    const conf = (r.confidence || '').toLowerCase();
+    if (!conf) return;
+    const colors = { high: '#22c55e', medium: '#fbbf24', low: '#ef4444', none: '#6b7280' };
+    const labels = { high: 'HIGH', medium: 'MEDIUM', low: 'LOW', none: "CAN'T PRICE" };
+    const color  = colors[conf] || colors.none;
+    const label  = labels[conf] || conf.toUpperCase();
+    const cs     = r.comp_summary || {};
+    const cnt    = cs.count || 0;
+    const canPrice = r.can_price !== false;
+
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'margin:8px 12px 0;border:1px solid ' + color + '44;'
+      + 'border-radius:8px;background:' + color + '12;overflow:hidden';
+
+    const chipRow = document.createElement('div');
+    chipRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;'
+      + 'padding:6px 10px;cursor:pointer;font-size:11px';
+
+    const chipLeft = document.createElement('div');
+    chipLeft.style.cssText = 'display:flex;align-items:center;gap:8px;min-width:0';
+
+    const chip = document.createElement('span');
+    chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;'
+      + 'background:' + color + '33;border:1px solid ' + color + '99;color:' + color + ';'
+      + 'font-weight:700;border-radius:4px;padding:1px 7px;font-size:10px;letter-spacing:0.3px;flex-shrink:0';
+    chip.textContent = '\u25CF ' + label;
+    chipLeft.appendChild(chip);
+
+    const compSum = document.createElement('span');
+    compSum.style.cssText = 'color:#9ca3af;font-size:11px;'
+      + 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    if (canPrice && cnt > 0 && cs.low > 0 && cs.high > 0) {
+      compSum.textContent = 'Based on ' + cnt + ' comps · $'
+        + Math.round(cs.low) + '\u2013$' + Math.round(cs.high);
+    } else if (cnt > 0) {
+      compSum.textContent = 'Based on ' + cnt + ' comps';
+    } else {
+      compSum.textContent = 'No comparable sales found';
+    }
+    chipLeft.appendChild(compSum);
+
+    const arrow = document.createElement('span');
+    arrow.style.cssText = 'color:#9ca3af;font-size:10px;flex-shrink:0;margin-left:8px';
+    arrow.textContent = '\u25BE';
+
+    chipRow.appendChild(chipLeft);
+    chipRow.appendChild(arrow);
+    wrap.appendChild(chipRow);
+
+    const details = document.createElement('div');
+    details.style.cssText = 'display:none;border-top:1px solid ' + color + '22;'
+      + 'padding:8px 10px;font-size:11px;color:#d1d5db;line-height:1.5';
+
+    if (!canPrice && r.cant_price_message) {
+      const msg = document.createElement('div');
+      msg.style.cssText = 'margin-bottom:6px;color:#fca5a5;font-weight:600';
+      msg.textContent = r.cant_price_message;
+      details.appendChild(msg);
+    }
+
+    const lines = [];
+    if (cs.count > 0)              lines.push('Comps after cleaning: ' + cs.count);
+    if (cs.median > 0)             lines.push('Median: $' + Math.round(cs.median));
+    if (cs.low > 0 && cs.high > 0) lines.push('Range: $' + Math.round(cs.low) + ' \u2013 $' + Math.round(cs.high));
+    if (cs.outliers_removed > 0)   lines.push('Outliers dropped: ' + cs.outliers_removed);
+    if (cs.condition_mismatches_removed > 0)
+      lines.push('Condition mismatches dropped: ' + cs.condition_mismatches_removed);
+    if (cs.recency_window)         lines.push('Window: ' + cs.recency_window);
+    if (r.confidence_signals && r.confidence_signals.winning_signal) {
+      lines.push('Weakest signal: ' + r.confidence_signals.winning_signal);
+    }
+    for (const ln of lines) {
+      const lineEl = document.createElement('div');
+      lineEl.textContent = ln;
+      details.appendChild(lineEl);
+    }
+
+    if (Array.isArray(r.queries_attempted) && r.queries_attempted.length > 0) {
+      const qHeader = document.createElement('div');
+      qHeader.style.cssText = 'margin-top:6px;padding-top:6px;'
+        + 'border-top:1px dashed ' + color + '22;font-weight:600;color:#9ca3af';
+      qHeader.textContent = 'What we tried:';
+      details.appendChild(qHeader);
+      for (const q of r.queries_attempted) {
+        const qLine = document.createElement('div');
+        qLine.style.cssText = 'color:#9ca3af;font-size:10.5px;margin-top:2px';
+        qLine.textContent = '\u00B7 "' + (q.query || '') + '" \u2192 '
+          + (q.count || 0) + ' results' + (q.source ? ' (' + q.source + ')' : '');
+        details.appendChild(qLine);
+      }
+    }
+
+    if (!details.children.length) return;
+
+    wrap.appendChild(details);
+    let open = false;
+    chipRow.addEventListener('click', () => {
+      open = !open;
+      details.style.display = open ? 'block' : 'none';
+      arrow.textContent = open ? '\u25B4' : '\u25BE';
+    });
+
+    container.appendChild(wrap);
   }
 
   function renderHeader(r, container) {
@@ -319,11 +428,15 @@
 
     const scoreRow = document.createElement("div");
     scoreRow.style.cssText = "display:flex;align-items:center;gap:10px";
+    // Task #58 — when comp data is too thin to price honestly, show '?' in
+    // a muted ring. Detail copy lives in renderConfidenceBlock below.
+    const _cantPrice = (r.can_price === false);
+    const _ringColor = _cantPrice ? '#6b7280' : scoreColor;
     const ring = document.createElement("div");
-    ring.style.cssText = "width:52px;height:52px;border-radius:50%;border:3px solid " + scoreColor + ";display:flex;align-items:center;justify-content:center;flex-shrink:0";
+    ring.style.cssText = "width:52px;height:52px;border-radius:50%;border:3px solid " + _ringColor + ";display:flex;align-items:center;justify-content:center;flex-shrink:0";
     const scoreNum = document.createElement("span");
-    scoreNum.style.cssText = "font-size:22px;font-weight:900;color:" + scoreColor;
-    scoreNum.textContent = score;
+    scoreNum.style.cssText = "font-size:22px;font-weight:900;color:" + _ringColor;
+    scoreNum.textContent = _cantPrice ? '?' : score;
     ring.appendChild(scoreNum);
     const meta = document.createElement("div");
     meta.style.cssText = "flex:1;min-width:0";

@@ -49,6 +49,7 @@ from scoring.product_extractor import extract_product, ProductInfo
 from scoring.product_evaluator import evaluate_product
 from scoring.affiliate_router import get_affiliate_recommendations, should_trigger_buy_new, get_program_status, build_affiliate_event
 from scoring.security_scorer import score_security, SecurityScore
+from scoring.confidence import derive_confidence, cant_price_message
 from dataclasses import asdict as dc_asdict_top
 import time as _time
 import json as _json
@@ -297,6 +298,66 @@ _rate_limit_store: dict = defaultdict(list)
 RATE_LIMIT_REQUESTS = 200
 RATE_LIMIT_WINDOW   = 86400  # seconds (24 hours)
 
+def _build_confidence_payload(market_value, product_info, asking_price: float) -> dict:
+    """
+    Task #58 — Assemble the confidence + comp_summary + can_price block
+    that both /score and /score/stream attach to DealScoreResponse.
+
+    Single source of truth so the streaming and non-streaming paths can't
+    drift. Uses MarketValue.comp_summary when the Browse pipeline emitted
+    one; otherwise synthesises a summary from the aggregate sold stats so
+    Google/AI-only paths still surface a comp count to the UI.
+
+    Returns a dict ready to splat into DealScoreResponse(**payload, ...).
+    """
+    # Prefer the cleaned summary surfaced by ebay_pricer.clean_browse_comps.
+    comp_summary = getattr(market_value, "comp_summary", None)
+    if not comp_summary:
+        # Synthesise from aggregate stats — no item-level cleaning happened
+        # (Google-only / AI-knowledge / Craigslist path), but we still want
+        # SOMETHING in the chip rather than a confusing empty state.
+        comp_summary = {
+            "count":                        int(getattr(market_value, "sold_count", 0) or 0),
+            "median":                       float(getattr(market_value, "sold_avg", 0.0) or 0.0),
+            "low":                          float(getattr(market_value, "sold_low", 0.0) or 0.0),
+            "high":                         float(getattr(market_value, "sold_high", 0.0) or 0.0),
+            "outliers_removed":             0,
+            "condition_mismatches_removed": 0,
+            "recency_window":               "",
+        }
+
+    bucket, signals = derive_confidence(
+        comp_count            = int(comp_summary.get("count", 0) or 0),
+        comp_low              = float(comp_summary.get("low", 0.0) or 0.0),
+        comp_high             = float(comp_summary.get("high", 0.0) or 0.0),
+        comp_median           = float(comp_summary.get("median", 0.0) or 0.0),
+        extraction_confidence = getattr(product_info, "confidence", "medium") or "medium",
+        market_confidence     = getattr(market_value, "confidence", "") or "",
+    )
+
+    can_price   = bucket != "none"
+    cp_message  = "" if can_price else cant_price_message(asking_price)
+
+    # "What we tried" expandable — minimal payload from what we have on hand.
+    queries_attempted = []
+    q_used = (getattr(market_value, "query_used", "") or "").strip()
+    if q_used:
+        queries_attempted.append({
+            "query":  q_used,
+            "count":  int(comp_summary.get("count", 0) or 0),
+            "source": getattr(market_value, "data_source", "") or "",
+        })
+
+    return {
+        "confidence":         bucket,
+        "confidence_signals": signals,
+        "comp_summary":       comp_summary,
+        "can_price":          can_price,
+        "cant_price_message": cp_message,
+        "queries_attempted":  queries_attempted,
+    }
+
+
 def _check_rate_limit(client_ip: str):
     now = _time.time()
     window_start = now - RATE_LIMIT_WINDOW
@@ -530,6 +591,21 @@ class DealScoreResponse(BaseModel):
                                        # persistent score-cache (not freshly scored). Lets the
                                        # extension surface a "cached" badge and tells QA tooling
                                        # to ignore latency from these responses.
+    # ── Task #58: confidence + comp transparency + can't-price verdict ──
+    # confidence is the OVERALL bucket the user sees as a chip beside the
+    # score (high|medium|low|none). Distinct from `ai_confidence` (Claude's
+    # self-rated certainty) and `market_confidence` (raw pricing-pipeline
+    # signal). It is derived in scoring/confidence.py from the lowest of:
+    # cleaned comp count, cleaned comp spread, product extraction confidence,
+    # and the market_confidence ceiling.
+    confidence:          str   = ""    # "high" | "medium" | "low" | "none"
+    confidence_signals:  dict  = {}    # per-signal breakdown for QA/logs
+    comp_summary:        dict  = {}    # {count, median, low, high, outliers_removed,
+                                       #  condition_mismatches_removed, recency_window}
+    can_price:           bool  = True  # False when confidence is "none" — UI replaces
+                                       # the score with cant_price_message + "What we tried"
+    cant_price_message:  str   = ""    # Verdict copy shown instead of score when can_price=False
+    queries_attempted:   list  = []    # [{query, count, source}] for the "What we tried" expandable
     original_price:      float = 0.0  # Seller's original price if reduced (strikethrough)
     shipping_cost:       float = 0.0  # Shipping cost extracted from listing (0 = free/pickup)
 
@@ -1021,6 +1097,9 @@ async def score_listing(listing: ListingRequest, request: Request):
     active_items_sample = [_to_dict(i) for i in (market_value.active_items_sample or [])]
     affiliate_dicts     = [dc_asdict(c) for c in affiliate_cards]
 
+    # Task #58 — derive confidence + comp_summary + can_price block
+    _confidence_payload = _build_confidence_payload(market_value, product_info, listing.price)
+
     response = DealScoreResponse(
         # Listing
         title          = listing.title,
@@ -1029,6 +1108,8 @@ async def score_listing(listing: ListingRequest, request: Request):
         condition      = listing.condition,
         original_price = listing.original_price,
         shipping_cost  = listing.shipping_cost,
+        # Task #58 — splat the confidence fields
+        **_confidence_payload,
 
         # Market value
         estimated_value     = market_value.estimated_value,
@@ -1755,6 +1836,12 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
             if _auction_only_mode and _current_bid > 0:
                 _display_price = _current_bid
 
+            # Task #58 — derive confidence + comp_summary + can_price block.
+            # Use the listing's actual asking price (not _display_price which
+            # may be the auction current bid) so the can't-price verdict copy
+            # references what the user is deciding against.
+            _confidence_payload_s = _build_confidence_payload(market_value, product_info, listing.price)
+
             response = DealScoreResponse(
                 title             = listing.title,
                 price             = _display_price,
@@ -1762,6 +1849,8 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                 condition         = listing.condition,
                 original_price    = listing.original_price,
                 shipping_cost     = listing.shipping_cost,
+                # Task #58 — splat the confidence fields
+                **_confidence_payload_s,
                 estimated_value   = market_value.estimated_value,
                 sold_avg          = market_value.sold_avg,
                 sold_count        = market_value.sold_count,

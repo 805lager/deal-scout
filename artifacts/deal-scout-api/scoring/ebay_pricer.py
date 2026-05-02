@@ -149,6 +149,18 @@ class MarketValue:
     craigslist_high:  float = 0.0
     _google_prices:   list  = None
     craigslist_count: int   = 0
+    # Cleaned-comp summary surfaced for the new confidence chip + expandable
+    # in the extension digest (Task #58). Populated whenever we have item-level
+    # comp data (currently the eBay Browse path); other sources fall back to a
+    # synthesised summary in main.py from the aggregate stats.
+    #   count                          — comps used to compute avg after cleaning
+    #   median / low / high            — cleaned comp price stats
+    #   outliers_removed               — comps dropped by stddev outlier rule
+    #   condition_mismatches_removed   — comps dropped due to condition mismatch
+    #   recency_window                 — short label e.g. "last 90 days" (Browse
+    #                                    API doesn't expose sold dates so this
+    #                                    is a best-effort default)
+    comp_summary:     dict  = None
 
 
 # ── Search Query Builder ──────────────────────────────────────────────────────
@@ -407,6 +419,180 @@ def parse_ebay_items(items: list[dict], sold: bool) -> list[PricePoint]:
         except (KeyError, IndexError, ValueError) as e:
             log.debug(f"Skipping malformed eBay item: {e}")
     return points
+
+
+# ── Comp Cleaner (Task #58) ──────────────────────────────────────────────────
+#
+# WHY: the score line has historically been an undecorated number — a
+# "score 8" backed by 14 tight comps and a "score 8" backed by 3 wildly
+# divergent comps look identical to the user. The comp_summary surfaced
+# from this helper drives the new confidence chip + tap-to-expand block.
+#
+# WHAT THIS DOES:
+#   1. Robust median + stddev outlier rejection — drops any comp whose
+#      price is >2σ from the median of the prices.
+#   2. Condition matching — drops comps whose condition is meaningfully
+#      different from the listing's stated condition (e.g. "for parts"
+#      comps when the listing claims "Like New").
+#   3. Returns the cleaned item list AND a summary dict that becomes the
+#      payload for the UI chip + expandable.
+#
+# WHY NOT RECENCY: the eBay Browse API doesn't expose a sold_date on
+# completed-items results in a stable field, so true recency weighting
+# isn't possible from this code path. We surface a best-effort recency
+# window label ("last 90 days") since the Browse API restricts sold-item
+# results to that window by default — this is honest, not invented.
+
+_BROWSE_NEW_CONDS  = {"new", "new with tags", "new with box", "brand new",
+                      "new in box", "open box", "manufacturer refurbished"}
+_BROWSE_USED_CONDS = {"used", "very good", "good", "acceptable",
+                      "pre-owned", "seller refurbished", "certified refurbished"}
+_BROWSE_PARTS_CONDS = {"for parts or not working", "for parts", "not working",
+                       "parts only", "parts/not working"}
+
+
+def _condition_class(label: str) -> str:
+    """Bucket an eBay condition label into 'new' | 'used' | 'parts' | 'unknown'."""
+    if not label:
+        return "unknown"
+    norm = label.strip().lower()
+    if norm in _BROWSE_PARTS_CONDS or "for parts" in norm:
+        return "parts"
+    if norm in _BROWSE_NEW_CONDS or norm.startswith("new"):
+        return "new"
+    if norm in _BROWSE_USED_CONDS or any(k in norm for k in ("used", "good", "refurb", "pre-own")):
+        return "used"
+    return "unknown"
+
+
+def _listing_condition_class(label: str) -> str:
+    """Map the listing's condition (FBM/eBay/etc) into the same buckets."""
+    if not label:
+        return "unknown"
+    norm = label.strip().lower()
+    if "for parts" in norm or "not working" in norm or "parts only" in norm:
+        return "parts"
+    if norm.startswith("new") or "new in box" in norm or "open box" in norm:
+        return "new"
+    if any(k in norm for k in ("used", "good", "fair", "like new", "excellent",
+                                "pre-owned", "refurb", "very good")):
+        return "used"
+    return "unknown"
+
+
+def clean_browse_comps(
+    items: list[dict],
+    listing_condition: str = "",
+) -> tuple[list[dict], dict]:
+    """
+    Apply per-comp outlier rejection + condition matching to a Browse-API
+    item list. Returns (cleaned_items, comp_summary).
+
+    OUTLIER RULE: drop items whose price is >2σ from the median (after
+    median-bound trim — robust to a few wild values polluting the σ).
+    Falls back to median-bound only when there are <5 items, since stddev
+    is unreliable for very small samples.
+
+    CONDITION RULE: when listing_condition maps to a known bucket, drop
+    comps whose condition_class is in a different bucket. Specifically:
+      - Listing 'new'  → drop 'used' and 'parts'
+      - Listing 'used' → drop 'parts' only (used+new often legitimately mix)
+      - Listing 'parts' → keep all (parts items are rare enough to need data)
+      - Listing 'unknown' → no condition filter
+    """
+    if not items:
+        return [], _empty_comp_summary()
+
+    # Step 1: median-bound trim (existing behaviour, applied to dicts here)
+    prices = [float(it.get("price", 0)) for it in items if it.get("price")]
+    if not prices:
+        return items, _empty_comp_summary(count=len(items))
+
+    median = statistics.median(prices)
+    floor = median * 0.25
+    ceil  = median * 4.0
+    trimmed = [it for it in items if floor <= float(it.get("price", 0)) <= ceil]
+
+    # Step 2: stddev outlier rejection (only when we have ≥5 items left)
+    outliers_removed = len(items) - len(trimmed)
+    if len(trimmed) >= 5:
+        trimmed_prices = [float(it["price"]) for it in trimmed]
+        try:
+            stdev_v = statistics.stdev(trimmed_prices)
+        except statistics.StatisticsError:
+            stdev_v = 0.0
+        med2 = statistics.median(trimmed_prices)
+        if stdev_v > 0:
+            lo = med2 - 2 * stdev_v
+            hi = med2 + 2 * stdev_v
+            after = [it for it in trimmed if lo <= float(it["price"]) <= hi]
+            outliers_removed += len(trimmed) - len(after)
+            trimmed = after if after else trimmed
+
+    # Step 3: condition mismatch dropping
+    cond_target = _listing_condition_class(listing_condition)
+    condition_dropped = 0
+    if cond_target == "new":
+        cleaned = [it for it in trimmed
+                   if _condition_class(it.get("condition", "")) in {"new", "unknown"}]
+        condition_dropped = len(trimmed) - len(cleaned)
+    elif cond_target == "used":
+        cleaned = [it for it in trimmed
+                   if _condition_class(it.get("condition", "")) != "parts"]
+        condition_dropped = len(trimmed) - len(cleaned)
+    else:
+        cleaned = trimmed
+
+    # Never return an empty cleaned set — fall back to trimmed if condition
+    # filter wiped everything (rare: e.g. "Like New" listing where every
+    # Browse comp is "Used"). Still report condition_dropped so the user
+    # sees what we tried.
+    if not cleaned and trimmed:
+        log.info(
+            f"[CompClean] Condition filter '{cond_target}' wiped all "
+            f"{len(trimmed)} comps — falling back to pre-condition set"
+        )
+        cleaned = trimmed
+        condition_dropped = 0
+
+    cleaned_prices = [float(it["price"]) for it in cleaned]
+    if cleaned_prices:
+        cleaned_median = round(statistics.median(cleaned_prices), 2)
+        cleaned_low    = round(min(cleaned_prices), 2)
+        cleaned_high   = round(max(cleaned_prices), 2)
+    else:
+        cleaned_median = cleaned_low = cleaned_high = 0.0
+
+    summary = {
+        "count":                        len(cleaned),
+        "median":                       cleaned_median,
+        "low":                          cleaned_low,
+        "high":                         cleaned_high,
+        "outliers_removed":             outliers_removed,
+        "condition_mismatches_removed": condition_dropped,
+        "recency_window":               "last 90 days",   # Browse API default
+    }
+
+    if outliers_removed or condition_dropped:
+        log.info(
+            f"[CompClean] {len(items)} → {len(cleaned)} comps "
+            f"(outliers={outliers_removed}, cond_mismatch={condition_dropped})"
+        )
+
+    return cleaned, summary
+
+
+def _empty_comp_summary(count: int = 0) -> dict:
+    """Default comp_summary shape when we have no item-level data to clean."""
+    return {
+        "count":                        count,
+        "median":                       0.0,
+        "low":                          0.0,
+        "high":                         0.0,
+        "outliers_removed":             0,
+        "condition_mismatches_removed": 0,
+        "recency_window":               "",
+    }
 
 
 def _remove_price_outliers(items: list[PricePoint]) -> list[PricePoint]:
@@ -1068,6 +1254,11 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         ai_pricing_stats and ai_pricing_stats.get("data_source") == "claude_web_grounded"
     )
 
+    # Track cleaned comp summary across the Browse pipeline. Populated only
+    # when we successfully clean a sold-comp set; otherwise it stays None and
+    # main.py will synthesise a summary from the aggregate stats.
+    _comp_summary: Optional[dict] = None
+
     if _browse_result and _browse_result.get("items") and os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"):
         _raw_browse_items = _browse_result["items"]
         try:
@@ -1089,6 +1280,29 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
                     "high_price": round(max(_verified_prices), 2),
                     "count":      len(_verified_prices),
                 }
+
+        # Task #58 — clean the verified comp set further: outlier rejection +
+        # condition matching. The cleaned set is what feeds BOTH the score
+        # number AND the confidence calculation, so they never disagree.
+        _cleaned_items, _comp_summary = clean_browse_comps(
+            _browse_result.get("items", []) or [],
+            listing_condition=listing_condition,
+        )
+        _cleaned_prices = [float(it["price"]) for it in _cleaned_items if it.get("price")]
+        # Only swap into _browse_result if we still have at least one comp left
+        # — never let cleaning produce a zero-price stat block. We also require
+        # at least 2 comps before we'll let cleaning override the LLM-verified
+        # avg, since a 1-comp swap can swing the score wildly. With 1 comp the
+        # cleaner's stats stay in comp_summary but the legacy avg/count is kept.
+        if len(_cleaned_prices) >= 2:
+            _browse_result = {
+                **_browse_result,
+                "items":      _cleaned_items,
+                "avg_price":  round(statistics.mean(_cleaned_prices), 2),
+                "low_price":  round(min(_cleaned_prices), 2),
+                "high_price": round(max(_cleaned_prices), 2),
+                "count":      len(_cleaned_prices),
+            }
 
     if _browse_active_result and _browse_active_result.get("items") and os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"):
         _raw_active_items = _browse_active_result["items"]
@@ -1343,6 +1557,7 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         craigslist_high      = round(_cl_result["high"],  2) if _cl_result else 0.0,
         craigslist_count     = _cl_result["count"]           if _cl_result else 0,
         _google_prices       = goog_prices if goog_prices else None,
+        comp_summary         = _comp_summary,   # Task #58 — None if no Browse comps
     )
 
 
