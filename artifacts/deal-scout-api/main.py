@@ -518,6 +518,10 @@ class DealScoreResponse(BaseModel):
     negotiation_message: str   = ""    # Ready-to-copy buyer message — uses real price context
     bundle_items:        list  = []    # [{item, value}] breakdown for multi-item listings (empty if single item)
     score_rationale:     str   = ""    # ≤140 char one-liner explaining the score's main driver (rendered under score circle)
+    cached:              bool  = False # True ⇒ this response was served from the in-memory or
+                                       # persistent score-cache (not freshly scored). Lets the
+                                       # extension surface a "cached" badge and tells QA tooling
+                                       # to ignore latency from these responses.
     original_price:      float = 0.0  # Seller's original price if reduced (strikethrough)
     shipping_cost:       float = 0.0  # Shipping cost extracted from listing (0 = free/pickup)
 
@@ -584,7 +588,11 @@ async def score_listing(listing: ListingRequest, request: Request):
         _cached = _cache_get(_ck)
         if _cached:
             log.info(f"[Cache] HIT for '{listing.title}' @ ${listing.price} — returning cached score")
-            return _cached
+            # Stamp `cached: True` at return time so the canonical score in the
+            # cache stays as-scored (cached=False). This means we never have to
+            # worry about a previously-served-as-cached payload being re-cached
+            # with a stale flag.
+            return {**_cached, "cached": True}
         # Persistent (DB) reproducibility cache — survives restart, content-keyed.
         # Falls through silently on any DB issue so scoring still works.
         _listing_h = _listing_content_hash(
@@ -594,9 +602,10 @@ async def score_listing(listing: ListingRequest, request: Request):
         _persist_cached = await _persist_cache_get(_persist_key)
         if _persist_cached:
             log.info(f"[ScoreCache] persistent HIT for '{listing.title}' @ ${listing.price}")
-            # Warm the in-memory layer too so the next hit in this session is even faster.
+            # Warm the in-memory layer with the canonical (un-flagged) payload —
+            # the next in-memory hit will stamp cached=True at its own return.
             _cache_set(_ck, _persist_cached, url_keyed=_url_keyed)
-            return _persist_cached
+            return {**_persist_cached, "cached": True}
 
     # Begin per-run Anthropic token accounting. ContextVar lives on the
     # current asyncio task and is reclaimed when the request task ends, so
@@ -1311,7 +1320,9 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
             _cached = _cache_get(_ck)
             if _cached:
                 log.info(f"[Stream Cache] HIT for '{title}'")
-                yield _sse({"type": "score", "data": _cached})
+                # Add cached=True at yield time (not in the cache itself) so
+                # the stored canonical payload always reflects "as scored".
+                yield _sse({"type": "score", "data": {**_cached, "cached": True}})
                 return  # intentionally not logged to score_log — only fresh scores are auditable
             # Persistent reproducibility cache — keyed by url + listing-content hash + price.
             # Hits here when the same listing was scored within the past 24h (across restarts).
@@ -1336,9 +1347,10 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
             _stream_persist_cached = await _persist_cache_get(_stream_persist_key)
             if _stream_persist_cached:
                 log.info(f"[Stream ScoreCache] persistent HIT for '{title}' @ ${price}")
-                # Warm in-memory so the next within-window hit is faster.
+                # Warm in-memory with the canonical un-flagged payload so the
+                # next in-memory hit stamps cached=True at its own yield.
                 _cache_set(_ck, _stream_persist_cached, url_keyed=_url_keyed)
-                yield _sse({"type": "score", "data": _stream_persist_cached})
+                yield _sse({"type": "score", "data": {**_stream_persist_cached, "cached": True}})
                 return
 
             # Guard: reject generic titles
