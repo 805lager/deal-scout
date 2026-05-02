@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<!--
+  eBay Motors listing fixture — weekday-prefixed "Listed on" date.
+  Real-world template observed on motors/parts category pages where
+  eBay renders the date as "Listed on Mon, Apr 1, 2024".
+  Trimmed to the listing-info area + minimum surrounding chrome the
+  extractor relies on (#LeftSummaryPanel / main innerText).
+-->
+<html>
+<head><title>1995 Honda Civic EG Coupe Project Car | eBay Motors</title></head>
+<body>
+  <main>
+    <div id="LeftSummaryPanel">
+      <div class="x-item-title">
+        <h1 class="x-item-title__mainTitle">
+          <span class="ux-textspans ux-textspans--BOLD">1995 Honda Civic EG Coupe Project Car</span>
+        </h1>
+      </div>
+      <div class="x-price-primary">
+        <span class="ux-textspans ux-textspans--BOLD">$3,200.00</span>
+      </div>
+      <div class="x-item-condition">
+        <span class="x-item-condition-text">
+          <span class="ux-textspans">Used</span>
+        </span>
+      </div>
+      <div class="ux-layout-section__item">
+        <span class="ux-textspans ux-textspans--SECONDARY">Listed on Mon, Apr 1, 2024</span>
+      </div>
+      <div class="ux-layout-section__item">
+        <span class="ux-textspans">Item location: Dayton, OH, United States</span>
+      </div>
+    </div>
+  </main>
+</body>
+</html>
