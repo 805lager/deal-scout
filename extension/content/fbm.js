@@ -493,6 +493,20 @@
 
     const shippingCost = findShippingCost();
     const sellerTrust = extractSellerTrust();
+    // Task #59 — derive seller_account_age_days client-side from the
+    // joined_date string we already extract. Server has the same parser
+    // as a fallback for older extension builds; sending the int saves a
+    // re-parse and lets the trust evaluator's price-too-good+new-acct
+    // signal fire correctly without depending on backend date math.
+    const sellerAccountAgeDays = (function () {
+      const j = sellerTrust && sellerTrust.joined_date;
+      if (!j || typeof j !== 'string') return null;
+      const cleaned = j.trim().replace(/^(joined|in|since)\s+/i, '').replace(/\.$/, '');
+      const ts = Date.parse(cleaned) || Date.parse('1 ' + cleaned);
+      if (!ts) return null;
+      const days = Math.floor((Date.now() - ts) / 86400000);
+      return days >= 0 ? days : null;
+    })();
     const listingUrl = location.href;
 
     const photoCount = imageUrls.length;
@@ -510,6 +524,7 @@
       is_vehicle:     isVehicle,
       vehicle_details: null,
       seller_trust:   sellerTrust,
+      seller_account_age_days: sellerAccountAgeDays,
       original_price: original,
       shipping_cost:  shippingCost,
       image_urls:     imageUrls,

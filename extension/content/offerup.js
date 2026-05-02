@@ -129,6 +129,20 @@
       rating_count: reviewMatch  ? parseInt(reviewMatch[1])   : 0,
     };
 
+    // Task #59 — derive seller_account_age_days client-side from
+    // joined_date so the trust evaluator's "price-too-good + new account"
+    // signal can fire even when the server-side fallback parser misses
+    // the date format. Backend parser is the safety net.
+    const sellerAccountAgeDays = (function () {
+      const j = seller_trust.joined_date;
+      if (!j) return null;
+      const cleaned = j.replace(/^(joined|in|since)\s+/i, '').replace(/\.$/, '');
+      const ts = Date.parse(cleaned) || Date.parse('1 ' + cleaned);
+      if (!ts) return null;
+      const days = Math.floor((Date.now() - ts) / 86400000);
+      return days >= 0 ? days : null;
+    })();
+
     return {
       title, price, raw_price_text: priceText,
       description, condition,
@@ -138,6 +152,7 @@
       seller_name:  sellerName,
       seller_trust: (seller_trust.joined_date || seller_trust.rating || seller_trust.rating_count)
                     ? seller_trust : null,
+      seller_account_age_days: sellerAccountAgeDays,
     };
   }
 
