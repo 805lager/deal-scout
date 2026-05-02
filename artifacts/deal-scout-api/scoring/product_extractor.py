@@ -251,10 +251,17 @@ Respond ONLY with valid JSON, no preamble, no fences:
 
 # ── Prompt-Injection Defense ──────────────────────────────────────────────────────
 
-from scoring._prompt_safety import sanitize_for_prompt as _sanitize_for_prompt  # noqa: E402,F401
+from scoring._prompt_safety import sanitize_for_prompt as _shared_sanitize  # noqa: E402
+
 # _sanitize_for_prompt now lives in scoring/_prompt_safety.py so product_evaluator
-# and deal_scorer share the same implementation. Re-exported here for any
-# external importer that grandfathered the old location.
+# and deal_scorer share the same implementation. The extractor pins its
+# tag-prefix list to ("listing",) so its escape behaviour is byte-identical
+# to the pre-#70 implementation — the broader default (which also escapes
+# <seller / <product / <page_text / <untrusted) belongs to the new call
+# sites only. This wrapper preserves both the public symbol name and the
+# exact original behaviour.
+def _sanitize_for_prompt(text: str) -> str:
+    return _shared_sanitize(text, tag_prefixes=("listing",))
 
 
 # ── Seller Terminology Normalizer ─────────────────────────────────────────────────

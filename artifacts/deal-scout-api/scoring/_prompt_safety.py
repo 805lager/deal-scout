@@ -42,14 +42,30 @@ _RESERVED_TAG_PREFIXES = (
     "untrusted",
 )
 
-# Build one regex that matches `<` (or `</`) followed by any reserved prefix.
-# Case-insensitive because Claude tag-matching heuristics are case-insensitive.
-_RESERVED_PATTERN = "|".join(_RESERVED_TAG_PREFIXES)
-_CLOSE_TAG_RE = re.compile(rf"</\s*({_RESERVED_PATTERN})", re.IGNORECASE)
-_OPEN_TAG_RE  = re.compile(rf"<\s*({_RESERVED_PATTERN})",  re.IGNORECASE)
+# Pre-compile two regex sets:
+#   * _DEFAULT_*_RE       — the broad default, covers every reserved prefix.
+#                           Used by product_evaluator + deal_scorer (the new
+#                           call sites) which wrap a wider variety of tags.
+#   * _LEGACY_LISTING_*_RE — the original product_extractor behaviour, scoped
+#                           to <listing> / </listing> only. Selected via
+#                           `tag_prefixes=("listing",)` so the extractor
+#                           keeps byte-identical output to its pre-#70 code.
+def _compile_pair(prefixes: tuple[str, ...]):
+    pat = "|".join(re.escape(p) for p in prefixes)
+    return (
+        re.compile(rf"</\s*({pat})", re.IGNORECASE),
+        re.compile(rf"<\s*({pat})",  re.IGNORECASE),
+    )
+
+_DEFAULT_CLOSE_RE, _DEFAULT_OPEN_RE = _compile_pair(_RESERVED_TAG_PREFIXES)
+_LEGACY_LISTING_CLOSE_RE, _LEGACY_LISTING_OPEN_RE = _compile_pair(("listing",))
+_PREFIX_CACHE: dict[tuple[str, ...], tuple[re.Pattern, re.Pattern]] = {
+    _RESERVED_TAG_PREFIXES: (_DEFAULT_CLOSE_RE, _DEFAULT_OPEN_RE),
+    ("listing",):           (_LEGACY_LISTING_CLOSE_RE, _LEGACY_LISTING_OPEN_RE),
+}
 
 
-def sanitize_for_prompt(text: str) -> str:
+def sanitize_for_prompt(text: str, *, tag_prefixes: tuple[str, ...] | None = None) -> str:
     """
     Neutralise tag-based injection attempts in user content.
 
@@ -73,11 +89,18 @@ def sanitize_for_prompt(text: str) -> str:
     """
     if not text:
         return ""
+    if tag_prefixes is None:
+        close_re, open_re = _DEFAULT_CLOSE_RE, _DEFAULT_OPEN_RE
+    else:
+        key = tuple(tag_prefixes)
+        if key not in _PREFIX_CACHE:
+            _PREFIX_CACHE[key] = _compile_pair(key)
+        close_re, open_re = _PREFIX_CACHE[key]
     # Closing tags first (more specific), then opening tags. The backslash
     # in the replacement neutralises the syntax without removing visible
     # characters, so the seller's original prose is still legible to Claude.
-    sanitised = _CLOSE_TAG_RE.sub(r"<\\/\1", text)
-    sanitised = _OPEN_TAG_RE.sub(r"<\\\1",   sanitised)
+    sanitised = close_re.sub(r"<\\/\1", text)
+    sanitised = open_re.sub(r"<\\\1",   sanitised)
     return sanitised
 
 
