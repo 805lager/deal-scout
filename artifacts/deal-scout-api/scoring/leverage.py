@@ -74,10 +74,16 @@ class LeverageResult:
     drop_count:            int           = 0     # how many distinct drops we know about
     drop_total_amount:     float         = 0.0   # cumulative $ reduction from peak
     drop_total_pct:        float         = 0.0   # 0.0–1.0 of peak price
+    drop_duration_days:    Optional[int] = None  # span between earliest & latest dated entry, when known
     days_listed:           Optional[int] = None
     typical_days_to_sell:  Optional[int] = None
     days_listed_summary:   str           = ""    # "" when we know nothing
     motivation_level:      str           = "low"  # low | medium | high
+    # Normalized [{price, date}] sorted as the extension/synthetic
+    # fallback produced it. Echoed back so downstream consumers (e.g.
+    # Negotiation v2 / future analytics) can render a sparkline or
+    # re-derive their own thresholds without re-asking the extension.
+    price_history:         list          = field(default_factory=list)
 
     def to_response_dict(self) -> dict:
         """Shape consumed by DealScoreResponse.leverage_signals."""
@@ -87,10 +93,12 @@ class LeverageResult:
                 "drop_count":           self.drop_count,
                 "drop_total_amount":    round(self.drop_total_amount, 2),
                 "drop_total_pct":       round(self.drop_total_pct, 4),
+                "drop_duration_days":   self.drop_duration_days,
                 "days_listed":          self.days_listed,
                 "typical_days_to_sell": self.typical_days_to_sell,
                 "days_listed_summary":  self.days_listed_summary,
                 "motivation_level":     self.motivation_level,
+                "price_history":        self.price_history,
             }
         }
 
@@ -183,6 +191,16 @@ def _normalize_price_history(history: Any, original_price: float, current_price:
     when no explicit history is available — this keeps the signal alive
     on FBM/eBay where the DOM only exposes a strikethrough peak price,
     not the full drop timeline.
+
+    NOTE on multi-point history: as of today, NO marketplace we extract
+    from publicly exposes a dated drop timeline in the DOM. FBM, eBay,
+    OfferUp, and Craigslist all show at most a strikethrough peak (or
+    nothing). So in practice this function almost always produces the
+    synthetic single-step fallback. The full {date, price} list shape
+    is preserved end-to-end (request → evaluator → response) so that
+    when a future surface DOES expose a real timeline (e.g. an FBM
+    "price history" expansion or an external scraper feed), it plugs
+    in without further plumbing changes.
     """
     out: list[dict] = []
     if isinstance(history, list):
@@ -207,33 +225,67 @@ def _normalize_price_history(history: Any, original_price: float, current_price:
     return out
 
 
-def _compute_drop_summary(normalized: list[dict], current_price: float) -> tuple[str, int, float, float]:
+def _drop_duration_days(normalized: list[dict]) -> Optional[int]:
     """
-    Returns (summary_text, drop_count, total_amount_dropped, total_pct_dropped).
-    Empty summary string when no meaningful drop was observed.
+    Span (in days) between the earliest and latest dated entries in the
+    normalized history. Returns None when fewer than two entries carry
+    parseable dates — which is the common case today since FBM/eBay
+    only expose a strikethrough peak (no timestamps). When real
+    multi-point history with dates lands later, this lights up
+    automatically without further wiring.
+    """
+    dated_days: list[int] = []
+    for entry in normalized:
+        d = entry.get("date")
+        if not isinstance(d, str) or not d:
+            continue
+        days_ago = _parse_listed_at_to_days(d)
+        if days_ago is not None:
+            dated_days.append(days_ago)
+    if len(dated_days) < 2:
+        return None
+    span = max(dated_days) - min(dated_days)
+    return span if span > 0 else None
+
+
+def _compute_drop_summary(
+    normalized: list[dict], current_price: float
+) -> tuple[str, int, float, float, Optional[int]]:
+    """
+    Returns (summary_text, drop_count, total_amount_dropped, total_pct_dropped,
+    duration_days). Empty summary string when no meaningful drop was observed.
+
+    duration_days is non-None only when the normalized history carries at
+    least two dated entries spanning >=1 day (i.e. real multi-point
+    timeline, not the synthetic single-step fallback).
     """
     if not normalized or current_price <= 0:
-        return "", 0, 0.0, 0.0
+        return "", 0, 0.0, 0.0, None
 
     peak = max(p["price"] for p in normalized)
     if peak <= current_price:
-        return "", 0, 0.0, 0.0
+        return "", 0, 0.0, 0.0, None
 
     total_drop = peak - current_price
     pct        = total_drop / peak if peak > 0 else 0.0
     if pct < MIN_DROP_PCT:
-        return "", 0, 0.0, 0.0
+        return "", 0, 0.0, 0.0, None
 
-    drop_count = max(1, len(normalized) - 1)
+    drop_count    = max(1, len(normalized) - 1)
+    duration_days = _drop_duration_days(normalized)
 
     if drop_count == 1:
         summary = f"Asking dropped ${total_drop:.0f} from ${peak:.0f} \u2014 seller is motivated."
     else:
+        # Append "over X days" when we have real dated history. Cheap +
+        # silently absent today (no extractor emits dates yet); will
+        # light up automatically when one starts to.
+        span_clause = f" over {duration_days} days" if duration_days else ""
         summary = (
-            f"Asking dropped ${total_drop:.0f} over {drop_count} reductions "
-            f"(from ${peak:.0f} \u2192 ${current_price:.0f}) \u2014 seller is motivated."
+            f"Asking dropped ${total_drop:.0f} across {drop_count} reductions"
+            f"{span_clause} (from ${peak:.0f} \u2192 ${current_price:.0f}) \u2014 seller is motivated."
         )
-    return summary, drop_count, total_drop, pct
+    return summary, drop_count, total_drop, pct, duration_days
 
 
 def _classify_days_listed(days_listed: Optional[int], typical: Optional[int]) -> str:
@@ -338,7 +390,9 @@ def evaluate_leverage(
         original_price = 0.0
 
     normalized = _normalize_price_history(listing.get("price_history"), original_price, current_price)
-    drop_summary, drop_count, drop_amount, drop_pct = _compute_drop_summary(normalized, current_price)
+    drop_summary, drop_count, drop_amount, drop_pct, drop_duration = _compute_drop_summary(
+        normalized, current_price
+    )
 
     explicit_days = listing.get("days_listed")
     if isinstance(explicit_days, (int, float)) and explicit_days >= 0:
@@ -356,10 +410,12 @@ def evaluate_leverage(
         drop_count           = drop_count,
         drop_total_amount    = drop_amount,
         drop_total_pct       = drop_pct,
+        drop_duration_days   = drop_duration,
         days_listed          = days_listed,
         typical_days_to_sell = typical,
         days_listed_summary  = days_summary,
         motivation_level     = motivation,
+        price_history        = normalized,
     )
 
 
