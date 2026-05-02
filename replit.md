@@ -42,14 +42,21 @@
   `CORS_ORIGINS` env var.
 - **Payload caps** — Pydantic `Field(max_length=...)` on every user-supplied
   string; oversized inputs return 422 before reaching Claude.
-- **Prompt-injection defense (extractor only — evaluator/scorer pending)** —
-  user title/description wrapped in `<listing_title>`/`<listing_description>`
-  tags, `_sanitize_for_prompt` escapes closing tags, system message marks
-  tag content as untrusted.
+- **Prompt-injection defense (extractor + evaluator + scorer — #70 v0.45.1)** —
+  every Claude call that interpolates seller text wraps the user-controlled
+  fields in tagged envelopes (`<listing_title>`, `<listing_description>`,
+  `<listing_condition>`, `<listing_location>`, `<listing_price_text>`,
+  `<seller_name>`, `<seller_joined>`, `<seller_tier>`, `<page_text>`,
+  `<product_name>`, `<product_category>`, `<product_reputation>`).
+  Shared sanitiser `scoring/_prompt_safety.py::sanitize_for_prompt` escapes
+  both opening and closing variants of any reserved tag prefix; shared
+  `UNTRUSTED_SYSTEM_MESSAGE` is attached as the `system=` arg of every
+  Claude call. Three layers of defense: (1) sanitiser breaks tag syntax,
+  (2) wrap markers fence the data, (3) system message tells Claude to
+  treat all tagged content as data.
 
 Pending hardening: per-install token system (replacing static `DS_API_KEY`),
-log scrubbing, prompt-injection wrap in `product_evaluator.py` and
-`deal_scorer.py`. Tracked in `.local/tasks/extension-auth-lockdown.md`.
+log scrubbing. Tracked in `.local/tasks/extension-auth-lockdown.md`.
 
 ## Overview
 
