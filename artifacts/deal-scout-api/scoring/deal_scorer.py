@@ -41,7 +41,7 @@ from typing import Optional
 import anthropic
 from dotenv import load_dotenv
 
-from scoring._prompt_safety import wrap as _wrap_untrusted, sanitize_for_prompt as _sanitize, UNTRUSTED_SYSTEM_MESSAGE as _SAFE_SYSTEM_MSG
+from scoring._prompt_safety import wrap as _wrap_untrusted, UNTRUSTED_SYSTEM_MESSAGE as _SAFE_SYSTEM_MSG
 
 load_dotenv()
 

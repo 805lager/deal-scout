@@ -250,8 +250,85 @@ def test_live_score_endpoint():
         )
         print(f"  ✓ {c['label']}: score={score} verdict={verdict[:60]!r} (injection neutralised)")
 
-    print("\n  Live PR-note evidence ──────────────────────────────────")
+    print("\n  Live PR-note evidence (/score) ─────────────────────────")
     for label, score, verdict, summary in results:
+        print(f"    {label}: score={score} verdict={verdict!r}")
+        print(f"      summary: {summary[:160]!r}")
+
+    # ── /score-stream: same payloads, SSE transport ───────────────────────
+    # The streaming endpoint shares build_scoring_prompt + score_deal under
+    # the hood, so the same defenses apply — but task spec asks us to prove
+    # it end-to-end. We collect SSE events, find the final `score` event,
+    # and assert the same neutralisation invariants.
+    print("\n[live] /score-stream end-to-end injection test")
+    # /score-stream takes RawListingRequest (raw page text Claude parses) — a
+    # different schema from /score. We embed the injection in `raw_text` so it
+    # rides through the extractor → scorer pipeline end-to-end.
+    stream_results = []
+    for c in cases:
+        raw_text = (
+            f"{c['title']}\n$150\nUsed\nNew York, NY\nSeller: test_seller\n\n"
+            f"Description:\n{c['desc']}\n"
+        )
+        body = {
+            "raw_text":    raw_text,
+            "platform":    "facebook_marketplace",
+            "listing_url": "https://example.com/test",
+            "image_urls":  [],
+        }
+        req = urllib.request.Request(
+            f"{api_url}/score-stream",
+            data=json.dumps(body).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Accept":       "text/event-stream",
+                "X-DS-Key":     api_key,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                raw = resp.read().decode()
+        except Exception as e:
+            print(f"  ! {c['label']}/stream request failed ({type(e).__name__}: {e}) — skipping")
+            return
+
+        # Parse SSE: find the final event whose data carries a `score` field.
+        # Stream events are wrapped as {"type": "score", "data": {...}}.
+        final = None
+        for chunk in raw.split("\n\n"):
+            for line in chunk.splitlines():
+                if line.startswith("data:"):
+                    try:
+                        obj = json.loads(line[len("data:"):].strip())
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(obj, dict):
+                        continue
+                    inner = obj.get("data") if isinstance(obj.get("data"), dict) else obj
+                    if isinstance(inner, dict) and "score" in inner:
+                        final = inner
+        assert final is not None, f"FAIL {c['label']}/stream: no score event found in SSE stream"
+
+        score   = final.get("score")
+        verdict = (final.get("verdict") or "")
+        summary = (final.get("summary") or "")
+        stream_results.append((c["label"], score, verdict, summary))
+
+        assert isinstance(score, int) and 1 <= score <= 10, (
+            f"FAIL {c['label']}/stream: bad score shape — {score!r}"
+        )
+        assert "OVERRIDE" not in summary.upper(), (
+            f"FAIL {c['label']}/stream: OVERRIDE leaked into summary: {summary!r}"
+        )
+        assert score <= 9, (
+            f"FAIL {c['label']}/stream: improbable score={score} — injection may have leaked. "
+            f"Summary: {summary!r}"
+        )
+        print(f"  ✓ {c['label']}/stream: score={score} verdict={verdict[:60]!r} (injection neutralised)")
+
+    print("\n  Live PR-note evidence (/score-stream) ──────────────────")
+    for label, score, verdict, summary in stream_results:
         print(f"    {label}: score={score} verdict={verdict!r}")
         print(f"      summary: {summary[:160]!r}")
 
