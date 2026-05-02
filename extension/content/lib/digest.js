@@ -216,9 +216,272 @@
     return { body, setSummary, wrap };
   }
 
+  // ────────────────────────────────────────────────────────────────────
+  // Save star + (?) help icon (Task #69)
+  // ────────────────────────────────────────────────────────────────────
+  // attachSaveStar(digest, currentEntry) renders three things tied to
+  // the saved-listings recall feature:
+  //
+  //   1. A floating ☆/★ control + (?) tooltip in the digest's top-right
+  //      corner. Click ★ → unsave; click ☆ when not at cap → save +
+  //      brief toast (longer first-save hint on the very first save);
+  //      click ☆ at cap → reveal the swap picker.
+  //   2. A "★ Saved Nd ago at $original (down $delta)" annotation under
+  //      the digest's header row when the URL is already saved.
+  //   3. A swap picker overlaying the digest when the user tries to
+  //      save while already at the 10-save cap.
+  //
+  // Depends on window.DealScoutSaved (lib/saved.js, loaded earlier in
+  // manifest.json content_scripts list). Silently no-ops when missing
+  // so an older platform script that hasn't been wired up yet doesn't
+  // throw.
+  function attachSaveStar(digest, current) {
+    if (!digest || !current || !current.url) return;
+    if (!window.DealScoutSaved) return;
+    const Saved = window.DealScoutSaved;
+
+    // Container holds star + (?) — absolutely positioned to sit just to
+    // the left of the close button at top-right of the sticky digest.
+    // We sit OUTSIDE the existing renderHeader DOM so we don't have to
+    // touch every platform script's header builder.
+    const controls = document.createElement('div');
+    controls.style.cssText =
+      'position:absolute;top:8px;right:38px;z-index:6;'
+      + 'display:flex;align-items:center;gap:6px';
+    digest.style.position = digest.style.position || 'sticky';
+    digest.appendChild(controls);
+
+    const star = document.createElement('button');
+    star.type = 'button';
+    star.title = 'Save listing';
+    star.setAttribute('aria-label', 'Save listing');
+    star.style.cssText =
+      'background:none;border:none;cursor:pointer;padding:0;'
+      + 'font-size:18px;line-height:1;color:#9ca3af;'
+      + 'transition:color .15s,transform .1s';
+    star.textContent = '\u2606'; // ☆
+    star.addEventListener('mouseenter', () => { star.style.transform = 'scale(1.15)'; });
+    star.addEventListener('mouseleave', () => { star.style.transform = 'scale(1)'; });
+
+    const help = document.createElement('span');
+    help.title = 'Saved listings appear in the Deal Scout extension icon in your toolbar.';
+    help.setAttribute('aria-label', help.title);
+    help.style.cssText =
+      'display:inline-flex;align-items:center;justify-content:center;'
+      + 'width:14px;height:14px;border-radius:50%;'
+      + 'background:rgba(255,255,255,0.1);color:#9ca3af;'
+      + 'font-size:10px;font-weight:700;cursor:help;user-select:none';
+    help.textContent = '?';
+
+    controls.appendChild(star);
+    controls.appendChild(help);
+
+    // Tracks live state so click handlers don't re-query storage on
+    // every press. Initialised async — the star renders as ☆ until the
+    // initial isSaved check resolves, then snaps to ★ if saved.
+    let isCurrentlySaved = false;
+
+    function paintStar(saved) {
+      isCurrentlySaved = saved;
+      star.textContent = saved ? '\u2605' : '\u2606'; // ★ vs ☆
+      star.style.color = saved ? '#fbbf24' : '#9ca3af';
+      star.title = saved ? 'Remove from saved listings' : 'Save listing';
+      star.setAttribute('aria-label', star.title);
+    }
+
+    // Initial paint + revisit annotation.
+    Saved.getSavedSnapshot(current.url).then((snap) => {
+      if (snap) {
+        paintStar(true);
+        renderRevisitAnnotation(snap);
+        // Update change-tracking with the live values from this visit.
+        Saved.recordRevisit(current.url, current.asking, current.score);
+      } else {
+        paintStar(false);
+      }
+    });
+
+    // ── Toast ──────────────────────────────────────────────────────
+    // Small pill at the top of the digest. Only one toast at a time —
+    // a fresh call cancels the previous timer and replaces the text so
+    // rapid star clicks don't pile up overlapping toasts.
+    let toastEl = null;
+    let toastTimer = null;
+    function showToast(text, ms) {
+      if (!toastEl) {
+        toastEl = document.createElement('div');
+        toastEl.style.cssText =
+          'position:absolute;top:36px;right:8px;z-index:7;'
+          + 'background:#13111f;border:1px solid rgba(124,140,248,0.4);'
+          + 'border-radius:8px;padding:6px 10px;font-size:11px;'
+          + 'color:#e2e8f0;box-shadow:0 4px 12px rgba(0,0,0,0.4);'
+          + 'max-width:220px;line-height:1.4';
+        digest.appendChild(toastEl);
+      }
+      toastEl.textContent = text;
+      toastEl.style.display = 'block';
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        if (toastEl) toastEl.style.display = 'none';
+      }, ms || 1800);
+    }
+
+    // ── Saved Nd ago annotation ───────────────────────────────────
+    // One-line note under the existing header rows: "★ Saved 3 days
+    // ago at $450 (down $25)". The (down $X) segment only appears when
+    // the live asking has actually moved off the original snapshot.
+    let annotationEl = null;
+    function renderRevisitAnnotation(snap) {
+      if (annotationEl) annotationEl.remove();
+      annotationEl = document.createElement('div');
+      annotationEl.style.cssText =
+        'margin:2px 12px 6px;font-size:11px;color:#fbbf24;'
+        + 'display:flex;align-items:center;gap:6px';
+      const ago = _humanAgo(snap.savedAt);
+      const origAsking = Number(snap.asking) || 0;
+      const liveAsking = Number(current.asking) || 0;
+      let delta = '';
+      if (origAsking > 0 && liveAsking > 0 && liveAsking !== origAsking) {
+        const diff = origAsking - liveAsking;
+        if (diff > 0) delta = ' (down $' + Math.abs(Math.round(diff)) + ')';
+        else delta = ' (up $' + Math.abs(Math.round(diff)) + ')';
+      }
+      annotationEl.textContent =
+        '\u2605 Saved ' + ago + (origAsking > 0 ? ' at $' + Math.round(origAsking) : '') + delta;
+      digest.appendChild(annotationEl);
+    }
+
+    // ── Swap picker ───────────────────────────────────────────────
+    // At-cap (10 saves) inline overlay. Reveals all 10 saves in a
+    // scrollable list — tap any row to swap it out for the current
+    // listing. No FIFO: the user always picks who gets evicted.
+    let pickerEl = null;
+    async function openSwapPicker() {
+      if (pickerEl) return;
+      const all = await Saved.getSaved();
+      pickerEl = document.createElement('div');
+      pickerEl.style.cssText =
+        'position:absolute;inset:0;z-index:8;background:#13111f;'
+        + 'border-radius:10px 10px 0 0;padding:10px;display:flex;'
+        + 'flex-direction:column;gap:6px;overflow:hidden';
+
+      const head = document.createElement('div');
+      head.style.cssText = 'font-size:12px;color:#e2e8f0;line-height:1.4';
+      head.textContent =
+        "You\u2019ve saved the maximum of " + Saved.MAX_SAVES
+        + ". Tap one to swap it for this listing, or Cancel.";
+      pickerEl.appendChild(head);
+
+      const list = document.createElement('div');
+      list.style.cssText = 'flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:4px';
+      for (const old of all) {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.style.cssText =
+          'display:flex;align-items:center;gap:8px;padding:6px 8px;'
+          + 'background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);'
+          + 'border-radius:6px;cursor:pointer;text-align:left;'
+          + 'color:#e2e8f0;font-size:11px;font-family:inherit';
+        const score = Number(old.score) || 0;
+        const sc = score >= 7 ? '#22c55e' : score >= 5 ? '#fbbf24' : '#ef4444';
+        const badge = document.createElement('span');
+        badge.style.cssText =
+          'flex-shrink:0;width:22px;height:22px;border-radius:4px;'
+          + 'background:' + sc + '22;color:' + sc + ';font-weight:700;'
+          + 'display:flex;align-items:center;justify-content:center;font-size:11px';
+        badge.textContent = String(score);
+        const titleSpan = document.createElement('span');
+        titleSpan.style.cssText =
+          'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+        titleSpan.textContent = old.title || old.url;
+        row.appendChild(badge);
+        row.appendChild(titleSpan);
+        row.addEventListener('click', async () => {
+          await Saved.swapSaved(old.url, current);
+          closePicker();
+          paintStar(true);
+          showToast('Swapped \u2014 saved this listing in place of \u201C'
+            + (old.title || 'previous').slice(0, 40) + '\u201D');
+        });
+        list.appendChild(row);
+      }
+      pickerEl.appendChild(list);
+
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.textContent = 'Cancel';
+      cancel.style.cssText =
+        'padding:7px;background:rgba(255,255,255,0.05);'
+        + 'border:1px solid rgba(255,255,255,0.1);border-radius:6px;'
+        + 'color:#9ca3af;font-size:12px;cursor:pointer;font-family:inherit';
+      cancel.addEventListener('click', closePicker);
+      pickerEl.appendChild(cancel);
+
+      digest.appendChild(pickerEl);
+    }
+
+    function closePicker() {
+      if (pickerEl) { pickerEl.remove(); pickerEl = null; }
+    }
+
+    // ── Star click handler ────────────────────────────────────────
+    star.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (isCurrentlySaved) {
+        await Saved.removeSaved(current.url);
+        paintStar(false);
+        if (annotationEl) { annotationEl.remove(); annotationEl = null; }
+        showToast('Removed from saved listings');
+        return;
+      }
+      // Not saved — try to add. May need swap picker if at cap.
+      if (await Saved.isAtCap()) {
+        openSwapPicker();
+        return;
+      }
+      const res = await Saved.saveListing(current);
+      if (!res || !res.ok) {
+        showToast('Could not save \u2014 try again');
+        return;
+      }
+      paintStar(true);
+      const seen = await Saved.wasFirstSaveSeen();
+      if (!seen) {
+        await Saved.markFirstSaveSeen();
+        showToast(
+          '\u2605 Saved! Click the Deal Scout icon in your toolbar to see your saved listings.',
+          6000
+        );
+      } else {
+        showToast('\u2605 Saved');
+      }
+    });
+  }
+
+  // ── Time formatting ─────────────────────────────────────────────────
+  // Coarse human-friendly recency for the digest annotation. We don't
+  // care about minute precision a week later, so anything older than
+  // 7 days collapses to "Nw ago".
+  function _humanAgo(iso) {
+    if (!iso) return 'just now';
+    const then = new Date(iso).getTime();
+    if (!isFinite(then)) return 'just now';
+    const sec = Math.max(0, Math.floor((Date.now() - then) / 1000));
+    if (sec < 60)        return 'just now';
+    if (sec < 3600)      return Math.floor(sec / 60) + 'm ago';
+    if (sec < 86400)     return Math.floor(sec / 3600) + 'h ago';
+    const days = Math.floor(sec / 86400);
+    if (days === 1)      return '1 day ago';
+    if (days < 7)        return days + ' days ago';
+    if (days < 30)       return Math.floor(days / 7) + 'w ago';
+    return Math.floor(days / 30) + 'mo ago';
+  }
+
   window.DealScoutDigest = {
     beginDigest: beginDigest,
     openCollapsible: openCollapsible,
+    attachSaveStar: attachSaveStar,
     _loadState: _loadState,
+    _humanAgo: _humanAgo,
   };
 })();

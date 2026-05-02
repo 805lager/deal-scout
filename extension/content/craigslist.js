@@ -467,6 +467,19 @@
 
     // Approach A layout (Task #68) — sticky digest + collapsibles below.
     const digest = window.DealScoutDigest.beginDigest(panel);
+
+    // Save star + (?) help icon (Task #69 — popup recall).
+    if (window.DealScoutDigest.attachSaveStar) {
+      window.DealScoutDigest.attachSaveStar(digest, {
+        url:              location.href,
+        title:            r.title || document.title,
+        platform:         PLATFORM,
+        score:            r.score || 0,
+        asking:           r.price || 0,
+        recommendedOffer: r.recommended_offer || 0,
+      });
+    }
+
     renderHeader(r, digest);
     renderConfidenceBlock(r, digest);
     renderTrustBlock(r, digest);

@@ -164,7 +164,22 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 ## Extension Version
 
-Current: **v0.44.0** (extension) / **v0.44.0** (API — read from `artifacts/deal-scout-api/VERSION`)
+Current: **v0.45.0** (extension) / **v0.45.0** (API — read from `artifacts/deal-scout-api/VERSION`)
+
+### v0.45.0 Saved listings — popup recall (browser-only)
+Browser-only recall feature so users can find previously-scored listings
+without re-searching. Star toggle (`☆`/`★`) lives in the sticky digest's
+top-right corner with a `(?)` tooltip pointing to the toolbar icon.
+First-ever save shows a 6-second discoverability hint; subsequent saves
+get a brief toast. At-cap (10 saves) reveals an inline swap picker —
+the user always picks who gets evicted, no FIFO. Re-visiting a saved
+listing adds a *"★ Saved Nd ago at $X (down $Y)"* annotation under the
+header. Storage in `chrome.storage.sync` keyed `ds_saved_listings`
+(falls back to `chrome.storage.local` with a *"Sync disabled"* note when
+sync is unavailable). New section appended to the **bottom** of the
+popup — existing controls untouched. Zero backend, zero new tables.
+New shared helper at `extension/content/lib/saved.js`; star + picker +
+annotation logic in extended `lib/digest.js` (`attachSaveStar`).
 
 ### v0.44.0 Score panel — Approach A layout (sticky digest + collapsibles)
 Score panel restructured: sticky digest at top (header, confidence, trust,

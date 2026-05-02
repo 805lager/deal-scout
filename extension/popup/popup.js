@@ -357,3 +357,136 @@ async function loadAutoScoreToggle() {
 loadAutoScoreToggle();
 checkAPIHealth();
 document.getElementById("version-label").textContent = "v" + EXT_VERSION;
+
+// ── Saved listings (Task #69 — popup recall) ─────────────────────────
+// Renders the user's saved listings (max 10) at the bottom of the
+// popup. Each row links back to the original listing in a new tab.
+// All storage I/O lives in extension/content/lib/saved.js, which the
+// popup loads via <script src="../content/lib/saved.js"> — same file
+// that powers the in-page star, so the two views can never disagree
+// on storage shape.
+//
+// We deliberately don't poll or refresh — the popup is short-lived
+// (closes the moment the user clicks a row or anywhere outside) so a
+// single render at open time is the right granularity.
+
+const PLATFORM_LABELS = {
+  fbm:        "Facebook",
+  craigslist: "Craigslist",
+  ebay:       "eBay",
+  offerup:    "OfferUp",
+};
+
+function _humanAgo(iso) {
+  if (!iso) return "just now";
+  const then = new Date(iso).getTime();
+  if (!isFinite(then)) return "just now";
+  const sec = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (sec < 60)    return "just now";
+  if (sec < 3600)  return Math.floor(sec / 60) + "m ago";
+  if (sec < 86400) return Math.floor(sec / 3600) + "h ago";
+  const days = Math.floor(sec / 86400);
+  if (days === 1)  return "1d ago";
+  if (days < 7)    return days + "d ago";
+  if (days < 30)   return Math.floor(days / 7) + "w ago";
+  return Math.floor(days / 30) + "mo ago";
+}
+
+function _scoreColor(score) {
+  if (score >= 7) return "#22c55e";
+  if (score >= 5) return "#fbbf24";
+  return "#ef4444";
+}
+
+async function renderSavedListings() {
+  if (!window.DealScoutSaved) return;
+  const Saved   = window.DealScoutSaved;
+  const listEl  = document.getElementById("saved-list");
+  const emptyEl = document.getElementById("saved-empty");
+  const titleEl = document.getElementById("saved-title-text");
+  const noteEl  = document.getElementById("saved-sync-note");
+
+  // Sync-disabled note — only shown when chrome.storage.sync was
+  // unavailable so the user understands their saves won't follow them
+  // to another Chrome install.
+  if (Saved.getStorageMode() === "local") {
+    noteEl.style.display = "block";
+  }
+
+  const arr = await Saved.getSaved();
+  listEl.textContent = "";
+
+  if (!arr.length) {
+    emptyEl.style.display = "block";
+    titleEl.textContent = "Saved listings";
+    return;
+  }
+  emptyEl.style.display = "none";
+  titleEl.textContent = "Saved listings (" + arr.length + " of " + Saved.MAX_SAVES + ")";
+
+  for (const entry of arr) {
+    const row = document.createElement("div");
+    row.className = "saved-row";
+
+    const score = Number(entry.score) || 0;
+    const sc    = _scoreColor(score);
+    const badge = document.createElement("div");
+    badge.className = "saved-badge";
+    badge.style.background = sc + "22";
+    badge.style.color = sc;
+    badge.textContent = String(score);
+    row.appendChild(badge);
+
+    const info = document.createElement("div");
+    info.className = "saved-info";
+
+    const title = document.createElement("div");
+    title.className = "saved-row-title";
+    title.textContent = entry.title || entry.url;
+    info.appendChild(title);
+
+    const meta = document.createElement("div");
+    meta.className = "saved-meta";
+    const platLabel = PLATFORM_LABELS[entry.platform] || entry.platform || "—";
+    const askingTxt = entry.asking ? "$" + Math.round(entry.asking) : "—";
+    meta.textContent = askingTxt + " · " + platLabel + " · " + _humanAgo(entry.savedAt);
+    info.appendChild(meta);
+
+    // "↓ down $X since saved" — only when the most recent revisit
+    // recorded a lower asking price than the saved snapshot. Stays
+    // hidden when the price is unchanged or the user has never
+    // re-opened the listing (lastAsking is null).
+    if (typeof entry.lastAsking === "number"
+        && entry.lastAsking > 0
+        && typeof entry.asking === "number"
+        && entry.asking > 0
+        && entry.lastAsking < entry.asking) {
+      const drop = document.createElement("div");
+      drop.className = "saved-drop";
+      drop.textContent = "↓ down $" + Math.round(entry.asking - entry.lastAsking) + " since saved";
+      info.appendChild(drop);
+    }
+
+    row.appendChild(info);
+
+    const removeBtn = document.createElement("button");
+    removeBtn.className = "saved-remove";
+    removeBtn.title = "Remove from saved listings";
+    removeBtn.setAttribute("aria-label", "Remove " + (entry.title || "listing"));
+    removeBtn.textContent = "×";
+    removeBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      await Saved.removeSaved(entry.url);
+      renderSavedListings();
+    });
+    row.appendChild(removeBtn);
+
+    row.addEventListener("click", () => {
+      try { chrome.tabs.create({ url: entry.url }); } catch (_) {}
+    });
+
+    listEl.appendChild(row);
+  }
+}
+
+renderSavedListings();

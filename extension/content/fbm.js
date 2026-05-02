@@ -1350,6 +1350,22 @@
     // by default, expand state persisted per section name.
     const digest = window.DealScoutDigest.beginDigest(panel);
 
+    // Save star + (?) help icon (Task #69 — popup recall). The digest
+    // owns the floating control and reads/writes chrome.storage.sync
+    // via lib/saved.js. Builds the entry from the live page so the
+    // popup can later show a "down $X since saved" line if the asking
+    // price moves on revisit.
+    if (window.DealScoutDigest.attachSaveStar) {
+      window.DealScoutDigest.attachSaveStar(digest, {
+        url:              location.href,
+        title:            r.title || document.title,
+        platform:         'fbm',
+        score:            r.score || 0,
+        asking:           r.price || 0,
+        recommendedOffer: r.recommended_offer || 0,
+      });
+    }
+
     renderHeader(r, digest);
     renderConfidenceBlock(r, digest);
     renderTrustBlock(r, digest);

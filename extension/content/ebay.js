@@ -425,6 +425,20 @@
     // Approach A layout (Task #68) — sticky digest + collapsibles below.
     const digest = window.DealScoutDigest.beginDigest(panel);
 
+    // Save star + (?) help icon (Task #69 — popup recall). Works for
+    // both auction and BIN listings; for pure auctions we save the
+    // current bid as the asking price.
+    if (window.DealScoutDigest.attachSaveStar) {
+      window.DealScoutDigest.attachSaveStar(digest, {
+        url:              location.href,
+        title:            r.title || document.title,
+        platform:         PLATFORM,
+        score:            r.score || 0,
+        asking:           r.price || 0,
+        recommendedOffer: r.recommended_offer || 0,
+      });
+    }
+
     if (isPrimaryAuction) {
       renderAuctionHeader(r, digest);
       renderAuctionAdvice(r, digest);
