@@ -14,15 +14,19 @@
  * newest-first, max 10):
  *   {
  *     url, title, platform, score, asking, recommendedOffer, savedAt,
- *     thumbnailUrl,                    // optional URL (never a data URI)
- *     lastAsking, lastScore, lastVisitedAt  // updated on revisit; powers
- *                                            // the "down $X since saved"
- *                                            // line in the popup
+ *     thumbnailUrl,                  // optional URL (never a data URI)
+ *     savedAsking, savedScore,       // original values at save-time —
+ *                                    // immutable, used as the comparison
+ *                                    // anchor for the "down $X since
+ *                                    // saved" line in the popup and the
+ *                                    // "Saved Nd ago at $X" digest annot.
+ *     lastVisitedAt,                 // ISO ts of the most recent revisit
  *   }
  *
- * `score` and `asking` are the values at save-time and never mutate.
- * `lastAsking` / `lastScore` track the most recent re-score so the popup
- * can show a price drop without needing a backend cron.
+ * `score` and `asking` are the LATEST values — mutated on every revisit
+ * via recordRevisit() so the popup meta strip stays current with the
+ * live page. `savedAsking` / `savedScore` are frozen at save-time and
+ * power the price-drop comparison without needing a backend cron.
  *
  * Idempotent — safe to load twice (the second IIFE short-circuits on
  * window.DealScoutSaved presence).
@@ -142,22 +146,33 @@
     if (arr.length >= MAX_SAVES) {
       return { ok: false, reason: 'at_cap' };
     }
-    const fresh = {
-      url:              String(entry.url),
-      title:            String(entry.title || '').slice(0, 200),
-      platform:         String(entry.platform || ''),
-      score:            Number(entry.score) || 0,
-      asking:           Number(entry.asking) || 0,
-      recommendedOffer: Number(entry.recommendedOffer) || 0,
-      savedAt:          new Date().toISOString(),
-      thumbnailUrl:     _safeThumbnail(entry.thumbnailUrl),
-      lastAsking:       null,
-      lastScore:        null,
-      lastVisitedAt:    null,
-    };
+    const fresh = _freshEntry(entry);
     arr.unshift(fresh);
     await _set(KEY, arr);
     return { ok: true };
+  }
+
+  function _freshEntry(entry) {
+    const score  = Number(entry.score)  || 0;
+    const asking = Number(entry.asking) || 0;
+    return {
+      url:              String(entry.url),
+      title:            String(entry.title || '').slice(0, 200),
+      platform:         String(entry.platform || ''),
+      // Latest known values — these mutate on every revisit so the
+      // popup meta strip ($asking · platform · Nd ago) and the score
+      // badge always reflect the most recent visit, per spec step 4.
+      score:            score,
+      asking:           asking,
+      // Frozen save-time values — comparison anchor for "down $X
+      // since saved" and the digest's "Saved Nd ago at $X" annotation.
+      savedAsking:      asking,
+      savedScore:       score,
+      recommendedOffer: Number(entry.recommendedOffer) || 0,
+      savedAt:          new Date().toISOString(),
+      thumbnailUrl:     _safeThumbnail(entry.thumbnailUrl),
+      lastVisitedAt:    null,
+    };
   }
 
   async function removeSaved(url) {
@@ -178,20 +193,7 @@
     if (!newEntry || !newEntry.url) return { ok: false };
     const arr = await getSaved();
     const filtered = arr.filter((e) => !e || e.url !== removeUrl);
-    const fresh = {
-      url:              String(newEntry.url),
-      title:            String(newEntry.title || '').slice(0, 200),
-      platform:         String(newEntry.platform || ''),
-      score:            Number(newEntry.score) || 0,
-      asking:           Number(newEntry.asking) || 0,
-      recommendedOffer: Number(newEntry.recommendedOffer) || 0,
-      savedAt:          new Date().toISOString(),
-      thumbnailUrl:     _safeThumbnail(newEntry.thumbnailUrl),
-      lastAsking:       null,
-      lastScore:        null,
-      lastVisitedAt:    null,
-    };
-    filtered.unshift(fresh);
+    filtered.unshift(_freshEntry(newEntry));
     if (filtered.length > MAX_SAVES) filtered.length = MAX_SAVES;
     await _set(KEY, filtered);
     return { ok: true };
@@ -218,11 +220,19 @@
 
   function _mergeRevisit(existing, fresh) {
     const out = Object.assign({}, existing);
+    // Backfill the frozen save-time fields for entries written before
+    // the savedAsking/savedScore split (older versions stored only a
+    // single asking/score that conflated both roles). Treat the
+    // current stored value as the original — it's the best we have.
+    if (typeof out.savedAsking !== 'number') out.savedAsking = Number(out.asking) || 0;
+    if (typeof out.savedScore  !== 'number') out.savedScore  = Number(out.score)  || 0;
+    // Mutate latest-value fields per spec step 4 — the popup row's
+    // meta strip and score badge follow these on every revisit.
     if (typeof fresh.asking === 'number' && fresh.asking > 0) {
-      out.lastAsking = fresh.asking;
+      out.asking = fresh.asking;
     }
     if (typeof fresh.score === 'number' && fresh.score > 0) {
-      out.lastScore = fresh.score;
+      out.score = fresh.score;
     }
     out.lastVisitedAt = new Date().toISOString();
     return out;

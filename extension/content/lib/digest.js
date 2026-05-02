@@ -345,7 +345,13 @@
         'margin:2px 12px 6px;font-size:11px;color:#fbbf24;'
         + 'display:flex;align-items:center;gap:6px';
       const ago = _humanAgo(snap.savedAt);
-      const origAsking = Number(snap.asking) || 0;
+      // Original at save-time. Falls back to the legacy `asking` field
+      // for entries written before the savedAsking/savedScore split so
+      // pre-existing saves still render an annotation (just with delta
+      // collapsed to 0 until the next revisit re-anchors them).
+      const origAsking = (typeof snap.savedAsking === 'number' && snap.savedAsking > 0)
+        ? snap.savedAsking
+        : (Number(snap.asking) || 0);
       const liveAsking = Number(current.asking) || 0;
       let delta = '';
       if (origAsking > 0 && liveAsking > 0 && liveAsking !== origAsking) {

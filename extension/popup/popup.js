@@ -454,18 +454,21 @@ async function renderSavedListings() {
     meta.textContent = askingTxt + " · " + platLabel + " · " + _humanAgo(entry.savedAt);
     info.appendChild(meta);
 
-    // "↓ down $X since saved" — only when the most recent revisit
-    // recorded a lower asking price than the saved snapshot. Stays
-    // hidden when the price is unchanged or the user has never
-    // re-opened the listing (lastAsking is null).
-    if (typeof entry.lastAsking === "number"
-        && entry.lastAsking > 0
+    // "↓ down $X since saved" — compares the latest `asking` (mutated
+    // on each revisit per spec step 4) against the frozen save-time
+    // `savedAsking`. Hidden when the price is unchanged, when the user
+    // has never re-opened the listing (lastVisitedAt null), or when
+    // the saved snapshot predates the savedAsking field. Up-moves are
+    // intentionally suppressed — the spec only calls out price drops.
+    if (entry.lastVisitedAt
+        && typeof entry.savedAsking === "number"
+        && entry.savedAsking > 0
         && typeof entry.asking === "number"
         && entry.asking > 0
-        && entry.lastAsking < entry.asking) {
+        && entry.asking < entry.savedAsking) {
       const drop = document.createElement("div");
       drop.className = "saved-drop";
-      drop.textContent = "↓ down $" + Math.round(entry.asking - entry.lastAsking) + " since saved";
+      drop.textContent = "↓ down $" + Math.round(entry.savedAsking - entry.asking) + " since saved";
       info.appendChild(drop);
     }
 
