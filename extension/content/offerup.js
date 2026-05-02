@@ -546,6 +546,31 @@
       sec.setSummary((_sc.score || '?') + '/10 \u00B7 ' + (_sc.risk_level || ''), _color);
     }
 
+    if (r.product_evaluation) {
+      const sec = window.DealScoutDigest.openCollapsible(sections, 'reputation',
+        { title: '\u2B50 Product Reputation' });
+      const _pe = r.product_evaluation;
+      // Inline minimal renderer — offerup.js doesn't ship its own.
+      const _row = (txt, color) => {
+        if (!txt) return;
+        const el = document.createElement('div');
+        el.style.cssText = 'font-size:12px;color:' + (color || '#d1d5db')
+          + ';margin:4px 12px;line-height:1.4';
+        el.textContent = txt;
+        sec.body.appendChild(el);
+      };
+      _row(_pe.brand_reputation);
+      _row(_pe.model_reputation);
+      (_pe.known_issues || []).slice(0, 3).forEach(i => _row('\u26A0 ' + i, '#fde68a'));
+      if (_pe.expected_lifespan) _row('\u23F3 Expected lifespan: ' + _pe.expected_lifespan, '#9ca3af');
+      const _tier = _pe.reliability_tier || '';
+      const _color = _tier === 'excellent' ? '#86efac'
+                   : _tier === 'good'      ? '#93c5fd'
+                   : _tier === 'average'   ? '#fde68a'
+                   :                         '#fca5a5';
+      sec.setSummary(_tier, _color);
+    }
+
     if (r.bundle_breakdown && r.bundle_breakdown.items && r.bundle_breakdown.items.length) {
       const sec = window.DealScoutDigest.openCollapsible(sections, 'bundle',
         { title: '\uD83D\uDCE6 Bundle Breakdown' });
