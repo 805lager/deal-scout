@@ -311,12 +311,17 @@ VERSION 0.46.2 → 0.46.3, manifest 0.46.1 → 0.46.3.
 Five low-risk perf wins on `/score` and `/score-stream` with no behavior
 change. Extension manifest stays at v0.46.1.
 
-**Cache validation — FAILED 2026-05-03 (Task #79).** Sample: **55
-score_log rows / 404 Claude calls over a 24h window.** Result: every
-label is 0% hit rate AND 0 cache_creation_input_tokens.
+**Cache validation — FAILED 2026-05-03 (Task #79).** Primary sample
+(snapshot taken at the end of the synthetic `/score` load): **55
+score_log rows / 404 Claude calls over a 24h window.** A subsequent
+single `/score-stream` spot-check call grew the window to 61 rows /
+443 calls without changing any per-label hit rate from 0% (the spot
+check is referenced separately in the "label coverage" note below).
+Result: every label is 0% hit rate AND 0
+cache_creation_input_tokens.
 
 ```
-label              calls  hits  hit_rate%  token_read%  input_tok  cache_read  cache_creation
+label (24h snapshot, n=55) calls  hits  hit_rate%  token_read%  input_tok  cache_read  cache_creation
 DealScorer            55     0       0.0         0.0     251,411           0               0
 ProductExtractor      54     0       0.0         0.0      65,086           0               0
 MergedExtractor        1     0       0.0         0.0       1,676           0               0
