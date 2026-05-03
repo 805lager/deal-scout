@@ -507,8 +507,8 @@ async def run_layer2(
     response = await claude_call_with_retry(
         lambda: client.messages.create(
             model      = "claude-haiku-4-5",
-            max_tokens = 400,
-            system     = _UNTRUSTED_SYS_MSG,
+            max_tokens = 300,
+            system     = [{"type": "text", "text": _UNTRUSTED_SYS_MSG, "cache_control": {"type": "ephemeral"}}],
             messages   = [{"role": "user", "content": prompt}],
         ),
         label="SecurityScorer",

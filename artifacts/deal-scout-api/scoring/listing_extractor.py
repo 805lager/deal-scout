@@ -184,7 +184,7 @@ async def extract_listing_from_text(
             msg = client.messages.create(
                 model="claude-haiku-4-5",
                 max_tokens=600,
-                system=_UNTRUSTED_SYS_MSG,
+                system=[{"type": "text", "text": _UNTRUSTED_SYS_MSG, "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": prompt}],
             )
             try:
@@ -386,7 +386,7 @@ async def extract_listing_and_product(
             msg = client.messages.create(
                 model="claude-haiku-4-5",
                 max_tokens=900,
-                system=_UNTRUSTED_SYS_MSG,
+                system=[{"type": "text", "text": _UNTRUSTED_SYS_MSG, "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": prompt}],
             )
             try:

@@ -950,7 +950,7 @@ Return ONLY the JSON array."""
             lambda: client.messages.create(
                 model="claude-haiku-4-5",
                 max_tokens=200,
-                system=_UNTRUSTED_SYS_MSG,
+                system=[{"type": "text", "text": _UNTRUSTED_SYS_MSG, "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": prompt}],
             ),
             label="CompVerifier",
@@ -1049,7 +1049,7 @@ Respond ONLY with JSON:
             lambda: client.messages.create(
                 model="claude-haiku-4-5",
                 max_tokens=200,
-                system=_UNTRUSTED_SYS_MSG,
+                system=[{"type": "text", "text": _UNTRUSTED_SYS_MSG, "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": prompt}],
             ),
             label="SanityCheck",

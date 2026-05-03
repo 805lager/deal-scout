@@ -372,8 +372,12 @@ If you lack model-specific data but know the brand's general reliability, use th
             claude_call_with_retry(
                 lambda: client.messages.create(
                     model="claude-haiku-4-5",
+                    # Task #74: tried 600 — caused JSON truncation around the
+                    # reputation v2 schema (category_leaders +
+                    # same_budget_alternatives +  brand_rank). Held at 900;
+                    # the win on this call comes from the cached system block.
                     max_tokens=900,
-                    system=_SAFE_SYS,
+                    system=[{"type": "text", "text": _SAFE_SYS, "cache_control": {"type": "ephemeral"}}],
                     messages=[{"role": "user", "content": prompt}],
                 ),
                 label="ProductEvaluator",

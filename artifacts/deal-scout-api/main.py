@@ -868,6 +868,32 @@ async def score_listing(listing: ListingRequest, request: Request):
         from scoring.product_evaluator import _unknown_evaluation
         product_eval = _unknown_evaluation(product_info.display_name)
 
+    # ── Task #74 perf: launch security scoring NOW (in parallel with refinement
+    # AND deal scoring) using prelim_market. Security only needs the listing
+    # + market_value snapshot for context — using prelim_market vs the refined
+    # value has no measurable effect on the security verdict (it cares about
+    # seller trust, listing red flags, photo coverage, etc.), and starting it
+    # this early lets it overlap with the ~1.5-3s of refinement work below
+    # plus the ~8-10s deal scorer (vision) call. The await happens after the
+    # deal scorer (existing code at the original site).
+    from scoring.affiliate_router import detect_category, CATEGORY_PROGRAMS
+    _prelim_category = detect_category(product_info)
+    _SPECIFIC_VEHICLE_CATS = {"cars", "trucks", "rvs", "trailers", "boats"}
+    if listing.is_vehicle and _prelim_category not in _SPECIFIC_VEHICLE_CATS:
+        _prelim_category = "vehicles"
+
+    _security_task = asyncio.create_task(
+        asyncio.wait_for(
+            score_security(
+                listing          = listing,
+                category         = _prelim_category,
+                market_value     = prelim_market,
+                normalized_title = product_info.display_name,
+            ),
+            timeout=10.0,
+        )
+    )
+
     # If extraction produced a meaningfully better query, refine eBay now.
     # "Meaningfully better" = not just whitespace/case difference.
     # eBay has its own cache so if the same query was recently used, this is instant.
@@ -980,32 +1006,12 @@ async def score_listing(listing: ListingRequest, request: Request):
 
     all_image_urls_sync = listing.image_urls or []
 
-    # ── Step 3 + 4b: Deal scoring AND security scoring run concurrently ─────────
-    # WHY: security scoring is an independent Haiku call (~2s) that only needs
-    # the listing + market_value — it doesn't depend on the deal score.
-    # Launching it as a task at the same time as score_deal() (which includes
-    # Claude vision at ~8-10s) means it finishes while vision is still running,
-    # cutting ~2s from the total wall-clock time.
-    # We use keyword-based category for security (fast, available now).
-    # The final category from Claude may differ slightly but security accuracy
-    # is not meaningfully affected by general vs specific category.
-    from scoring.affiliate_router import detect_category, CATEGORY_PROGRAMS
-    _prelim_category = detect_category(product_info)
-    _SPECIFIC_VEHICLE_CATS = {"cars", "trucks", "rvs", "trailers", "boats"}
-    if listing.is_vehicle and _prelim_category not in _SPECIFIC_VEHICLE_CATS:
-        _prelim_category = "vehicles"
-
-    _security_task = asyncio.create_task(
-        asyncio.wait_for(
-            score_security(
-                listing          = listing,
-                category         = _prelim_category,
-                market_value     = market_value,
-                normalized_title = product_info.display_name,
-            ),
-            timeout=10.0,
-        )
-    )
+    # ── Step 3 + 4b: Deal scoring (security task already launched above
+    # right after the gather unpack, Task #74). The await happens after the
+    # deal scorer finishes so we still get to surface security findings, but
+    # the task started ~1.5-3s earlier so it's almost certainly done by then.
+    # We re-import CATEGORY_PROGRAMS here because downstream code uses it.
+    from scoring.affiliate_router import CATEGORY_PROGRAMS  # noqa: F401  (used later in this fn)
 
     try:
         effective_photo_count = max(listing.photo_count or 0, len(listing.image_urls or []))

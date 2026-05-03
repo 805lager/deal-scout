@@ -173,6 +173,49 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 Current: **v0.45.0** (extension) / **v0.45.0** (API — read from `artifacts/deal-scout-api/VERSION`)
 
+### v0.46.2 Score speedup pass 1 (API only — Task #74)
+Five low-risk perf wins on `/score` and `/score-stream` with no behavior
+change. Extension manifest stays at v0.46.1.
+
+1. **Anthropic prompt caching on every system block.** All eight Haiku
+   call sites now pass `system=` as a list of content blocks with
+   `cache_control: {"type":"ephemeral"}` so the static prefix can be
+   cached server-side: `deal_scorer.score_deal`,
+   `product_evaluator.evaluate_product`, `security_scorer.run_layer2`,
+   `ebay_pricer._llm_verify_comps` (CompVerifier),
+   `ebay_pricer._llm_sanity_check` (SanityCheck),
+   `product_extractor.extract_product`,
+   `listing_extractor.extract_listing_from_text`,
+   `listing_extractor.extract_listing_and_product`.
+2. **Vision policy lifted into a cached system block.** The static portion
+   of the per-call vision instruction in `deal_scorer.score_deal` (~25
+   lines about primary-subject focus, damage scanning, no-fabrication
+   rule) now lives in `_VISION_POLICY_TEXT` and is sent as a second
+   cached `system` block whenever images are present. Only the dynamic
+   preface (photo counts, listing title) stays in the user message, so
+   prompt caching covers the constant policy.
+3. **Per-image fetch timeout in `_fetch_multiple_images`.** Each image
+   fetch is now wrapped in `asyncio.wait_for(_fetch_image_base64, 2.5s)`
+   so a single slow CDN response can't drag the whole vision call past
+   its budget. Drops are logged at info level. Image cap stays at 5 per
+   listing per user request.
+4. **Security scoring launched earlier in `/score`.** The
+   `score_security` task now starts immediately after the step1+2
+   `gather` unpack — i.e. in parallel with the eBay refinement step
+   AND the deal scorer (vision) call — instead of after refinement.
+   Uses `prelim_market` for context (the security verdict isn't
+   sensitive to refined-vs-prelim market data). Saves ~1.5–3s on the
+   common refinement path.
+5. **Tighter `max_tokens` on Layer-2 security.** `security_scorer`
+   dropped from 400→300. **Reverted product_evaluator 900→600** —
+   smoke test showed the v0.46.0 reputation v2 schema (category_leaders,
+   same_budget_alternatives, brand_rank) needed the full 900 to avoid
+   JSON truncation. Held at 900; perf win on that call comes from the
+   cached system block alone.
+
+Smoke tests against two synthetic listings (Sony WH-1000XM4, Bose QC45)
+return 200 OK with full security + reputation + affiliate payloads.
+
 ### v0.46.0 Reputation + Negotiation v2 (Option B)
 **Backend (`artifacts/deal-scout-api/`):**
 - `product_evaluator.py` — extended Claude prompt with `brand_rank_in_category`,

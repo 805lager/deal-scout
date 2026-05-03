@@ -750,12 +750,24 @@ async def _fetch_multiple_images(image_urls: list[str], max_images: int = 3) -> 
     """
     Fetch up to max_images concurrently. Returns list of (base64_data, media_type) tuples.
     Skips failed fetches gracefully.
+
+    Task #74 perf: each individual fetch is wrapped in `asyncio.wait_for(..., 2.5s)`
+    so a single slow CDN response can't drag the whole vision call past its
+    overall budget. Drops are logged at info level.
     """
     if not image_urls:
         return []
 
     urls_to_fetch = image_urls[:max_images]
-    tasks = [_fetch_image_base64(url) for url in urls_to_fetch]
+
+    async def _bounded(url: str):
+        try:
+            return await asyncio.wait_for(_fetch_image_base64(url), timeout=2.5)
+        except asyncio.TimeoutError:
+            log.info(f"[Vision] Image fetch timed out (>2.5s), dropping: {url[:80]}")
+            return None
+
+    tasks = [_bounded(url) for url in urls_to_fetch]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     fetched = []
@@ -765,6 +777,38 @@ async def _fetch_multiple_images(image_urls: list[str], max_images: int = 3) -> 
 
     log.info(f"[Vision] Fetched {len(fetched)}/{len(urls_to_fetch)} images for multi-image analysis")
     return fetched
+
+
+# Task #74 — Static vision-analysis policy. Lives outside the per-call prompt
+# so it can ride the prompt cache as a second `system` block alongside
+# `_SAFE_SYSTEM_MSG` when images are present. The per-call preface (with
+# num_images and the listing title) stays in the user message because it is
+# inherently dynamic and would defeat caching if interpolated here.
+_VISION_POLICY_TEXT = (
+    "VISION ANALYSIS POLICY (applies whenever the user message includes "
+    "image content):\n"
+    "- Focus ONLY on the PRIMARY SUBJECT of the photos (the item being "
+    "sold). Background objects, room decor, and other items visible in the "
+    "environment are INCIDENTAL — they are NOT the listing item and should "
+    "NOT affect your analysis. If you see multiple objects, the item "
+    "matching the listing title is the one being sold.\n"
+    "- Reference what you ACTUALLY SEE — do NOT invent photo counts and do "
+    "NOT speculate about photos you have not been shown.\n"
+    "- Analyze the primary item across ALL provided photos:\n"
+    "  • Is the visible condition consistent with the seller's claimed "
+    "condition?\n"
+    "  • Look CAREFULLY at EVERY photo for: scratches, scuffs, dents, "
+    "tears, stains, cracks, peeling, discoloration, rust, missing parts, "
+    "broken components. Even minor damage matters — report it.\n"
+    "  • Are any included accessories visible?\n"
+    "  • Do later photos reveal issues not visible in earlier ones? "
+    "Examine each photo independently.\n"
+    "  • If you see damage in ANY photo, you MUST mention it in "
+    "condition_notes and add a red flag. Do NOT say 'no visible damage' "
+    "if ANY photo shows wear, scratches, or defects.\n"
+    "- In your verdict and condition_notes, describe what you ACTUALLY "
+    "observed — never fabricate."
+)
 
 
 def _market_fallback_score(listing: dict, market_value: dict, image_analyzed: bool = False) -> DealScore:
@@ -1162,32 +1206,19 @@ async def score_deal(
         # cannot pose as a system directive. Tag matches the one used inside
         # the wrapped block lower in the prompt for consistency.
         safe_vision_title = _wrap_untrusted("listing_title", str(listing.get('title', 'unknown item')))
+        # Task #74: most of the vision instruction is now in `_VISION_POLICY_TEXT`
+        # which is sent as a cached `system` block. Only the per-call dynamic
+        # preface (photo counts + listing title) lives here in the user message.
         vision_instruction = (
             f"You are looking at EXACTLY {num_images} photo(s) of a listing titled (untrusted seller text): {safe_vision_title}\n"
-            f"You MUST reference what you ACTUALLY SEE in these {num_images} photo(s). "
-            f"Do NOT invent photo counts — there are exactly {num_images}.\n\n"
+            f"There are exactly {num_images} photo(s). Apply the VISION ANALYSIS POLICY from the system message.\n"
         )
         if photo_count > num_images:
             vision_instruction += (
                 f"NOTE: The listing has {photo_count} total photos but you are analyzing {num_images}. "
-                "Do NOT flag limited photo quantity as a red flag. Do NOT speculate about the content of photos you haven't seen.\n\n"
+                "Do NOT flag limited photo quantity as a red flag. Do NOT speculate about the content of photos you haven't seen.\n"
             )
-        vision_instruction += (
-            "IMPORTANT: Focus ONLY on the PRIMARY SUBJECT of these photos (the item being sold). "
-            "Background objects, room decor, and other items visible in the environment are "
-            "INCIDENTAL — they are NOT the listing item and should NOT affect your analysis. "
-            "If you see multiple objects, the item matching the listing title is the one being sold.\n\n"
-            f"Analyze the primary item across ALL {num_images} provided photo(s):\n"
-            "- Is the visible condition consistent with the seller's claimed condition?\n"
-            "- Look CAREFULLY at EVERY photo for: scratches, scuffs, dents, tears, stains, "
-            "cracks, peeling, discoloration, rust, missing parts, broken components. "
-            "Even minor damage matters — report it.\n"
-            "- Are any included accessories visible?\n"
-            "- Do later photos reveal issues not visible in earlier ones? Examine each photo independently.\n"
-            "- If you see damage in ANY photo, you MUST mention it in condition_notes and add a red flag. "
-            "Do NOT say 'no visible damage' if ANY photo shows wear, scratches, or defects.\n"
-            "In your verdict and condition_notes, describe what you ACTUALLY observed — never fabricate.\n\n"
-        )
+        vision_instruction += "\n"
 
         message_content.append({
             "type": "text",
@@ -1198,13 +1229,25 @@ async def score_deal(
         message_content = prompt
         log.info("Sending listing to Claude (text-only)...")
 
+    # Task #74 — pass `system` as cached content blocks so Anthropic prompt
+    # caching can short-circuit the static prefix on subsequent calls. When
+    # vision is in play we attach the static vision policy as a second cached
+    # block; the per-call dynamic preface remains in the user message.
+    _system_blocks = [
+        {"type": "text", "text": _SAFE_SYSTEM_MSG, "cache_control": {"type": "ephemeral"}}
+    ]
+    if image_analyzed:
+        _system_blocks.append(
+            {"type": "text", "text": _VISION_POLICY_TEXT, "cache_control": {"type": "ephemeral"}}
+        )
+
     try:
         from scoring import claude_call_with_retry
         response = await claude_call_with_retry(
             lambda: _get_scoring_client().messages.create(
                 model="claude-haiku-4-5",
                 max_tokens=1024,
-                system=_SAFE_SYSTEM_MSG,
+                system=_system_blocks,
                 messages=[{"role": "user", "content": message_content}]
             ),
             label="DealScorer",
