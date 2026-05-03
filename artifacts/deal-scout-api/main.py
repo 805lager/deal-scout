@@ -1717,6 +1717,54 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
 
             log.info(f"[Stream] Scoring '{listing.title}' @ ${listing.price}")
 
+            # ── Task #76 perf: launch security scoring NOW (before the eBay
+            # call) so it overlaps with eBay pricing + product eval + deal
+            # scoring instead of just deal scoring. Mirrors Task #74's win #4
+            # in /score. Security only needs the listing context (seller trust,
+            # red flags, photo coverage, etc.); passing market_value=None is
+            # fine — security_scorer handles a missing market_value gracefully
+            # (Layer 1 simply skips the price-anomaly check) and the is_auction
+            # flag below already protects against false low-price flags on
+            # auctions where listing.price gets rewritten later. Estimated
+            # 1-2s saving per stream score on the common path.
+            #
+            # Surface raw_text on the listing object first so the security
+            # scorer's Layer 2 prompt can quote item specifics directly and
+            # stop hallucinating "no specs / no return policy" when the page
+            # actually contains them.
+            try:
+                setattr(listing, "raw_text", raw.raw_text)
+            except Exception:
+                pass
+
+            _prelim_category = detect_category(product_info)
+            _SPECIFIC_VEHICLE_CATS_S = {"cars", "trucks", "rvs", "trailers", "boats"}
+            if listing.is_vehicle and _prelim_category not in _SPECIFIC_VEHICLE_CATS_S:
+                _prelim_category = "vehicles"
+
+            # Surface auction current_bid on the listing object so the security
+            # scorer's Layer 2 prompt can show "Current bid: $X (auction; ~$Y typical)"
+            # instead of the override price, which Claude would otherwise read as
+            # "$344 vs $800-1200 retail = severe price anomaly".
+            if _auction_only_mode and _current_bid > 0:
+                try:
+                    setattr(listing, "auction_current_bid", float(_current_bid))
+                except Exception:
+                    pass
+
+            _security_task = asyncio.create_task(
+                asyncio.wait_for(
+                    score_security(
+                        listing          = listing,
+                        category         = _prelim_category,
+                        market_value     = None,
+                        normalized_title = product_info.display_name,
+                        is_auction       = _auction_only_mode,
+                    ),
+                    timeout=10.0,
+                )
+            )
+
             # ── Step 2: eBay market value + product eval (concurrent) ─────────
             # product_info was already produced by the merged extract above, so
             # we don't run a preliminary-then-refined pair like /score does. The
@@ -1749,6 +1797,11 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
             )
 
             if isinstance(market_value, Exception):
+                # Task #76 — security task was launched earlier (before the
+                # eBay gather), so we must clean it up on this error path to
+                # avoid an orphan in-flight task and a "task exception was
+                # never retrieved" warning.
+                _security_task.cancel()
                 yield _sse({"type": "error",
                             "message": f"Market value lookup failed: {market_value}"})
                 return
@@ -1865,43 +1918,6 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                 "raw_text":       raw.raw_text,
             }
             all_image_urls = listing.image_urls or []
-
-            # Also surface raw_text on the listing object so the security
-            # scorer's Layer 2 prompt can quote item specifics directly and
-            # stop hallucinating "no specs / no return policy" when the page
-            # actually contains them.
-            try:
-                setattr(listing, "raw_text", raw.raw_text)
-            except Exception:
-                pass
-
-            _prelim_category = detect_category(product_info)
-            _SPECIFIC_VEHICLE_CATS_S = {"cars", "trucks", "rvs", "trailers", "boats"}
-            if listing.is_vehicle and _prelim_category not in _SPECIFIC_VEHICLE_CATS_S:
-                _prelim_category = "vehicles"
-
-            # Surface auction current_bid on the listing object so the security
-            # scorer's Layer 2 prompt can show "Current bid: $X (auction; ~$Y typical)"
-            # instead of the override price, which Claude would otherwise read as
-            # "$344 vs $800-1200 retail = severe price anomaly".
-            if _auction_only_mode and _current_bid > 0:
-                try:
-                    setattr(listing, "auction_current_bid", float(_current_bid))
-                except Exception:
-                    pass
-
-            _security_task = asyncio.create_task(
-                asyncio.wait_for(
-                    score_security(
-                        listing          = listing,
-                        category         = _prelim_category,
-                        market_value     = market_value,
-                        normalized_title = product_info.display_name,
-                        is_auction       = _auction_only_mode,
-                    ),
-                    timeout=10.0,
-                )
-            )
 
             try:
                 effective_photo_count = max(listing.photo_count or 0, len(listing.image_urls or []))
