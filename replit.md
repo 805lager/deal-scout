@@ -58,6 +58,99 @@
 Pending hardening: per-install token system (replacing static `DS_API_KEY`),
 log scrubbing. Tracked in `.local/tasks/extension-auth-lockdown.md`.
 
+## Cybersecurity-first principles
+
+Deal Scout handles untrusted listing data, an admin-token-gated dashboard,
+outbound scraping of multiple third-party sites, an Anthropic API key, an
+eBay app key, a Discord webhook, a GitHub token, and a browser extension
+that runs on Facebook, eBay, Craigslist, and OfferUp. Every change must
+satisfy these standing rules — they are not optional and not per-task.
+
+1. **Server-built strings for trust-affecting copy.** Disclaimers,
+   confidence labels, security flags, recall notices, walk-away advice,
+   pricing-source caveats, and any "we don't have data on X" message
+   are built from Python templates referencing only structured numeric
+   or enum fields. The LLM never authors safety-critical copy. A
+   malicious listing must not be able to strip, invert, or fake any of
+   these strings.
+2. **Untrusted input wrapping.** All seller-supplied text passed to
+   Claude (title, description, condition, location, price text, seller
+   name, seller-joined, seller tier, page text, product name, product
+   category, product reputation) MUST go through
+   `scoring/_prompt_safety.py::sanitize_for_prompt`, be wrapped in the
+   tagged envelope (`<listing_title>` etc.), and the call MUST attach
+   `UNTRUSTED_SYSTEM_MESSAGE` as `system=`. Any new field that
+   interpolates user text follows the same three-layer pattern.
+3. **Admin gating is sacred.** Every `/admin/*` route stays behind
+   `ADMIN_TOKEN` via the `X-Admin-Token` header. Never weaken the gate
+   "just for a test". Never accept the token via URL params (referrers
+   and access logs leak them). Admin endpoints fail-closed (503) when
+   `ADMIN_TOKEN` is unset.
+4. **No PII in telemetry, INFO logs, or extension-facing errors.** No
+   listing URLs, prices, install_ids, seller names, or listing titles
+   in `claude_cache` aggregates, market signal exports, audit
+   telemetry, or any error string returned to the extension. The
+   `market_signals` and `claude_usage` payloads are anonymized
+   aggregates only.
+5. **SSRF guards on every outbound fetcher.** Image fetch, DDG, Google
+   Shopping, Reddit, Amazon, eBay, Craigslist RSS, and any future
+   scraper must use the existing `_is_safe_image_url`-style guard (or
+   equivalent) and a hard timeout. New fetchers ship with the guard,
+   not as a follow-up.
+6. **Secrets are never logged, echoed, written to disk, or returned in
+   responses.** `ANTHROPIC_API_KEY`, `EBAY_APP_ID`, `EBAY_CERT_ID`,
+   `ADMIN_TOKEN`, `DS_API_KEY`, `DISCORD_WEBHOOK_URL`, `GITHUB_TOKEN`,
+   and `MARKET_DATA_API_KEY` never appear in any log line at any
+   verbosity, in any error response body or header, or in chat output.
+   When debugging proxy issues, print only `usage` from responses,
+   never headers or bodies.
+7. **Extension uses `textContent`, never `innerHTML`.** All
+   user-controlled and LLM-controlled strings rendered in the four
+   content scripts and shared `lib/*.js` modules use `textContent`.
+   Any HTML rendering requires a vetted sanitizer and explicit
+   review.
+8. **Mutating endpoints are key-gated AND rate-limited.** Any new
+   `POST` that changes server-side state (the `/affiliate/flag`
+   pattern) requires a key gate (`X-DS-Key` or `X-Admin-Token`) plus
+   per-install rate limiting. Anonymous mutating endpoints are
+   prohibited.
+9. **Server-side caps on LLM-controlled fields.** `ai_confidence`,
+   deal `score`, `trust_severity`, and any other field that drives
+   user-visible safety copy is force-clamped server-side after parsing
+   the model output. The model can never bump itself past the cap a
+   prompt-injected listing tries to extract.
+
+## Cybersecurity checklist (every new task plan)
+
+Every new plan file under `.local/tasks/*.md` MUST include a
+`## Cybersecurity notes` section that explicitly answers each of the
+following, even if the answer is "N/A — this change does not touch X":
+
+1. Does this change introduce new untrusted input to an LLM? If yes,
+   is it wrapped with `UNTRUSTED_SYSTEM_MESSAGE` and the
+   `<tagged_envelope>` pattern, and does it pass through
+   `sanitize_for_prompt`?
+2. Does this change introduce a new outbound fetch? If yes, what is
+   its SSRF guard, what is its hard timeout, and does it reuse an
+   existing fetcher pattern?
+3. Does this change introduce a new endpoint or modify an existing
+   one's gate? If yes, what authenticates it (admin token, DS key,
+   install_id) and what rate-limits it?
+4. Does this change change what is logged at INFO level or returned
+   in any HTTP response body or header? If yes, has it been audited
+   for PII (urls, prices, install_id, seller names, listing titles)
+   and secrets?
+5. Does this change render user-controlled or LLM-controlled text in
+   the extension? If yes, is it `textContent` only, and is the source
+   string built server-side from structured fields?
+6. Does this change bypass or relax any existing server-side cap
+   (confidence cap, score cap, trust-signal floor, comp-count
+   threshold, payload `max_length`)? If yes, why is the relaxation
+   safe?
+
+A plan file that does not answer all six questions is not ready to be
+proposed.
+
 ## Overview
 
 FastAPI backend for the Deal Scout Chrome extension. Scores deals on Facebook Marketplace, Craigslist, and Amazon using Claude AI + eBay pricing data. Migrated from Railway. Zero external AI API keys needed — uses Replit's built-in Claude AI proxy.
