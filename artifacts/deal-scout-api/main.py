@@ -893,118 +893,133 @@ async def score_listing(listing: ListingRequest, request: Request):
             timeout=10.0,
         )
     )
+    # ── Task #77: drain orphaned security task on early errors ──
+    try:
 
-    # If extraction produced a meaningfully better query, refine eBay now.
-    # "Meaningfully better" = not just whitespace/case difference.
-    # eBay has its own cache so if the same query was recently used, this is instant.
-    extracted_q = (product_info.search_query or "").strip().lower()
-    raw_q       = raw_title_query.lower()
-    # Skip refinement if eBay is rate-limited — a refined query returns the same
-    # mock data, so the extra round-trip wastes 1-2s with zero accuracy gain.
-    _ebay_rate_limited = getattr(prelim_market, "data_source", "") == "ebay_mock"
-    _raw_words = set(raw_q.split())
-    _ext_words = set(extracted_q.split())
-    _word_overlap = len(_raw_words & _ext_words) / max(len(_raw_words | _ext_words), 1)
-    _queries_similar = _word_overlap > 0.8
+        # If extraction produced a meaningfully better query, refine eBay now.
+        # "Meaningfully better" = not just whitespace/case difference.
+        # eBay has its own cache so if the same query was recently used, this is instant.
+        extracted_q = (product_info.search_query or "").strip().lower()
+        raw_q       = raw_title_query.lower()
+        # Skip refinement if eBay is rate-limited — a refined query returns the same
+        # mock data, so the extra round-trip wastes 1-2s with zero accuracy gain.
+        _ebay_rate_limited = getattr(prelim_market, "data_source", "") == "ebay_mock"
+        _raw_words = set(raw_q.split())
+        _ext_words = set(extracted_q.split())
+        _word_overlap = len(_raw_words & _ext_words) / max(len(_raw_words | _ext_words), 1)
+        _queries_similar = _word_overlap > 0.8
 
-    # v0.43.4 — short-circuit refinement when the preliminary pass already
-    # returned plenty of real sold comps AND the refined query is recognizably
-    # related to the preliminary one (≥50% token overlap). This covers the
-    # common case where the seller-written title was already specific enough
-    # (e.g. "Orion XT8 Telescope") and Claude's tweak ("Orion XT8 Dobsonian
-    # telescope") would just return the same comps with one less filler word.
-    # Saves ~1.5-2.5s per score on average without dropping any accuracy —
-    # if eBay already gave us 5+ sold comps, a different word-permutation of
-    # the same query won't beat that.
-    _prelim_sold_count = int(getattr(prelim_market, "sold_count", 0) or 0)
-    _prelim_strong = _prelim_sold_count >= 5 and _word_overlap >= 0.5
+        # v0.43.4 — short-circuit refinement when the preliminary pass already
+        # returned plenty of real sold comps AND the refined query is recognizably
+        # related to the preliminary one (≥50% token overlap). This covers the
+        # common case where the seller-written title was already specific enough
+        # (e.g. "Orion XT8 Telescope") and Claude's tweak ("Orion XT8 Dobsonian
+        # telescope") would just return the same comps with one less filler word.
+        # Saves ~1.5-2.5s per score on average without dropping any accuracy —
+        # if eBay already gave us 5+ sold comps, a different word-permutation of
+        # the same query won't beat that.
+        _prelim_sold_count = int(getattr(prelim_market, "sold_count", 0) or 0)
+        _prelim_strong = _prelim_sold_count >= 5 and _word_overlap >= 0.5
 
-    need_refine = (extracted_q and extracted_q != raw_q and len(extracted_q) > 4
-                   and not _ebay_rate_limited and not _queries_similar
-                   and not _prelim_strong)
-    if _ebay_rate_limited and extracted_q != raw_q:
-        log.info(f"[Speed] Skipping eBay refinement — rate-limited, mock data unchanged")
-    elif _queries_similar and extracted_q != raw_q:
-        log.info(f"[Speed] Skipping market refinement — queries {_word_overlap:.0%} similar")
-    elif _prelim_strong and extracted_q != raw_q:
-        log.info(
-            f"[Speed] Skipping market refinement — preliminary already strong "
-            f"(sold_count={_prelim_sold_count}, overlap={_word_overlap:.0%})"
-        )
+        need_refine = (extracted_q and extracted_q != raw_q and len(extracted_q) > 4
+                       and not _ebay_rate_limited and not _queries_similar
+                       and not _prelim_strong)
+        if _ebay_rate_limited and extracted_q != raw_q:
+            log.info(f"[Speed] Skipping eBay refinement — rate-limited, mock data unchanged")
+        elif _queries_similar and extracted_q != raw_q:
+            log.info(f"[Speed] Skipping market refinement — queries {_word_overlap:.0%} similar")
+        elif _prelim_strong and extracted_q != raw_q:
+            log.info(
+                f"[Speed] Skipping market refinement — preliminary already strong "
+                f"(sold_count={_prelim_sold_count}, overlap={_word_overlap:.0%})"
+            )
 
-    _refine_coro = None
-    _eval_coro = None
-    if need_refine:
-        log.info(f"[Speed] Refining eBay: '{raw_title_query}' → '{product_info.search_query}'")
-        _refine_coro = get_market_value(
-            listing_title     = product_info.search_query,
-            listing_condition = listing.condition,
-            is_vehicle        = listing.is_vehicle,
-            listing_price     = listing.price,
-            description       = (listing.description or "")[:2000],
-            category          = product_info.category,
-            listing_location  = listing.location or "",
-        )
-    if product_info.brand or product_info.display_name:
-        _eval_coro = evaluate_product(
-            brand        = product_info.brand,
-            model        = product_info.model,
-            category     = product_info.category,
-            display_name = product_info.display_name,
-        )
+        _refine_coro = None
+        _eval_coro = None
+        if need_refine:
+            log.info(f"[Speed] Refining eBay: '{raw_title_query}' → '{product_info.search_query}'")
+            _refine_coro = get_market_value(
+                listing_title     = product_info.search_query,
+                listing_condition = listing.condition,
+                is_vehicle        = listing.is_vehicle,
+                listing_price     = listing.price,
+                description       = (listing.description or "")[:2000],
+                category          = product_info.category,
+                listing_location  = listing.location or "",
+            )
+        if product_info.brand or product_info.display_name:
+            _eval_coro = evaluate_product(
+                brand        = product_info.brand,
+                model        = product_info.model,
+                category     = product_info.category,
+                display_name = product_info.display_name,
+            )
 
-    if _refine_coro and _eval_coro:
-        _refined_mv, _refined_eval = await asyncio.gather(
-            _refine_coro, _eval_coro, return_exceptions=True,
-        )
-        if not isinstance(_refined_mv, Exception):
-            market_value = _refined_mv
+        if _refine_coro and _eval_coro:
+            _refined_mv, _refined_eval = await asyncio.gather(
+                _refine_coro, _eval_coro, return_exceptions=True,
+            )
+            if not isinstance(_refined_mv, Exception):
+                market_value = _refined_mv
+            else:
+                log.error(f"Refinement step failed: {_refined_mv}")
+                market_value = prelim_market
+            if not isinstance(_refined_eval, Exception):
+                product_eval = _refined_eval
+        elif _refine_coro:
+            try:
+                market_value = await _refine_coro
+            except Exception as e:
+                log.error(f"Refinement step failed: {e}")
+                market_value = prelim_market
+        elif _eval_coro:
+            log.info(f"[Speed] Using preliminary eBay result for '{raw_title_query}'")
+            market_value = prelim_market
+            try:
+                product_eval = await _eval_coro
+            except Exception as _eval_err:
+                log.warning(f"Product eval refinement failed: {_eval_err}")
         else:
-            log.error(f"Refinement step failed: {_refined_mv}")
+            log.info(f"[Speed] Using preliminary eBay result for '{raw_title_query}'")
             market_value = prelim_market
-        if not isinstance(_refined_eval, Exception):
-            product_eval = _refined_eval
-    elif _refine_coro:
+
+        # ── Step 3: Claude deal scoring ──────────────────────────────────────────
+        from dataclasses import asdict as dc_asdict
+        market_value_dict = dc_asdict(market_value)
+
+        listing_dict = {
+            "title":          listing.title,
+            "price":          listing.price,
+            "raw_price_text": listing.raw_price_text or f"${listing.price:.0f}",
+            "description":    listing.description,
+            "location":       listing.location,
+            "condition":      listing.condition,
+            "seller_name":    listing.seller_name,
+            "listing_url":    listing.listing_url,
+            "is_multi_item":  listing.is_multi_item,
+            "is_vehicle":     listing.is_vehicle,
+            "vehicle_details": listing.vehicle_details or {},
+            "seller_trust":   listing.seller_trust,
+            "original_price": listing.original_price,
+            "shipping_cost":  listing.shipping_cost,
+            "image_urls":     listing.image_urls or [],
+            "photo_count":    listing.photo_count,
+        }
+
+        all_image_urls_sync = listing.image_urls or []
+    except BaseException:
+        # Cancel and drain the orphaned security task so uvicorn does not
+        # log 'Task was destroyed but it is pending!' warnings. The
+        # try/except around score_deal below has its own cancel sites for
+        # the deal-scorer error paths; this guard covers earlier failures
+        # (dataclass conversion, dict-build, refinement gather, etc.).
+        if not _security_task.done():
+            _security_task.cancel()
         try:
-            market_value = await _refine_coro
-        except Exception as e:
-            log.error(f"Refinement step failed: {e}")
-            market_value = prelim_market
-    elif _eval_coro:
-        log.info(f"[Speed] Using preliminary eBay result for '{raw_title_query}'")
-        market_value = prelim_market
-        try:
-            product_eval = await _eval_coro
-        except Exception as _eval_err:
-            log.warning(f"Product eval refinement failed: {_eval_err}")
-    else:
-        log.info(f"[Speed] Using preliminary eBay result for '{raw_title_query}'")
-        market_value = prelim_market
-
-    # ── Step 3: Claude deal scoring ──────────────────────────────────────────
-    from dataclasses import asdict as dc_asdict
-    market_value_dict = dc_asdict(market_value)
-
-    listing_dict = {
-        "title":          listing.title,
-        "price":          listing.price,
-        "raw_price_text": listing.raw_price_text or f"${listing.price:.0f}",
-        "description":    listing.description,
-        "location":       listing.location,
-        "condition":      listing.condition,
-        "seller_name":    listing.seller_name,
-        "listing_url":    listing.listing_url,
-        "is_multi_item":  listing.is_multi_item,
-        "is_vehicle":     listing.is_vehicle,
-        "vehicle_details": listing.vehicle_details or {},
-        "seller_trust":   listing.seller_trust,
-        "original_price": listing.original_price,
-        "shipping_cost":  listing.shipping_cost,
-        "image_urls":     listing.image_urls or [],
-        "photo_count":    listing.photo_count,
-    }
-
-    all_image_urls_sync = listing.image_urls or []
+            await _security_task
+        except BaseException:
+            pass
+        raise
 
     # ── Step 3 + 4b: Deal scoring (security task already launched above
     # right after the gather unpack, Task #74). The await happens after the
@@ -1020,17 +1035,30 @@ async def score_listing(listing: ListingRequest, request: Request):
             photo_count        = effective_photo_count,
         )
     except RuntimeError as e:
+        # Task #77: drain so uvicorn doesn't warn 'Task was destroyed but it is pending!'
         _security_task.cancel()
+        try:
+            await _security_task
+        except BaseException:
+            pass
         real_error = str(e)
         log.error(f"Scoring failed: {real_error}")
         raise HTTPException(status_code=500, detail=real_error)
     except Exception as e:
         _security_task.cancel()
+        try:
+            await _security_task
+        except BaseException:
+            pass
         log.error(f"Unexpected scoring exception: {type(e).__name__}: {e}")
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
     if not deal_score:
         _security_task.cancel()
+        try:
+            await _security_task
+        except BaseException:
+            pass
         raise HTTPException(status_code=500, detail="Scorer returned no result — check API terminal")
 
     log.info(f"Score: {deal_score.score}/10 — {deal_score.verdict}")
