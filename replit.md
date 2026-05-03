@@ -311,15 +311,40 @@ VERSION 0.46.2 → 0.46.3, manifest 0.46.1 → 0.46.3.
 Five low-risk perf wins on `/score` and `/score-stream` with no behavior
 change. Extension manifest stays at v0.46.1.
 
-**Cache validation — FAILED 2026-05-03 (Task #79).** Sample: 32 score_log
-rows / 253 Claude calls over 24h. Result: every label 0% hit rate AND
-0 cache_creation_input_tokens — i.e. the Replit Modelfarm proxy
-(`http://localhost:1106/modelfarm/anthropic/v1/messages`) silently
-strips the `cache_control` field before forwarding to Anthropic, so
-neither cache reads nor cache writes ever happen. The #74 system-block
-caching is a no-op end-to-end. Follow-up debug task opened to verify
-proxy behaviour with a one-line repro and decide whether to wait for
-proxy support or bypass to the official Anthropic endpoint.
+**Cache validation — FAILED 2026-05-03 (Task #79).** Sample: **55
+score_log rows / 404 Claude calls over a 24h window.** Result: every
+label is 0% hit rate AND 0 cache_creation_input_tokens.
+
+```
+label              calls  hits  hit_rate%  token_read%  input_tok  cache_read  cache_creation
+DealScorer            55     0       0.0         0.0     251,411           0               0
+ProductExtractor      54     0       0.0         0.0      65,086           0               0
+MergedExtractor        1     0       0.0         0.0       1,676           0               0
+SecurityScorer        53     0       0.0         0.0      61,768           0               0
+ProductEvaluator      76     0       0.0         0.0      67,103           0               0
+CompVerifier          84     0       0.0         0.0      48,553           0               0
+SanityCheck           48     0       0.0         0.0      20,423           0               0
+ClaudePricer          33     0       0.0         0.0      24,280           0               0
+TOTALS               404     0       0.0         0.0     540,300           0               0
+```
+
+**Suspected cause** (not yet definitively confirmed end-to-end against
+the upstream Anthropic endpoint): the Replit Modelfarm proxy at
+`http://localhost:1106/modelfarm/anthropic/v1/messages` silently drops
+the `cache_control` field before forwarding. The smoking gun is that
+**both** `cache_read_input_tokens` and `cache_creation_input_tokens`
+are zero on every call — including the very first call against any
+given system block, which would otherwise have populated
+`cache_creation_input_tokens` if the proxy honored the field.
+
+A two-call usage-only repro against Modelfarm with a >2,500-token
+cached system block confirmed 0/0 on both calls (output captured in
+the follow-up task plan). The #74 system-block caching investment is
+therefore a no-op end-to-end. Follow-up debug task #82 opened to (a)
+mirror the repro against the official Anthropic endpoint to confirm
+the proxy is the layer dropping the field, (b) file with Replit's
+Modelfarm team, and (c) record a disposition (wait / bypass / remove
+the `cache_control` blocks) for user approval.
 
 1. **Anthropic prompt caching on every system block.** All eight Haiku
    call sites now pass `system=` as a list of content blocks with
