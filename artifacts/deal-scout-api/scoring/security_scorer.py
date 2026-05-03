@@ -529,7 +529,7 @@ async def score_security(
     listing,
     category: str,
     market_value,
-    anthropic_client=None,   # Optional — creates its own client from env if not passed
+    anthropic_client=None,   # Optional — falls back to the shared process-wide client (Task #80)
     normalized_title: str = "",  # product_info.display_name — normalized by product_extractor
     # WHY: listing.title is the raw seller text (e.g. "taylor electrostatic guitar").
     # After product_extractor runs, we know the correct name. Passing it here stops

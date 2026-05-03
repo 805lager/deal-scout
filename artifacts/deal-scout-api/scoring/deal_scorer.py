@@ -53,14 +53,11 @@ log = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 
-# Lazy-initialized client — not created until first API call.
-# WHY LAZY (not module-level eager init):
-#   1. Consistent with product_extractor.py and suggestion_engine.py
-#   2. If API key is rotated after server start, next call picks it up from os.getenv
-#   3. Avoids a client object with api_key=None if .env isn't loaded at import time
 # Task #80: delegate to the process-wide shared Anthropic client so every
 # DealScorer call reuses the same TLS connection pool as ProductExtractor,
-# SecurityScorer, etc.
+# SecurityScorer, etc. The shared client is built lazily at first use;
+# api_key / base_url are read once and cached for the life of the process,
+# so rotating those env vars requires a worker restart.
 from scoring._anthropic_client import get_anthropic_client as _get_scoring_client
 
 

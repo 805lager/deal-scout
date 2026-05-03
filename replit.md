@@ -332,9 +332,11 @@ rewrites needed.
 **Wall-clock measurement (5-listing serial /score, A/B):**
 
 A/B was run by spawning a second uvicorn on port 8001 with a temporary
-`DS_DISABLE_CLIENT_POOL=1` flag (added to
-`scoring/_anthropic_client.py`) that forces a fresh
-`anthropic.Anthropic(...)` per call — i.e. the pre-Task-80 behavior.
+`DS_DISABLE_CLIENT_POOL=1` env-var flag (added to
+`scoring/_anthropic_client.py` for the benchmark window only — removed
+in the same task after the numbers below were captured, per code-review
+guidance) that forces a fresh `anthropic.Anthropic(...)` per call —
+i.e. the pre-Task-80 behavior.
 Production uvicorn on port 8000 ran the new pooled path. Same five
 listings (Sony WH-1000XM4, Logitech MX Master 3S, JBL Flip 6,
 Anker Soundcore Liberty 4 NC, Garmin Edge 1040) hit each server
