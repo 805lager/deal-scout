@@ -1,0 +1,421 @@
+// extension/content/lib/repv2.js — v0.46.0 Reputation + Negotiation v2 renderers.
+//
+// Shared between fbm/ebay/craigslist/offerup content scripts so the new UI
+// only lives in one place. Exposes window.DealScoutV2 with these helpers:
+//
+//   renderRecallBanner(r, container)        — sticky red banner when r.recall_flag
+//   renderReputationV2Extra(r, container)   — brand_rank + category leaders +
+//                                             same-budget alternatives, suppressed
+//                                             on low-confidence sources
+//   renderNegotiation(r, container)         — Negotiation v2 (3 variants +
+//                                             leverage + counter + walk_away).
+//                                             Falls back to legacy
+//                                             negotiation_message when r.negotiation
+//                                             is absent so old responses still work.
+//   renderBundleHardened(r, container)      — Always emit a "📦 Bundle of N items"
+//                                             line whenever is_multi_item is true,
+//                                             even if bundle_items=[] (placeholder).
+//   renderAffiliateFlagFooter(r, panel)     — "Report a wrong recommendation"
+//                                             link → POST /affiliate/flag.
+//
+// All output is built with createElement + textContent (or DOMPurify-sanitised
+// innerHTML) so any model-emitted strings stay inert in the page DOM.
+
+(function () {
+  if (window.DealScoutV2) return;
+
+  function escHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function safe(o, path, dflt) {
+    try {
+      const parts = path.split('.');
+      let cur = o;
+      for (const p of parts) { if (cur == null) return dflt; cur = cur[p]; }
+      return cur == null ? dflt : cur;
+    } catch (_e) { return dflt; }
+  }
+
+  // ── Recall banner ─────────────────────────────────────────────────────
+  function renderRecallBanner(r, container) {
+    if (!r || !r.product_evaluation) return;
+    const pe = r.product_evaluation;
+    if (!pe.recall_flag) return;
+    const summary = pe.recall_summary || 'This model has an active recall — verify before purchasing.';
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'margin:8px 12px 0;border:1px solid rgba(239,68,68,0.55);'
+      + 'background:rgba(239,68,68,0.10);border-radius:8px;padding:8px 10px;'
+      + 'display:flex;align-items:flex-start;gap:8px';
+    const icon = document.createElement('div');
+    icon.style.cssText = 'font-size:14px;flex-shrink:0';
+    icon.textContent = '\u26A0\uFE0F';
+    const body = document.createElement('div');
+    body.style.cssText = 'flex:1;min-width:0';
+    const title = document.createElement('div');
+    title.style.cssText = 'font-size:11.5px;font-weight:800;color:#fca5a5';
+    title.textContent = 'Recall flag — check before buying';
+    const text = document.createElement('div');
+    text.style.cssText = 'font-size:11.5px;color:#fecaca;margin-top:2px;line-height:1.4';
+    text.textContent = summary;
+    body.appendChild(title); body.appendChild(text);
+    wrap.appendChild(icon); wrap.appendChild(body);
+    container.appendChild(wrap);
+  }
+
+  // ── Reputation v2 extras ──────────────────────────────────────────────
+  function renderReputationV2Extra(r, container) {
+    const pe = r && r.product_evaluation;
+    if (!pe) return;
+
+    // Brand rank tier line
+    const br = pe.brand_rank_in_category || pe.brand_rank;
+    if (br && (br.tier || br.summary)) {
+      const conf = (br.confidence || 'medium').toLowerCase();
+      if (conf !== 'low') {
+        const row = document.createElement('div');
+        row.style.cssText = 'margin-top:6px;font-size:12px;color:#d1d5db';
+        const tier = (br.tier || '').toUpperCase();
+        const tcolor = tier === 'TOP' ? '#86efac'
+                     : tier === 'STRONG' ? '#93c5fd'
+                     : tier === 'MID' ? '#fde68a'
+                     :                   '#fca5a5';
+        row.innerHTML = '<span style="font-weight:700;color:' + tcolor + '">'
+                      + escHtml(tier || 'rank') + '</span> '
+                      + '<span style="color:#9ca3af">in category</span>'
+                      + (br.summary ? ' — ' + escHtml(br.summary) : '');
+        container.appendChild(row);
+      }
+    }
+
+    // Category leaders
+    const leaders = (pe.category_leaders || []).filter(l => (l.confidence || 'medium').toLowerCase() !== 'low');
+    if (leaders.length) {
+      const hdr = document.createElement('div');
+      hdr.style.cssText = 'margin-top:8px;font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:0.5px;font-weight:700';
+      hdr.textContent = 'Category leaders';
+      container.appendChild(hdr);
+      leaders.slice(0, 3).forEach(l => {
+        const row = document.createElement('div');
+        row.style.cssText = 'font-size:12px;color:#d1d5db;margin-top:3px';
+        const b = document.createElement('span');
+        b.style.cssText = 'font-weight:700;color:#a5b4fc';
+        b.textContent = l.brand || '';
+        row.appendChild(b);
+        if (l.why) row.appendChild(document.createTextNode(' — ' + l.why));
+        container.appendChild(row);
+      });
+    }
+
+    // Same-budget alternatives
+    const alts = (pe.same_budget_alternatives || []).filter(a => (a.confidence || 'medium').toLowerCase() !== 'low');
+    if (alts.length) {
+      const hdr = document.createElement('div');
+      hdr.style.cssText = 'margin-top:8px;font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:0.5px;font-weight:700';
+      hdr.textContent = 'Same-budget alternatives';
+      container.appendChild(hdr);
+      alts.slice(0, 3).forEach(a => {
+        const row = document.createElement('div');
+        row.style.cssText = 'font-size:12px;color:#d1d5db;margin-top:3px';
+        const b = document.createElement('span');
+        b.style.cssText = 'font-weight:700;color:#a5b4fc';
+        b.textContent = a.brand_model || '';
+        row.appendChild(b);
+        if (a.why) row.appendChild(document.createTextNode(' — ' + a.why));
+        container.appendChild(row);
+      });
+    }
+
+    // Low-confidence teaser when everything was suppressed
+    const all = [].concat(pe.category_leaders || [], pe.same_budget_alternatives || []);
+    if (all.length && !leaders.length && !alts.length) {
+      const teaser = document.createElement('div');
+      teaser.style.cssText = 'margin-top:6px;font-size:11px;color:#9ca3af;font-style:italic';
+      teaser.textContent = 'Limited reputation data for this exact model.';
+      container.appendChild(teaser);
+    }
+  }
+
+  // ── Negotiation v2 ────────────────────────────────────────────────────
+  async function _copy(btn, text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      const orig = btn.textContent;
+      btn.textContent = '\u2705 Copied!';
+      setTimeout(() => { btn.textContent = orig; }, 1800);
+    } catch (_e) {
+      btn.textContent = '\u274C Failed';
+      setTimeout(() => { btn.textContent = 'Copy'; }, 1800);
+    }
+  }
+
+  function _legacyNegotiation(r, container) {
+    if (!r || !r.negotiation_message) return;
+    const section = document.createElement('div');
+    section.style.cssText = 'margin:4px 12px 8px';
+    const toggleBtn = document.createElement('button');
+    toggleBtn.style.cssText = 'width:100%;padding:7px 10px;background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.3);border-radius:8px;color:#818cf8;font-size:12px;cursor:pointer;text-align:left';
+    toggleBtn.textContent = '\uD83D\uDCAC Copy negotiation message';
+    section.appendChild(toggleBtn);
+    const msgBox = document.createElement('div');
+    msgBox.style.cssText = 'display:none;margin-top:6px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:10px';
+    const msgText = document.createElement('div');
+    msgText.style.cssText = 'font-size:12px;color:#d1d5db;line-height:1.5;white-space:pre-wrap;margin-bottom:8px';
+    msgText.textContent = r.negotiation_message;
+    msgBox.appendChild(msgText);
+    const copyBtn = document.createElement('button');
+    copyBtn.style.cssText = 'width:100%;padding:6px;background:#6366f1;border:none;border-radius:4px;color:white;font-size:12px;cursor:pointer';
+    copyBtn.textContent = 'Copy to clipboard';
+    copyBtn.addEventListener('click', () => _copy(copyBtn, r.negotiation_message));
+    msgBox.appendChild(copyBtn);
+    section.appendChild(msgBox);
+    toggleBtn.addEventListener('click', () => {
+      msgBox.style.display = msgBox.style.display === 'none' ? 'block' : 'none';
+    });
+    container.appendChild(section);
+  }
+
+  function renderNegotiation(r, container) {
+    const neg = r && r.negotiation;
+    if (!neg || (!neg.variants && !neg.strategy)) {
+      _legacyNegotiation(r, container);
+      return;
+    }
+    const strategy = String(neg.strategy || '').toLowerCase();
+    const ps = '$';
+
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'margin:6px 12px 8px;background:rgba(99,102,241,0.06);border:1px solid rgba(99,102,241,0.25);border-radius:10px;padding:10px 12px';
+
+    const hdr = document.createElement('div');
+    hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:6px';
+    const hLeft = document.createElement('span');
+    hLeft.style.cssText = 'font-size:11px;font-weight:700;color:#9ca3af;letter-spacing:0.5px;text-transform:uppercase';
+    hLeft.textContent = '\uD83D\uDCAC Negotiation';
+    const hRight = document.createElement('span');
+    hRight.style.cssText = 'font-size:10.5px;font-weight:700;color:#a5b4fc;background:rgba(165,180,252,0.10);border-radius:5px;padding:2px 7px';
+    hRight.textContent = strategy.replace(/_/g, ' ') || 'standard';
+    hdr.appendChild(hLeft); hdr.appendChild(hRight);
+    wrap.appendChild(hdr);
+
+    // Score-8+ short-circuit / pay_asking
+    if (strategy === 'pay_asking') {
+      const note = document.createElement('div');
+      note.style.cssText = 'font-size:12px;color:#86efac;font-weight:600';
+      const askPrice = (typeof r.price === 'number' && r.price > 0) ? (' (' + ps + r.price.toFixed(0) + ')') : '';
+      note.textContent = '\u2705 Strong deal — pay asking' + askPrice + ' and act fast.';
+      wrap.appendChild(note);
+    }
+
+    // Variants
+    const variants = neg.variants || {};
+    const order = ['polite', 'direct', 'lowball'];
+    const labels = { polite: 'Polite', direct: 'Direct', lowball: 'Lowball' };
+    const colors = { polite: '#22c55e', direct: '#60a5fa', lowball: '#f59e0b' };
+    order.forEach(k => {
+      const v = variants[k];
+      if (!v || !v.message) return;  // lowball intentionally null when forbidden
+      const card = document.createElement('div');
+      card.style.cssText = 'margin-top:8px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-left:3px solid ' + colors[k] + ';border-radius:8px;padding:8px 10px';
+      const top = document.createElement('div');
+      top.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:5px';
+      const lbl = document.createElement('span');
+      lbl.style.cssText = 'font-size:11px;font-weight:700;color:' + colors[k];
+      const tgt = (typeof v.target_offer === 'number' && v.target_offer > 0) ? (' \u00B7 ' + ps + v.target_offer.toFixed(0)) : '';
+      lbl.textContent = labels[k] + tgt;
+      const copyBtn = document.createElement('button');
+      copyBtn.style.cssText = 'font-size:10.5px;background:rgba(99,102,241,0.18);border:1px solid rgba(99,102,241,0.4);color:#c7d2fe;border-radius:5px;padding:2px 8px;cursor:pointer';
+      copyBtn.textContent = 'Copy';
+      copyBtn.addEventListener('click', e => { e.stopPropagation(); _copy(copyBtn, v.message); });
+      top.appendChild(lbl); top.appendChild(copyBtn);
+      card.appendChild(top);
+      const body = document.createElement('div');
+      body.style.cssText = 'font-size:12px;color:#d1d5db;line-height:1.45;white-space:pre-wrap';
+      body.textContent = v.message;
+      card.appendChild(body);
+      wrap.appendChild(card);
+    });
+
+    // Leverage points
+    const lev = (neg.leverage_points || []).filter(Boolean);
+    if (lev.length) {
+      const hdr2 = document.createElement('div');
+      hdr2.style.cssText = 'margin-top:10px;font-size:10.5px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.5px';
+      hdr2.textContent = 'Leverage points';
+      wrap.appendChild(hdr2);
+      lev.slice(0, 4).forEach(pt => {
+        const li = document.createElement('div');
+        li.style.cssText = 'font-size:11.5px;color:#d1d5db;margin-top:3px;padding-left:10px;position:relative';
+        const dot = document.createElement('span');
+        dot.style.cssText = 'position:absolute;left:0;color:#a5b4fc';
+        dot.textContent = '\u2022';
+        li.appendChild(dot);
+        li.appendChild(document.createTextNode(' ' + String(pt)));
+        wrap.appendChild(li);
+      });
+    }
+
+    // Counter-response (collapsible)
+    const cr = neg.counter_response || {};
+    if (cr.if_seller_says && cr.you_respond) {
+      const det = document.createElement('details');
+      det.style.cssText = 'margin-top:10px;background:rgba(255,255,255,0.03);border:1px dashed rgba(255,255,255,0.12);border-radius:8px;padding:6px 10px';
+      const sum = document.createElement('summary');
+      sum.style.cssText = 'cursor:pointer;font-size:11px;font-weight:700;color:#fde68a';
+      sum.textContent = 'If they counter\u2026';
+      det.appendChild(sum);
+      const sLine = document.createElement('div');
+      sLine.style.cssText = 'font-size:11.5px;color:#9ca3af;margin-top:5px;font-style:italic';
+      sLine.textContent = 'Seller: ' + cr.if_seller_says;
+      const yLine = document.createElement('div');
+      yLine.style.cssText = 'font-size:12px;color:#d1d5db;margin-top:3px;line-height:1.4';
+      yLine.textContent = 'You: ' + cr.you_respond;
+      det.appendChild(sLine); det.appendChild(yLine);
+      wrap.appendChild(det);
+    }
+
+    // Walk-away ceiling
+    if (typeof neg.walk_away === 'number' && neg.walk_away > 0) {
+      const wa = document.createElement('div');
+      wa.style.cssText = 'margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.08);font-size:11.5px;color:#fca5a5;font-weight:700';
+      wa.textContent = '\uD83D\uDED1 Walk-away ceiling: ' + ps + Number(neg.walk_away).toFixed(0);
+      wrap.appendChild(wa);
+    }
+
+    container.appendChild(wrap);
+  }
+
+  // ── Bundle hardened ───────────────────────────────────────────────────
+  function renderBundleHardened(r, container) {
+    if (!r) return;
+    const items = (r.bundle_items || []).filter(Boolean);
+    const isBundle = !!r.is_multi_item || items.length > 0;
+    if (!isBundle) return;
+    const ps = '$';
+    const conf = (r.bundle_confidence || 'unknown').toLowerCase();
+    const cColor = conf === 'high' ? '#86efac' : conf === 'medium' ? '#fde68a' : '#fca5a5';
+
+    const section = document.createElement('div');
+    section.style.cssText = 'background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:10px;padding:10px 12px;margin:8px 12px';
+
+    const hdr = document.createElement('div');
+    hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:6px';
+    const hL = document.createElement('span');
+    hL.style.cssText = 'font-weight:600;font-size:11px;letter-spacing:0.5px;text-transform:uppercase;color:#9ca3af';
+    hL.textContent = '\uD83D\uDCE6 Bundle of ' + (items.length ? items.length + ' items' : '~? items');
+    const hR = document.createElement('span');
+    hR.style.cssText = 'font-size:10.5px;font-weight:700;color:' + cColor + ';background:' + cColor + '22;border-radius:5px;padding:2px 7px';
+    hR.textContent = conf + ' confidence';
+    hdr.appendChild(hL); hdr.appendChild(hR);
+    section.appendChild(hdr);
+
+    if (!items.length) {
+      const placeholder = document.createElement('div');
+      placeholder.style.cssText = 'font-size:11.5px;color:#9ca3af;font-style:italic';
+      placeholder.textContent = 'Listing flagged as multi-item but the AI could not enumerate the contents — verify what is actually included before negotiating.';
+      section.appendChild(placeholder);
+      container.appendChild(section);
+      return;
+    }
+
+    let total = 0;
+    items.forEach(it => {
+      const name = it.item || it.name || '(unspecified)';
+      const val = Number(it.value || it.estimated_value || 0);
+      total += val;
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.05);font-size:12px';
+      const nm = document.createElement('span');
+      nm.style.cssText = 'color:#d1d5db';
+      nm.textContent = name;
+      const vl = document.createElement('span');
+      vl.style.cssText = 'color:#7c8cf8;font-weight:600';
+      vl.textContent = val ? (ps + val.toFixed(0)) : '?';
+      row.appendChild(nm); row.appendChild(vl);
+      section.appendChild(row);
+    });
+
+    if (total > 0) {
+      const totalRow = document.createElement('div');
+      totalRow.style.cssText = 'display:flex;justify-content:space-between;padding:5px 0;margin-top:4px;font-size:13px;font-weight:700';
+      const tn = document.createElement('span'); tn.style.color = '#e0e0e0'; tn.textContent = 'Total separate value';
+      const tv = document.createElement('span'); tv.style.cssText = 'color:#22c55e'; tv.textContent = ps + total.toFixed(0);
+      totalRow.appendChild(tn); totalRow.appendChild(tv);
+      section.appendChild(totalRow);
+      if (r.price && total > r.price) {
+        const sav = document.createElement('div');
+        sav.style.cssText = 'font-size:12px;color:#22c55e;font-weight:600;margin-top:4px';
+        sav.textContent = '\u2705 Bundle saves ' + ps + (total - r.price).toFixed(0) + ' vs buying separately';
+        section.appendChild(sav);
+      }
+    }
+
+    container.appendChild(section);
+  }
+
+  // ── Affiliate flag footer ─────────────────────────────────────────────
+  function renderAffiliateFlagFooter(r, panel, opts) {
+    opts = opts || {};
+    const cards = (r && r.affiliate_cards) || [];
+    if (!cards.length) return;
+    const apiBase = opts.apiBase || (window.__DealScoutApiBase || '');
+    const apiKey  = opts.apiKey  || (window.__DealScoutApiKey  || '');
+    const installId = opts.installId || (window.__DealScoutInstallId || '');
+    const version = opts.version || (window.__DealScoutVersion || '');
+
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'margin:4px 12px 8px;font-size:11px;color:#94a3b8;text-align:right';
+    const link = document.createElement('a');
+    link.href = '#';
+    link.style.cssText = 'color:#94a3b8;text-decoration:underline;cursor:pointer';
+    link.textContent = '\uD83D\uDEA9 Report a wrong recommendation';
+    link.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const choice = window.prompt(
+        'Which retailer is wrong? Type one of:\n  ' + cards.map(c => c.program_key).filter(Boolean).join(', '),
+        cards[0].program_key || ''
+      );
+      if (!choice) return;
+      const card = cards.find(c => (c.program_key || '').toLowerCase() === choice.toLowerCase());
+      if (!card) { link.textContent = '\u274C Unknown retailer'; return; }
+      try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (apiKey)     headers['X-DS-Key'] = apiKey;
+        if (installId)  headers['X-DS-Install-Id'] = installId;
+        if (version)    headers['X-DS-Ext-Version'] = version;
+        const res = await fetch(apiBase + '/affiliate/flag', {
+          method: 'POST', headers,
+          body: JSON.stringify({
+            listing_url: location.href,
+            program_key: card.program_key || '',
+            brand: safe(r, 'product_info.brand', ''),
+            model: safe(r, 'product_info.model', ''),
+            retailer: card.badge_label || card.program_key || '',
+            url: card.url || '',
+            reason: 'user_reported_wrong',
+          }),
+        });
+        if (res.ok) {
+          link.textContent = '\u2705 Thanks — flagged ' + card.program_key + ' for this listing';
+          link.style.pointerEvents = 'none';
+        } else {
+          link.textContent = '\u274C Flag failed (' + res.status + ')';
+        }
+      } catch (_e) {
+        link.textContent = '\u274C Flag failed (network)';
+      }
+    });
+    wrap.appendChild(link);
+    panel.appendChild(wrap);
+  }
+
+  window.DealScoutV2 = {
+    renderRecallBanner,
+    renderReputationV2Extra,
+    renderNegotiation,
+    renderBundleHardened,
+    renderAffiliateFlagFooter,
+  };
+})();

@@ -579,6 +579,7 @@
       _row(_pe.model_reputation);
       (_pe.known_issues || []).slice(0, 3).forEach(i => _row('\u26A0 ' + i, '#fde68a'));
       if (_pe.expected_lifespan) _row('\u23F3 Expected lifespan: ' + _pe.expected_lifespan, '#9ca3af');
+      if (window.DealScoutV2) window.DealScoutV2.renderReputationV2Extra(r, sec.body);
       const _tier = _pe.reliability_tier || '';
       const _color = _tier === 'excellent' ? '#86efac'
                    : _tier === 'good'      ? '#93c5fd'
@@ -587,14 +588,30 @@
       sec.setSummary(_tier, _color);
     }
 
-    if (r.bundle_breakdown && r.bundle_breakdown.items && r.bundle_breakdown.items.length) {
+    if (r.is_multi_item || (r.bundle_items && r.bundle_items.length)) {
       const sec = window.DealScoutDigest.openCollapsible(sections, 'bundle',
         { title: '\uD83D\uDCE6 Bundle Breakdown' });
-      renderBundleBreakdown(r, sec.body);
-      sec.setSummary(r.bundle_breakdown.items.length + ' items');
+      if (window.DealScoutV2) {
+        window.DealScoutV2.renderBundleHardened(r, sec.body);
+      } else if (r.bundle_breakdown && r.bundle_breakdown.items) {
+        renderBundleBreakdown(r, sec.body);
+      }
+      const _n = (r.bundle_items || []).length;
+      const _conf = (r.bundle_confidence || '').toLowerCase();
+      const _color = _conf === 'high' ? '#86efac' : _conf === 'medium' ? '#fde68a' : '#fca5a5';
+      sec.setSummary(_n ? (_n + ' items') : 'multi-item', _color);
     }
 
-    renderNegotiationMessage(r, panel);
+    if (window.DealScoutV2 && r.negotiation) {
+      window.DealScoutV2.renderNegotiation(r, panel);
+    } else {
+      renderNegotiationMessage(r, panel);
+    }
+    if (window.DealScoutV2) {
+      window.DealScoutV2.renderRecallBanner(r, panel);
+      window.DealScoutV2.renderAffiliateFlagFooter(r, panel,
+        { apiBase: API_BASE, apiKey: DS_API_KEY, version: VERSION });
+    }
     renderFooter(r, panel);
   }
 

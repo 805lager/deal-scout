@@ -1604,6 +1604,7 @@
       const sec = window.DealScoutDigest.openCollapsible(sections, 'reputation',
         { title: '\u2B50 Product Reputation' });
       renderProductReputation(r, sec.body);
+      if (window.DealScoutV2) window.DealScoutV2.renderReputationV2Extra(r, sec.body);
       const _pe = r.product_evaluation;
       const _tier = _pe.reliability_tier || '';
       const _color = _tier === 'excellent' ? '#86efac'
@@ -1613,17 +1614,34 @@
       sec.setSummary(_tier, _color);
     }
 
-    // Bundle breakdown — collapsible only when present
-    if (r.bundle_breakdown && r.bundle_breakdown.items && r.bundle_breakdown.items.length) {
+    // Bundle breakdown — v0.46.0: always render when is_multi_item, even
+    // when bundle_items=[] (placeholder warns the user to verify contents).
+    if (r.is_multi_item || (r.bundle_items && r.bundle_items.length)) {
       const sec = window.DealScoutDigest.openCollapsible(sections, 'bundle',
         { title: '\uD83D\uDCE6 Bundle Breakdown' });
-      renderBundleBreakdown(r, sec.body);
-      sec.setSummary(r.bundle_breakdown.items.length + ' items');
+      if (window.DealScoutV2) {
+        window.DealScoutV2.renderBundleHardened(r, sec.body);
+      } else if (r.bundle_breakdown && r.bundle_breakdown.items) {
+        renderBundleBreakdown(r, sec.body);
+      }
+      const _n = (r.bundle_items || []).length;
+      const _conf = (r.bundle_confidence || '').toLowerCase();
+      const _color = _conf === 'high' ? '#86efac' : _conf === 'medium' ? '#fde68a' : '#fca5a5';
+      sec.setSummary(_n ? (_n + ' items') : 'multi-item', _color);
     }
 
     // Bottom utilities — keep outside collapsibles so the copy-message
     // CTA and footer always land at the very end of the panel.
-    renderNegotiationMessage(r, panel);
+    if (window.DealScoutV2 && r.negotiation) {
+      window.DealScoutV2.renderNegotiation(r, panel);
+    } else {
+      renderNegotiationMessage(r, panel);
+    }
+    if (window.DealScoutV2) {
+      window.DealScoutV2.renderRecallBanner(r, panel);
+      window.DealScoutV2.renderAffiliateFlagFooter(r, panel,
+        { apiBase: API_BASE, apiKey: DS_API_KEY, version: VERSION });
+    }
     renderFooter(r, panel);
   }
 

@@ -53,6 +53,12 @@ class ProductEvaluation:
       - deal_scorer.build_scoring_prompt() — Claude gets the reputation context
       - suggestion_engine — cards show reliability tier alongside price
       - fbm.js renderScore() — sidebar shows reliability badge
+
+    v0.46.0 — Reputation v2: adds brand-in-category context, brand_rank,
+    category_leaders, same_budget_alternatives, recall_flag, and the
+    brand/model_reputation summary strings the extension already renders.
+    Each new field has its own confidence so the UI can suppress
+    low-confidence rows honestly instead of fabricating recommendations.
     """
     product_name:      str
     overall_rating:    Optional[float]  # 1-5 stars aggregated; None if unknown
@@ -65,6 +71,19 @@ class ProductEvaluation:
     sources_used:      list             # ["reddit", "google_shopping", "gemini"]
     confidence:        str              # "high" | "medium" | "low"
     ai_powered:        bool = False     # True when Gemini AI contributed to this assessment
+
+    # ── Reputation v2 fields (v0.46.0) ──
+    brand_reputation:  str = ""            # 1-2 sentences on brand's general reputation in this category
+    model_reputation:  str = ""            # 1-2 sentences specific to this exact model
+    expected_lifespan: str = ""            # "5-7 years with normal use" — short string
+    brand_rank:        Optional[dict] = None
+    # brand_rank shape: {tier: "top|mid|budget|unknown", summary: str, confidence: "high|medium|low"}
+    category_leaders:  list = field(default_factory=list)
+    # category_leaders entry: {brand: str, why: str, confidence: "high|medium|low"}
+    same_budget_alternatives: list = field(default_factory=list)
+    # same_budget_alternatives entry: {brand_model: str, why: str, confidence: "high|medium|low"}
+    recall_flag:       bool = False
+    recall_summary:    str = ""            # short string when recall_flag=True
 
     def to_prompt_text(self) -> str:
         """
@@ -218,6 +237,19 @@ async def evaluate_product(
         if ddg_rep and ddg_rep.get("rating"): sources.append("ddg_reviews")
         if recall_issues: sources.append("recall_check")
 
+    # Reputation v2 — promote AI-only fields onto the dataclass. The recall
+    # check (DDG-based) is the source of truth for `recall_flag`; the AI
+    # opinion of recall_flag is only used as a soft secondary signal.
+    _g = gemini_rep if isinstance(gemini_rep, dict) else {}
+    _ai_recall_flag    = bool(_g.get("recall_flag"))
+    _ai_recall_summary = str(_g.get("recall_summary") or "").strip()
+    _ddg_recall_flag   = bool(recall_issues)
+    _final_recall_flag    = _ddg_recall_flag or _ai_recall_flag
+    _final_recall_summary = (
+        ("; ".join(recall_issues)[:160]) if _ddg_recall_flag
+        else _ai_recall_summary
+    )
+
     result = ProductEvaluation(
         product_name      = display_name,
         overall_rating    = rating,
@@ -230,6 +262,14 @@ async def evaluate_product(
         sources_used      = sources,
         confidence        = confidence,
         ai_powered        = gemini_powered,
+        brand_reputation         = str(_g.get("brand_reputation") or ""),
+        model_reputation         = str(_g.get("model_reputation") or ""),
+        expected_lifespan        = str(_g.get("expected_lifespan") or ""),
+        brand_rank               = _g.get("brand_rank") if isinstance(_g.get("brand_rank"), dict) else None,
+        category_leaders         = list(_g.get("category_leaders") or []),
+        same_budget_alternatives = list(_g.get("same_budget_alternatives") or []),
+        recall_flag              = _final_recall_flag,
+        recall_summary           = _final_recall_summary,
     )
 
     _cache[cache_key] = {"data": result, "ts": now}
@@ -286,8 +326,29 @@ Return ONLY a valid JSON object (no markdown, no explanation outside the JSON):
   "confidence": "high|medium|low",
   "known_issues": ["brief issue 1", "brief issue 2", "up to 5"],
   "strengths": ["brief strength 1", "brief strength 2", "up to 5"],
-  "sentiment": "1-2 sentence owner consensus summary"
+  "sentiment": "1-2 sentence owner consensus summary",
+  "brand_reputation": "1-2 sentence summary of how this brand is generally regarded in this category. Empty string if you don't know.",
+  "model_reputation": "1-2 sentence summary specific to this exact model. Empty string if you only know the brand level.",
+  "expected_lifespan": "Short string like '5-7 years with normal use' or '10+ years if maintained'. Empty if unknown.",
+  "brand_rank": {{
+    "tier":       "top|mid|budget|unknown",
+    "summary":    "One sentence — where this brand sits in the category landscape.",
+    "confidence": "high|medium|low"
+  }},
+  "category_leaders": [
+    {{ "brand": "Brand X", "why": "Short reason this brand leads the category.", "confidence": "high|medium|low" }}
+  ],
+  "same_budget_alternatives": [
+    {{ "brand_model": "Brand Model Name", "why": "Short reason it's a smarter buy at the same price tier.", "confidence": "high|medium|low" }}
+  ],
+  "recall_flag":    false,
+  "recall_summary": "If you know of a real consumer recall / safety alert / class-action for this exact model, set recall_flag=true and put a short ≤120-char summary here. Otherwise leave false / empty. Never fabricate."
 }}
+
+Rules for the new fields:
+- Aim for 2–3 category_leaders and 1–3 same_budget_alternatives. ALL recommendations should be DIFFERENT from the product being evaluated.
+- Use confidence honestly: prefer "low" + a short note over fabricating specifics. If you have nothing for a list field, return [].
+- Only set recall_flag=true when you genuinely recall a documented recall/safety case. Speculation here is harmful.
 
 Reliability tier guide:
 - excellent: highly reliable, minimal owner complaints, strong build quality
@@ -311,7 +372,7 @@ If you lack model-specific data but know the brand's general reliability, use th
             claude_call_with_retry(
                 lambda: client.messages.create(
                     model="claude-haiku-4-5",
-                    max_tokens=400,
+                    max_tokens=900,
                     system=_SAFE_SYS,
                     messages=[{"role": "user", "content": prompt}],
                 ),
@@ -336,12 +397,74 @@ If you lack model-specific data but know the brand's general reliability, use th
         if conf not in ("high", "medium", "low"):
             conf = "medium"
 
+        # ── Reputation v2 sub-field normalisation ──
+        # All optional. Drop low-quality entries (missing required keys, bad
+        # confidence values) instead of letting them through to the UI as
+        # ghost rows. The renderer relies on these being well-formed.
+        def _coerce_conf(v: str, default: str = "low") -> str:
+            v = str(v or "").lower()
+            return v if v in ("high", "medium", "low") else default
+
+        raw_brand_rank = data.get("brand_rank") if isinstance(data.get("brand_rank"), dict) else None
+        if raw_brand_rank:
+            tier_val = str(raw_brand_rank.get("tier") or "unknown").lower()
+            if tier_val not in ("top", "mid", "budget", "unknown"):
+                tier_val = "unknown"
+            brand_rank = {
+                "tier":       tier_val,
+                "summary":    str(raw_brand_rank.get("summary") or "").strip()[:240],
+                "confidence": _coerce_conf(raw_brand_rank.get("confidence"), "low"),
+            }
+            if not brand_rank["summary"] and brand_rank["tier"] == "unknown":
+                brand_rank = None
+        else:
+            brand_rank = None
+
+        category_leaders = []
+        for entry in (data.get("category_leaders") or [])[:5]:
+            if not isinstance(entry, dict):
+                continue
+            brand_v = str(entry.get("brand") or "").strip()
+            why_v   = str(entry.get("why") or "").strip()
+            if not brand_v:
+                continue
+            category_leaders.append({
+                "brand":      brand_v[:60],
+                "why":        why_v[:200],
+                "confidence": _coerce_conf(entry.get("confidence"), "low"),
+            })
+
+        same_budget = []
+        for entry in (data.get("same_budget_alternatives") or [])[:5]:
+            if not isinstance(entry, dict):
+                continue
+            bm_v  = str(entry.get("brand_model") or "").strip()
+            why_v = str(entry.get("why") or "").strip()
+            if not bm_v:
+                continue
+            same_budget.append({
+                "brand_model": bm_v[:80],
+                "why":         why_v[:200],
+                "confidence":  _coerce_conf(entry.get("confidence"), "low"),
+            })
+
+        recall_flag    = bool(data.get("recall_flag"))
+        recall_summary = str(data.get("recall_summary") or "").strip()[:160] if recall_flag else ""
+
         result = {
             "reliability_tier": tier,
             "confidence":       conf,
             "known_issues":     [str(i) for i in (data.get("known_issues") or [])[:5]],
             "strengths":        [str(s) for s in (data.get("strengths")    or [])[:5]],
             "sentiment":        str(data.get("sentiment") or ""),
+            "brand_reputation":  str(data.get("brand_reputation") or "").strip()[:280],
+            "model_reputation":  str(data.get("model_reputation") or "").strip()[:280],
+            "expected_lifespan": str(data.get("expected_lifespan") or "").strip()[:120],
+            "brand_rank":        brand_rank,
+            "category_leaders":  category_leaders,
+            "same_budget_alternatives": same_budget,
+            "recall_flag":       recall_flag,
+            "recall_summary":    recall_summary,
         }
         log.info(f"[ClaudeReputation] '{product_term}' -> tier={tier}")
         return result

@@ -173,6 +173,49 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 Current: **v0.45.0** (extension) / **v0.45.0** (API — read from `artifacts/deal-scout-api/VERSION`)
 
+### v0.46.0 Reputation + Negotiation v2 (Option B)
+**Backend (`artifacts/deal-scout-api/`):**
+- `product_evaluator.py` — extended Claude prompt with `brand_rank_in_category`,
+  `category_leaders[]`, `same_budget_alternatives[]`, `recall_flag` +
+  `recall_summary`, per-field confidence. Listing inputs wrapped via
+  `_wrap_untrusted` / `_UNTRUSTED_SYS_MSG` (prompt-injection hardening).
+- `scoring/deal_scorer.py` — Negotiation v2 schema: `negotiation.{strategy,
+  walk_away, leverage_points, variants{polite,direct,lowball},
+  counter_response}`. Strategy rules: score-8+ → `pay_asking`; vague listing
+  → `question_first`; <<market → `verify_first`; thin comps suppress lowball.
+  Bundle hardening: `bundle_items[]` required when `is_multi_item`,
+  `bundle_confidence` field. `_normalize_negotiation` helper sanitises
+  model output. JSON-schema example block uses `{{` / `}}` escapes — Python
+  3.11 f-string parser fails otherwise (regression seen during ship).
+- `scoring/affiliate_router.py` — `filter_affiliate_cards()` adds title
+  overlap, price-sanity (<50% asking suppresses), negative keywords
+  (part/kit/filter/etc), bundle/refurb mismatch, and per-card
+  `confidence_label` (exact|approximate|search|browse|suppressed).
+- `main.py` — `affiliate_flags` table init at startup + per-cold-start;
+  `_get_flagged_programs(listing.listing_url)` read-path suppression in
+  `/score` and `/score-stream`; new `POST /affiliate/flag` endpoint
+  (key-gated, 10/min/install rate-limit). `DealScoreResponse` extended
+  with `bundle_items`, `bundle_confidence`, `is_multi_item`, `negotiation`.
+
+**Extension (`extension/`):**
+- `content/lib/repv2.js` (NEW) — shared `window.DealScoutV2` module with
+  `renderRecallBanner`, `renderReputationV2Extra`, `renderNegotiation`
+  (3-variant cards + leverage + counter + walk-away ceiling),
+  `renderBundleHardened`, `renderAffiliateFlagFooter`. Loaded by all 4
+  content scripts via `manifest.json` content_scripts[].js.
+- `content/{fbm,ebay,craigslist,offerup}.js` — bundle gate switched from
+  `r.bundle_breakdown.items` → `(r.is_multi_item || r.bundle_items.length)`
+  so the "📦 Bundle of N items" line always renders for multi-item
+  listings. Negotiation render swapped to `DealScoutV2.renderNegotiation`
+  with legacy fallback when `r.negotiation` is absent.
+
+**Deferred (next release):**
+- Per-card 🚩 affiliate flag button — currently shipped as a single
+  bottom-of-panel "Report a wrong recommendation" link with retailer
+  prompt. Per-card glyph requires touching each platform's affiliate
+  card builder.
+- `install_id` plumbing through extension → `/affiliate/flag` body.
+
 ### v0.45.0 Saved listings — popup recall (browser-only)
 Browser-only recall feature so users can find previously-scored listings
 without re-searching. Star toggle (`☆`/`★`) lives in the sticky digest's

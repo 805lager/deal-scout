@@ -1922,3 +1922,121 @@ def get_program_status() -> list[dict]:
         }
         for key, p in AFFILIATE_PROGRAMS.items()
     ]
+
+
+# ── v0.46.0 — Affiliate accuracy defense layer ────────────────────────────────
+#
+# Post-process cards from get_affiliate_recommendations() to:
+#   * stamp a per-card `confidence_label` (exact|approximate|search|browse)
+#   * suppress items that fail price sanity (< 50% of asking ⇒ different SKU)
+#   * suppress items whose title contains negative keywords (part / kit / etc.)
+#   * demote a card from item-level to search-level when items are weak
+#
+# All URL building stays mechanical — we never touch a card's URL.
+
+_NEGATIVE_KEYWORDS = (
+    "part", "parts", "replacement", "for parts", "broken", "as-is",
+    "filter", "screen protector", "manual", "owner's manual", "bracket",
+    "case only", "box only", "empty box", "decal", "sticker",
+    "kit", "accessory", "accessories",
+)
+
+_BUNDLE_REFURB_KEYWORDS = (
+    "refurb", "refurbished", "renewed", "open box",
+)
+
+
+def _title_token_overlap(a: str, b: str) -> float:
+    """Cheap Jaccard-ish overlap on lowercase alpha tokens of length ≥ 3."""
+    def toks(s: str):
+        s = (s or "").lower()
+        out = set()
+        cur = []
+        for ch in s:
+            if ch.isalnum():
+                cur.append(ch)
+            else:
+                if len(cur) >= 3:
+                    out.add("".join(cur))
+                cur = []
+        if len(cur) >= 3:
+            out.add("".join(cur))
+        return out
+    ta, tb = toks(a), toks(b)
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / max(1, min(len(ta), len(tb)))
+
+
+def filter_affiliate_cards(
+    cards: list,
+    asking_price: float,
+    query: str,
+    category: str = "",
+    is_multi_item: bool = False,
+) -> list:
+    """v0.46.0 — defense-in-depth pass over affiliate cards.
+
+    Mutates each card dict to add `confidence_label` and prunes obviously bad
+    items. Returns the (possibly shorter) list of cards. Never raises.
+    """
+    if not cards:
+        return cards
+    asking = max(0.0, float(asking_price or 0.0))
+
+    out = []
+    for card in cards:
+        try:
+            items = list(card.get("items") or [])
+            kept = []
+            for it in items:
+                title = str(it.get("title") or "")
+                price = float(it.get("price") or 0.0)
+                tlow = title.lower()
+                # Negative keyword filter — never let a $4 case look like a $400 device
+                if any(k in tlow for k in _NEGATIVE_KEYWORDS):
+                    continue
+                # Bundle/refurb mismatch: if our listing is *not* multi-item or
+                # refurbished, drop refurb-flavoured comps so prices align
+                if not is_multi_item and any(k in tlow for k in _BUNDLE_REFURB_KEYWORDS):
+                    continue
+                # Price sanity: anything under 50% of asking is almost
+                # certainly a different SKU (or an accessory)
+                if asking > 0 and price > 0 and price < (asking * 0.5):
+                    continue
+                # Title relevance to extracted query
+                if query and _title_token_overlap(title, query) < 0.15:
+                    continue
+                kept.append(it)
+
+            had_items = bool(items)
+            card["items"] = kept
+
+            # Decide confidence label
+            ctype = str(card.get("card_type") or "")
+            if kept:
+                # Item-level data survived → exact when prices line up tightly,
+                # approximate when at least one item is well within ±25%
+                top = kept[0]
+                tp = float(top.get("price") or 0.0)
+                if asking > 0 and tp > 0 and 0.75 <= (tp / asking) <= 1.25:
+                    card["confidence_label"] = "exact"
+                else:
+                    card["confidence_label"] = "approximate"
+            else:
+                # No item-level data — fall back to search/browse
+                if had_items:
+                    # We had items but pruned them all → browse
+                    card["confidence_label"] = "browse"
+                elif ctype == "lead":
+                    card["confidence_label"] = "browse"
+                else:
+                    card["confidence_label"] = "search"
+
+            out.append(card)
+        except Exception as _e:  # noqa: BLE001 — never break the response
+            log.warning(f"[AffiliateRouter] filter_affiliate_cards card error: {_e}")
+            card["confidence_label"] = card.get("confidence_label") or "search"
+            out.append(card)
+
+    return out

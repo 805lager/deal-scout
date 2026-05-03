@@ -47,7 +47,7 @@ from scoring.ebay_pricer import get_market_value
 from scoring.deal_scorer import score_deal
 from scoring.product_extractor import extract_product, ProductInfo
 from scoring.product_evaluator import evaluate_product
-from scoring.affiliate_router import get_affiliate_recommendations, should_trigger_buy_new, get_program_status, build_affiliate_event
+from scoring.affiliate_router import get_affiliate_recommendations, should_trigger_buy_new, get_program_status, build_affiliate_event, filter_affiliate_cards
 from scoring.security_scorer import score_security, SecurityScore
 from scoring.confidence import derive_confidence, cant_price_message
 from dataclasses import asdict as dc_asdict_top
@@ -87,6 +87,55 @@ async def _ensure_affiliate_events_table():
         )
     """)
     _affiliate_events_table_ensured = True
+
+_affiliate_flags_table_ensured = False
+
+async def _ensure_affiliate_flags_table():
+    """v0.46.0 — store user-reported wrong/spammy affiliate cards per listing."""
+    global _affiliate_flags_table_ensured
+    if _affiliate_flags_table_ensured:
+        return
+    from scoring.data_pipeline import _get_pool
+    pool = await _get_pool()
+    if not pool:
+        return
+    await pool.execute("""
+        CREATE TABLE IF NOT EXISTS affiliate_flags (
+            id serial PRIMARY KEY,
+            flagged_at timestamptz DEFAULT now(),
+            listing_url text NOT NULL,
+            program_key text NOT NULL,
+            brand text DEFAULT '',
+            model text DEFAULT '',
+            retailer text DEFAULT '',
+            url text DEFAULT '',
+            install_id text DEFAULT NULL,
+            reason text DEFAULT ''
+        )
+    """)
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_affiliate_flags_listing ON affiliate_flags (listing_url)"
+    )
+    _affiliate_flags_table_ensured = True
+
+
+async def _get_flagged_programs(listing_url: str) -> set:
+    """Return {program_key} previously flagged for this listing."""
+    if not listing_url:
+        return set()
+    try:
+        from scoring.data_pipeline import _get_pool
+        pool = await _get_pool()
+        if not pool:
+            return set()
+        rows = await pool.fetch(
+            "SELECT DISTINCT program_key FROM affiliate_flags WHERE listing_url=$1",
+            listing_url,
+        )
+        return {r["program_key"] for r in rows if r.get("program_key")}
+    except Exception:
+        return set()
+
 
 _corrections_table_ensured = False
 
@@ -609,8 +658,11 @@ class DealScoreResponse(BaseModel):
     model_used:        str
     image_analyzed:      bool  = False  # True when Claude Vision was used on listing photo
     affiliate_category:  str   = ""    # Category Claude picked for affiliate routing (e.g. "collectibles")
-    negotiation_message: str   = ""    # Ready-to-copy buyer message — uses real price context
+    negotiation_message: str   = ""    # Ready-to-copy buyer message — kept for back-compat
     bundle_items:        list  = []    # [{item, value}] breakdown for multi-item listings (empty if single item)
+    bundle_confidence:   str   = "unknown"  # v0.46.0 — high|medium|low|unknown
+    negotiation:         dict  = {}    # v0.46.0 Negotiation v2 — see DealScore.negotiation schema
+    is_multi_item:       bool  = False # Echoed from listing so the UI can hard-render the bundle line
     score_rationale:     str   = ""    # ≤140 char one-liner explaining the score's main driver (rendered under score circle)
     cached:              bool  = False # True ⇒ this response was served from the in-memory or
                                        # persistent score-cache (not freshly scored). Lets the
@@ -1057,6 +1109,26 @@ async def score_listing(listing: ListingRequest, request: Request):
         log.warning(f"Affiliate router failed ({e}) — returning empty cards")
         affiliate_cards = []
 
+    # v0.46.0 — defense layer: prune bogus items, stamp confidence_label
+    try:
+        affiliate_cards = filter_affiliate_cards(
+            affiliate_cards,
+            asking_price = listing.price,
+            query        = (product_info.search_query if hasattr(product_info, "search_query") else "") or "",
+            category     = category_detected,
+            is_multi_item = bool(listing.is_multi_item),
+        )
+    except Exception as _fe:
+        log.warning(f"filter_affiliate_cards failed (non-fatal): {_fe}")
+
+    # v0.46.0 — read-path suppression for previously flagged cards on this listing
+    try:
+        flagged = await _get_flagged_programs(listing.listing_url)
+        if flagged:
+            affiliate_cards = [c for c in affiliate_cards if c.get("program_key") not in flagged]
+    except Exception as _se:
+        log.warning(f"flag-suppression failed (non-fatal): {_se}")
+
     # Buy-new trigger check
     # data_source guard: suppress for "ebay_mock" — mock prices are rough estimates,
     # not real market data. iPhone 15 Pro mock base=$350 vs real new ~$1100.
@@ -1229,6 +1301,9 @@ async def score_listing(listing: ListingRequest, request: Request):
         affiliate_category  = deal_score.affiliate_category,
         negotiation_message = deal_score.negotiation_message,
         bundle_items        = deal_score.bundle_items or [],
+        bundle_confidence   = getattr(deal_score, "bundle_confidence", "unknown"),
+        negotiation         = getattr(deal_score, "negotiation", None) or {},
+        is_multi_item       = bool(listing.is_multi_item),
         score_rationale     = deal_score.score_rationale,
 
         # Product intelligence + affiliate
@@ -1860,6 +1935,24 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
             except Exception:
                 affiliate_cards = []
 
+            # v0.46.0 — defense layer + flag suppression
+            try:
+                affiliate_cards = filter_affiliate_cards(
+                    affiliate_cards,
+                    asking_price = listing.price,
+                    query        = (product_info.search_query if hasattr(product_info, "search_query") else "") or "",
+                    category     = category_detected,
+                    is_multi_item = bool(listing.is_multi_item),
+                )
+            except Exception as _fe:
+                log.warning(f"filter_affiliate_cards (stream) failed (non-fatal): {_fe}")
+            try:
+                flagged = await _get_flagged_programs(listing.listing_url)
+                if flagged:
+                    affiliate_cards = [c for c in affiliate_cards if c.get("program_key") not in flagged]
+            except Exception as _se:
+                log.warning(f"flag-suppression (stream) failed (non-fatal): {_se}")
+
             buy_new, buy_new_msg = should_trigger_buy_new(
                 listing_price = listing.price + listing.shipping_cost,
                 new_price     = market_value.new_price,
@@ -2038,6 +2131,9 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                 affiliate_category  = deal_score.affiliate_category,
                 negotiation_message = deal_score.negotiation_message,
                 bundle_items        = deal_score.bundle_items or [],
+                bundle_confidence   = getattr(deal_score, "bundle_confidence", "unknown"),
+                negotiation         = getattr(deal_score, "negotiation", None) or {},
+                is_multi_item       = bool(listing.is_multi_item),
                 score_rationale     = deal_score.score_rationale,
                 product_info        = dc_asdict_top(product_info),
                 product_evaluation  = dc_asdict_top(product_eval),
@@ -2733,6 +2829,58 @@ class ThumbsRequest(BaseModel):
     score_id: int
     thumbs:   int   # 1 = up, -1 = down
     reason:   str   = ""   # labeled reason for 👎 (e.g. "score_too_high", "price_wrong")
+
+
+class AffiliateFlagRequest(BaseModel):
+    listing_url: str    = Field(..., max_length=1000)
+    program_key: str    = Field(..., max_length=64)
+    brand:       str    = Field("", max_length=128)
+    model:       str    = Field("", max_length=256)
+    retailer:    str    = Field("", max_length=64)
+    url:         str    = Field("", max_length=1000)
+    reason:      str    = Field("", max_length=200)
+
+
+_flag_rate = {}  # install_id → (window_start_ts, count)
+
+@app.post("/affiliate/flag")
+async def flag_affiliate_card(body: AffiliateFlagRequest, request: Request):
+    """v0.46.0 — user marks an affiliate card as wrong/spam for a listing.
+
+    Persisted in `affiliate_flags`; subsequent /score calls for the same
+    listing_url filter the card out before returning. Rate-limited per
+    install (10/min) and key-gated like every other write endpoint.
+    """
+    _check_api_key(request)
+    install_id = request.headers.get("x-ds-install-id") or "anon"
+    now = _time.time()
+    win_start, n = _flag_rate.get(install_id, (now, 0))
+    if now - win_start > 60:
+        win_start, n = now, 0
+    if n >= 10:
+        raise HTTPException(status_code=429, detail="Too many flags — slow down")
+    _flag_rate[install_id] = (win_start, n + 1)
+
+    try:
+        await _ensure_affiliate_flags_table()
+        from scoring.data_pipeline import _get_pool
+        pool = await _get_pool()
+        if not pool:
+            raise HTTPException(status_code=503, detail="DB unavailable")
+        await pool.execute(
+            """INSERT INTO affiliate_flags
+               (listing_url, program_key, brand, model, retailer, url, install_id, reason)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8)""",
+            body.listing_url, body.program_key, body.brand, body.model,
+            body.retailer, body.url, install_id, body.reason,
+        )
+        log.info(f"[AffiliateFlag] {body.program_key} for {body.listing_url[:60]} (install={install_id[:8]})")
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"[AffiliateFlag] DB error: {e}")
+        raise HTTPException(status_code=500, detail="Flag write failed")
 
 
 @app.post("/thumbs")
@@ -3564,6 +3712,8 @@ def _build_scorecard(
             "image_analyzed":      deal_score.image_analyzed,
             "affiliate_category":  deal_score.affiliate_category,
             "bundle_items":        deal_score.bundle_items or [],
+            "bundle_confidence":   getattr(deal_score, "bundle_confidence", "unknown"),
+            "negotiation":         getattr(deal_score, "negotiation", None) or {},
         },
         "price_comparison": {
             "data_source":         market_value.data_source,
@@ -4411,6 +4561,10 @@ async def _ensure_db_tables_at_startup():
     except Exception as e:
         log.warning(f"[Startup] _ensure_affiliate_events_table failed (non-fatal): {e}")
     try:
+        await _ensure_affiliate_flags_table()
+    except Exception as e:
+        log.warning(f"[Startup] _ensure_affiliate_flags_table failed (non-fatal): {e}")
+    try:
         await _ensure_corrections_table()
     except Exception as e:
         log.warning(f"[Startup] _ensure_corrections_table failed (non-fatal): {e}")
@@ -4483,6 +4637,10 @@ if _is_production:
             await _ensure_affiliate_events_table()
         except Exception as _e:
             log.warning(f"[Prod] _ensure_affiliate_events_table failed (non-fatal): {_e}")
+        try:
+            await _ensure_affiliate_flags_table()
+        except Exception as _e:
+            log.warning(f"[Prod] _ensure_affiliate_flags_table failed (non-fatal): {_e}")
         try:
             await _ensure_corrections_table()
         except Exception as _e:
