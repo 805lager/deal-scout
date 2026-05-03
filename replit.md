@@ -343,15 +343,18 @@ window reads `cache_read=0 cache_creation=0 hit=N`, matching the 0/0
 totals above — i.e. there is no row-level disagreement between the
 per-call telemetry and the aggregated `claude_cache` block.
 
-Note on label coverage: `ListingExtractor` does not appear in the
-table because it is only called by `/score-stream` (the streaming
-endpoint used by the extension's content scripts), and the synthetic
-load for this validation went through `/score`. `MergedExtractor`
-shows just 1 call from a real `/score-stream` request that happened
-to land in the 24h window. Both extractor labels share the same
-`claude_call_with_retry` wrapper as `ProductExtractor` and would
-exhibit identical cache behaviour — the 0% result on
-`ProductExtractor` (54 calls) is representative.
+Note on label coverage: `ListingExtractor` (the legacy text-only
+extractor at `scoring/listing_extractor.py:192`) was not exercised in
+this window — current `/score-stream` traffic routes through
+`MergedExtractor` (`scoring/listing_extractor.py:405`), which combined
+the two extractor steps. A direct `/score-stream` validation call was
+fired during this task and confirmed `MergedExtractor` also reports
+0/0 (calls=2, hits=0, cache_r=0, cache_c=0). All three extractor
+labels (`ProductExtractor` 59 calls, `MergedExtractor` 2 calls, and
+`ListingExtractor` by inference) share the same
+`claude_call_with_retry` wrapper, so the 0% systemic result on every
+observed label — including the active extractor path — is
+representative.
 
 A two-call usage-only repro against Modelfarm with a >2,500-token
 cached system block confirmed 0/0 on both calls. Repro command
