@@ -607,10 +607,9 @@
     } else {
       renderNegotiationMessage(r, panel);
     }
+    // v0.46.0: per-card 🚩 buttons replace the bottom-of-panel link.
     if (window.DealScoutV2) {
       window.DealScoutV2.renderRecallBanner(r, panel);
-      window.DealScoutV2.renderAffiliateFlagFooter(r, panel,
-        { apiBase: API_BASE, apiKey: DS_API_KEY, version: VERSION });
     }
     renderFooter(r, panel);
   }
@@ -930,6 +929,10 @@
       cardEl.style.cssText = "display:block;text-decoration:none;background:rgba(15,23,42,0.55);border:1.5px solid " + tierBorder + ";border-left:4px solid " + color + ";border-radius:10px;padding:11px 12px 10px;margin-bottom:8px;cursor:pointer;animation:" + tierGlow;
       cardEl.onmouseenter = function(){ this.style.background = "rgba(255,255,255,0.07)"; };
       cardEl.onmouseleave = function(){ this.style.background = "rgba(15,23,42,0.55)"; };
+      if (window.DealScoutV2) {
+        window.DealScoutV2.attachFlagButton(cardEl, card, r,
+          { apiBase: API_BASE, apiKey: DS_API_KEY, version: VERSION });
+      }
 
       if (tier === "better_deal" || tier === "similar_price" || tier === "compare") {
         const badge = document.createElement("div");

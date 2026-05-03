@@ -845,6 +845,7 @@ async def score_listing(listing: ListingRequest, request: Request):
                 is_vehicle        = listing.is_vehicle,
                 listing_price     = listing.price,
                 description       = (listing.description or "")[:2000],
+                listing_location  = listing.location or "",
             ),
             evaluate_product(brand="", model="", category="", display_name=listing.title),
             return_exceptions=True,
@@ -916,6 +917,7 @@ async def score_listing(listing: ListingRequest, request: Request):
             listing_price     = listing.price,
             description       = (listing.description or "")[:2000],
             category          = product_info.category,
+            listing_location  = listing.location or "",
         )
     if product_info.brand or product_info.display_name:
         _eval_coro = evaluate_product(
@@ -1704,6 +1706,7 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
                     listing_price     = listing.price,
                     description       = (listing.description or "")[:2000],
                     category          = product_info.category,
+                    listing_location  = listing.location or "",
                 ),
                 evaluate_product(
                     brand        = _eval_brand,
@@ -2862,7 +2865,7 @@ async def flag_affiliate_card(body: AffiliateFlagRequest, request: Request):
     _flag_rate[install_id] = (win_start, n + 1)
 
     try:
-        await _ensure_affiliate_flags_table()
+        # Table is created at @app.on_event("startup"); no per-request DDL.
         from scoring.data_pipeline import _get_pool
         pool = await _get_pool()
         if not pool:

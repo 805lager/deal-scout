@@ -70,7 +70,8 @@
     const pe = r && r.product_evaluation;
     if (!pe) return;
 
-    // Brand rank tier line
+    // Brand rank tier line — built with createElement+textContent so any
+    // model-emitted summary stays inert in the DOM.
     const br = pe.brand_rank_in_category || pe.brand_rank;
     if (br && (br.tier || br.summary)) {
       const conf = (br.confidence || 'medium').toLowerCase();
@@ -82,10 +83,15 @@
                      : tier === 'STRONG' ? '#93c5fd'
                      : tier === 'MID' ? '#fde68a'
                      :                   '#fca5a5';
-        row.innerHTML = '<span style="font-weight:700;color:' + tcolor + '">'
-                      + escHtml(tier || 'rank') + '</span> '
-                      + '<span style="color:#9ca3af">in category</span>'
-                      + (br.summary ? ' — ' + escHtml(br.summary) : '');
+        const tierSpan = document.createElement('span');
+        tierSpan.style.cssText = 'font-weight:700;color:' + tcolor;
+        tierSpan.textContent = tier || 'rank';
+        const inCat = document.createElement('span');
+        inCat.style.cssText = 'color:#9ca3af';
+        inCat.textContent = ' in category';
+        row.appendChild(tierSpan);
+        row.appendChild(inCat);
+        if (br.summary) row.appendChild(document.createTextNode(' \u2014 ' + br.summary));
         container.appendChild(row);
       }
     }
@@ -411,11 +417,101 @@
     panel.appendChild(wrap);
   }
 
+  // ── Per-card 🚩 flag affordance ───────────────────────────────────────
+  // Mounts a small absolutely-positioned button on an affiliate <a> card.
+  // Click → confirm → POST /affiliate/flag → fade card and disable click.
+  function attachFlagButton(cardEl, card, r, opts) {
+    if (!cardEl || !card) return;
+    opts = opts || {};
+    const apiBase = opts.apiBase || (window.__DealScoutApiBase || '');
+    const apiKey  = opts.apiKey  || (window.__DealScoutApiKey  || '');
+    const installId = opts.installId || (window.__DealScoutInstallId || '');
+    const version = opts.version || (window.__DealScoutVersion || '');
+    if (cardEl.style.position !== 'absolute' && cardEl.style.position !== 'fixed') {
+      cardEl.style.position = 'relative';
+    }
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.title = 'Report as wrong / spam';
+    btn.textContent = '\uD83D\uDEA9';
+    btn.style.cssText = 'position:absolute;top:6px;right:6px;width:22px;height:22px;'
+      + 'padding:0;border:1px solid rgba(255,255,255,0.15);background:rgba(15,23,42,0.7);'
+      + 'border-radius:5px;color:#cbd5e1;font-size:12px;line-height:20px;cursor:pointer;'
+      + 'opacity:0.55;z-index:5';
+    btn.onmouseenter = () => { btn.style.opacity = '1'; btn.style.borderColor = '#fca5a5'; };
+    btn.onmouseleave = () => { btn.style.opacity = '0.55'; btn.style.borderColor = 'rgba(255,255,255,0.15)'; };
+    btn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const label = card.badge_label || card.program_key || 'this retailer';
+      if (!window.confirm('Report ' + label + ' as a wrong recommendation?')) return;
+      btn.textContent = '\u2026';
+      btn.disabled = true;
+      try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (apiKey)    headers['X-DS-Key'] = apiKey;
+        if (installId) headers['X-DS-Install-Id'] = installId;
+        if (version)   headers['X-DS-Ext-Version'] = version;
+        const res = await fetch(apiBase + '/affiliate/flag', {
+          method: 'POST', headers,
+          body: JSON.stringify({
+            listing_url: location.href,
+            program_key: card.program_key || '',
+            brand: safe(r, 'product_info.brand', ''),
+            model: safe(r, 'product_info.model', ''),
+            retailer: card.badge_label || card.program_key || '',
+            url: card.url || '',
+            reason: 'user_reported_wrong',
+          }),
+        });
+        if (res.ok) {
+          btn.textContent = '\u2705';
+          btn.title = 'Flagged — thanks';
+          cardEl.style.opacity = '0.45';
+          cardEl.style.pointerEvents = 'none';
+        } else {
+          btn.textContent = '\u274C';
+          btn.title = 'Flag failed (' + res.status + ')';
+          btn.disabled = false;
+        }
+      } catch (_e) {
+        btn.textContent = '\u274C';
+        btn.title = 'Flag failed (network)';
+        btn.disabled = false;
+      }
+    });
+    cardEl.appendChild(btn);
+  }
+
+  // ── install_id bootstrap ──────────────────────────────────────────────
+  // Stable per-install UUID kept in chrome.storage.local. Each content
+  // script calls DealScoutV2.initInstallId() once at startup so the
+  // /affiliate/flag rate limiter buckets per user (not globally).
+  function initInstallId() {
+    try {
+      if (!chrome || !chrome.storage || !chrome.storage.local) return;
+      chrome.storage.local.get(['ds_install_id'], (res) => {
+        let id = res && res.ds_install_id;
+        if (!id) {
+          id = (crypto && crypto.randomUUID) ? crypto.randomUUID()
+             : ('inst-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10));
+          try { chrome.storage.local.set({ ds_install_id: id }); } catch (_e) {}
+        }
+        window.__DealScoutInstallId = id;
+      });
+    } catch (_e) { /* best-effort */ }
+  }
+
   window.DealScoutV2 = {
     renderRecallBanner,
     renderReputationV2Extra,
     renderNegotiation,
     renderBundleHardened,
     renderAffiliateFlagFooter,
+    attachFlagButton,
+    initInstallId,
   };
+
+  // Auto-bootstrap install_id so any later flag POST has it ready.
+  initInstallId();
 })();

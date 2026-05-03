@@ -1101,7 +1101,7 @@ def _build_short_query(query: str) -> str:
 
 # ── Main Entry Point ──────────────────────────────────────────────────────────
 
-async def get_market_value(listing_title: str, listing_condition: str = "Used", is_vehicle: bool = False, listing_price: float = 0.0, description: str = "", category: str = "") -> MarketValue:
+async def get_market_value(listing_title: str, listing_condition: str = "Used", is_vehicle: bool = False, listing_price: float = 0.0, description: str = "", category: str = "", listing_location: str = "") -> MarketValue:
     """
     Main entry point. Given a listing title, return a full MarketValue estimate.
 
@@ -1195,9 +1195,13 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
     if is_vehicle and not _is_rv_boat and not _is_micromobility:
         try:
             from scoring.vehicle_pricer import get_vehicle_market_value
+            # Extract a 5-digit ZIP from listing.location if present
+            # (e.g. "Poway, CA 92064" → "92064"); fall back to San Diego if none.
+            _zip_m = _re.search(r"\b(\d{5})\b", listing_location or "")
+            _zip_code = _zip_m.group(1) if _zip_m else "92101"
             vdata = await get_vehicle_market_value(
                 listing_title = listing_title,
-                zip_code      = "92101",  # TODO: pass real zip from listing.location
+                zip_code      = _zip_code,
             )
             if vdata:
                 return MarketValue(
