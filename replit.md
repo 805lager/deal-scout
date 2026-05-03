@@ -266,6 +266,47 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 Current: **v0.45.0** (extension) / **v0.45.0** (API — read from `artifacts/deal-scout-api/VERSION`)
 
+### v0.46.3 CAN'T PRICE → new-retail fallback (Task #78)
+When sold/active comps are too thin (<3 cleaned) but a new-retail price
+is known (Google Shopping, Claude knowledge, or Amazon), the scorer no
+longer dead-ends with a CAN'T PRICE banner. Instead it scores against
+new-retail with confidence force-capped to "low" and surfaces a
+server-built `pricing_disclaimer` (e.g. "Score based on new-retail price
+(~$950); no used sales found — confidence is low."). The CAN'T PRICE
+banner is now reserved for the genuine no-anchor case where BOTH used
+comps AND new-retail are missing.
+
+Trigger: kegerator bug ($525 ask, 0 comps, new ~$950) — previously
+dead-ended at CAN'T PRICE; now scores in the 6-8 range with the amber
+disclaimer rendered immediately under the confidence chip.
+
+Implementation:
+- `scoring/confidence.py`: new `determine_anchor_source(comp_count,
+  new_price)` (single source of truth: "sold_comps" | "new_retail" |
+  "none"); `derive_confidence(..., new_price=)` adds the new-retail
+  branch returning bucket="low" + `anchor_source="new_retail"`; new
+  helper `new_retail_disclaimer(new_price)` returns the fixed-template
+  caveat (NEVER LLM-authored, per the project's Cybersecurity-first
+  rules added in Task #81).
+- `main.py`: `_build_confidence_payload` now passes `new_price` through
+  and adds `anchor_source` + `pricing_disclaimer` to the response;
+  `DealScoreResponse` gains those two fields; both `/score` and
+  `/score-stream` compute `anchor_source` via `determine_anchor_source`
+  before calling `score_deal` and pass it through as a kwarg.
+- `scoring/deal_scorer.py`: `build_scoring_prompt` and `score_deal`
+  accept `anchor_source`; when `"new_retail"` the prompt injects an
+  `## ANCHOR: NEW-RETAIL FALLBACK` block telling Claude to score vs new
+  retail with bracketed guidance (≤70% → 7-8, 70-85% → 5-6, 85%+ →
+  ≤5). Post-parse, confidence is force-set to "low" regardless of what
+  Claude returned, so the model can't escape the disclaimer.
+- Extension (`lib/digest.js` + all 4 content scripts): new
+  `renderPricingDisclaimer(container, text)` helper renders an amber
+  banner via `textContent` (no innerHTML — defense-in-depth even though
+  the text is server-built). Wired into fbm/ebay/craigslist/offerup
+  immediately after `renderConfidenceBlock`.
+
+VERSION 0.46.2 → 0.46.3, manifest 0.46.1 → 0.46.3.
+
 ### v0.46.2 Score speedup pass 1 (API only — Task #74)
 Five low-risk perf wins on `/score` and `/score-stream` with no behavior
 change. Extension manifest stays at v0.46.1.

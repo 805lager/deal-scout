@@ -26,6 +26,27 @@ from __future__ import annotations
 from typing import Tuple
 
 
+def determine_anchor_source(comp_count: int, new_price: float) -> str:
+    """
+    Single source of truth for which price reference anchors the score.
+
+    Task #78 — when used-comp count is too thin to anchor (<3 cleaned comps)
+    BUT we know the typical new-retail price for the item (from Google
+    Shopping, Claude knowledge, or Amazon), we fall back to scoring against
+    new-retail with a forced "low" confidence + a server-built disclaimer.
+
+    Returns one of:
+        "sold_comps"  — normal path, anchor on used sold comps
+        "new_retail"  — fallback, anchor on new retail price (force conf=low)
+        "none"        — neither anchor available; can_price will be False
+    """
+    if comp_count >= 3:
+        return "sold_comps"
+    if new_price and new_price > 0:
+        return "new_retail"
+    return "none"
+
+
 def derive_confidence(
     comp_count: int,
     comp_low: float,
@@ -33,12 +54,14 @@ def derive_confidence(
     comp_median: float,
     extraction_confidence: str = "medium",
     market_confidence: str = "",
+    new_price: float = 0.0,
 ) -> Tuple[str, dict]:
     """
     Compute the overall confidence bucket and per-signal reasons.
 
     Args:
-        comp_count: Number of comps after cleaning. <3 forces bucket="none".
+        comp_count: Number of comps after cleaning. <3 forces fallback to
+            new-retail anchor (when available) or "none".
         comp_low / comp_high / comp_median: Cleaned comp stats. Used to compute
             spread = (high-low)/median. comp_median == 0 disables the spread
             signal (we treat it as "low" rather than crashing).
@@ -47,12 +70,17 @@ def derive_confidence(
         market_confidence: Optional `MarketValue.confidence` string. Used as a
             ceiling so we don't claim "high" when the pricing pipeline itself
             said "low" (e.g. AI-knowledge-only fallback). Empty string disables.
+        new_price: Task #78 — typical new-retail price ($) when known.
+            When comp_count<3 AND new_price>0, we return bucket="low" with
+            anchor_source="new_retail" instead of "none", so the score panel
+            still shows a useful (low-confidence) score against new retail.
 
     Returns:
         (bucket, signals)
         bucket   — "high" | "medium" | "low" | "none"
         signals  — dict with the per-signal buckets so the UI / logs can
-                   explain WHICH signal pulled it down.
+                   explain WHICH signal pulled it down. Always includes
+                   `anchor_source` ∈ {"sold_comps", "new_retail", "none"}.
     """
     # ── Signal 1: Comp count after cleaning ────────────────────────────────
     if comp_count >= 10:
@@ -62,12 +90,22 @@ def derive_confidence(
     elif comp_count >= 3:
         comp_signal = "low"
     else:
-        # <3 comps after cleaning forces "none" regardless of other signals
+        # <3 comps — try new-retail fallback before bailing to "none" (Task #78)
+        if new_price and new_price > 0:
+            return "low", {
+                "comp_count":      "low",   # we have AN anchor, just not from used sales
+                "spread":          "n/a",
+                "extraction":      _normalise_conf(extraction_confidence),
+                "market":          (market_confidence or "n/a").lower(),
+                "anchor_source":   "new_retail",
+                "winning_signal":  "new_retail_anchor",
+            }
         return "none", {
-            "comp_count": "none",
-            "spread": "n/a",
-            "extraction": _normalise_conf(extraction_confidence),
-            "market": (market_confidence or "n/a").lower(),
+            "comp_count":     "none",
+            "spread":         "n/a",
+            "extraction":     _normalise_conf(extraction_confidence),
+            "market":         (market_confidence or "n/a").lower(),
+            "anchor_source":  "none",
             "winning_signal": "comp_count",
         }
 
@@ -121,13 +159,29 @@ def derive_confidence(
     )
 
     return bucket, {
-        "comp_count": comp_signal,
-        "spread": spread_signal,
-        "extraction": extraction_signal,
-        "market": market_signal or "n/a",
-        "spread_pct": round(spread * 100, 1) if comp_median > 0 else 0.0,
+        "comp_count":     comp_signal,
+        "spread":         spread_signal,
+        "extraction":     extraction_signal,
+        "market":         market_signal or "n/a",
+        "spread_pct":     round(spread * 100, 1) if comp_median > 0 else 0.0,
+        "anchor_source":  "sold_comps",
         "winning_signal": winning,
     }
+
+
+def new_retail_disclaimer(new_price: float) -> str:
+    """
+    Server-built (NEVER LLM-authored) disclaimer rendered on the score
+    panel whenever a score is anchored on new-retail price instead of
+    used comps. Fixed template so a malicious listing cannot fake or
+    strip the warning, per the project's Cybersecurity-first principles.
+    """
+    if new_price and new_price > 0:
+        return (
+            f"Score based on new-retail price (~${new_price:.0f}); "
+            f"no used sales found — confidence is low."
+        )
+    return ""
 
 
 def _normalise_conf(value: str) -> str:

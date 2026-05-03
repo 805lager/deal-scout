@@ -451,6 +451,10 @@
       if (isAuction) renderAuctionAdvice(r, digest);
     }
     renderConfidenceBlock(r, digest);
+    // Task #78 — server-built new-retail-fallback caveat (no-op when empty).
+    if (window.DealScoutDigest && window.DealScoutDigest.renderPricingDisclaimer) {
+      window.DealScoutDigest.renderPricingDisclaimer(digest, r.pricing_disclaimer);
+    }
     renderTrustBlock(r, digest);
     renderLeverageBlock(r, digest);
 

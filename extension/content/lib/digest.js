@@ -503,10 +503,33 @@
     return Math.floor(days / 30) + 'mo ago';
   }
 
+  // ── Pricing disclaimer (Task #78) ───────────────────────────────────
+  // Renders the server-built `pricing_disclaimer` string (e.g. "Score
+  // based on new-retail price (~$950); no used sales found — confidence
+  // is low.") immediately under the confidence block. The disclaimer
+  // text is ALWAYS server-authored from a fixed template — never the
+  // LLM's free text — so an attacker-controlled listing cannot
+  // strip the warning or inject HTML. We use textContent (no innerHTML)
+  // as a defense-in-depth measure regardless. Empty/missing string is
+  // a no-op so existing code can call it unconditionally.
+  function renderPricingDisclaimer(container, text) {
+    const t = (typeof text === 'string') ? text.trim() : '';
+    if (!t || !container) return;
+    const banner = document.createElement('div');
+    // Amber/info palette (#f59e0b family) — visually distinct from the
+    // red CAN'T PRICE banner so users learn "yellow = caveat, red = blocked".
+    banner.style.cssText = 'margin:8px 12px 0;border:1px solid #f59e0b44;'
+      + 'border-radius:8px;background:#f59e0b14;padding:8px 10px;'
+      + 'font-size:11.5px;color:#fbbf24;line-height:1.45;font-weight:500';
+    banner.textContent = t;
+    container.appendChild(banner);
+  }
+
   window.DealScoutDigest = {
     beginDigest: beginDigest,
     openCollapsible: openCollapsible,
     attachSaveStar: attachSaveStar,
+    renderPricingDisclaimer: renderPricingDisclaimer,
     _loadState: _loadState,
     _humanAgo: _humanAgo,
   };

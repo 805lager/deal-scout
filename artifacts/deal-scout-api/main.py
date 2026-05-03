@@ -49,7 +49,12 @@ from scoring.product_extractor import extract_product, ProductInfo
 from scoring.product_evaluator import evaluate_product
 from scoring.affiliate_router import get_affiliate_recommendations, should_trigger_buy_new, get_program_status, build_affiliate_event, filter_affiliate_cards
 from scoring.security_scorer import score_security, SecurityScore
-from scoring.confidence import derive_confidence, cant_price_message
+from scoring.confidence import (
+    derive_confidence,
+    cant_price_message,
+    new_retail_disclaimer,
+    determine_anchor_source,
+)
 from dataclasses import asdict as dc_asdict_top
 import time as _time
 import json as _json
@@ -375,6 +380,7 @@ def _build_confidence_payload(market_value, product_info, asking_price: float) -
             "recency_window":               "",
         }
 
+    _new_price_val = float(getattr(market_value, "new_price", 0.0) or 0.0)
     bucket, signals = derive_confidence(
         comp_count            = int(comp_summary.get("count", 0) or 0),
         comp_low              = float(comp_summary.get("low", 0.0) or 0.0),
@@ -382,10 +388,25 @@ def _build_confidence_payload(market_value, product_info, asking_price: float) -
         comp_median           = float(comp_summary.get("median", 0.0) or 0.0),
         extraction_confidence = getattr(product_info, "confidence", "medium") or "medium",
         market_confidence     = getattr(market_value, "confidence", "") or "",
+        new_price             = _new_price_val,
     )
 
-    can_price   = bucket != "none"
+    # Task #78 — anchor_source surfaced from the signals dict so callers
+    # (and downstream telemetry) can branch without re-deriving. Three
+    # possible values: "sold_comps" (normal), "new_retail" (fallback),
+    # "none" (no anchor at all → CAN'T PRICE).
+    anchor_source = signals.get("anchor_source", "sold_comps")
+
+    can_price = bucket != "none"
+    # CAN'T PRICE banner only fires when BOTH used comps AND new-retail
+    # are missing. The new-retail fallback (Task #78) uses can_price=True
+    # plus a server-built `pricing_disclaimer` so the user gets a usable
+    # score with a clear caveat instead of a dead-end "no comps" message.
     cp_message  = "" if can_price else cant_price_message(asking_price)
+    pricing_disclaimer = (
+        new_retail_disclaimer(_new_price_val)
+        if anchor_source == "new_retail" else ""
+    )
 
     # "What we tried" expandable — minimal payload from what we have on hand.
     queries_attempted = []
@@ -404,6 +425,8 @@ def _build_confidence_payload(market_value, product_info, asking_price: float) -
         "can_price":          can_price,
         "cant_price_message": cp_message,
         "queries_attempted":  queries_attempted,
+        "anchor_source":      anchor_source,
+        "pricing_disclaimer": pricing_disclaimer,
     }
 
 
@@ -683,6 +706,14 @@ class DealScoreResponse(BaseModel):
                                        # the score with cant_price_message + "What we tried"
     cant_price_message:  str   = ""    # Verdict copy shown instead of score when can_price=False
     queries_attempted:   list  = []    # [{query, count, source}] for the "What we tried" expandable
+    # ── Task #78: new-retail fallback anchor ──
+    # When sold/active comps are too thin (<3) BUT new_price is known, we
+    # score against new-retail with confidence force-capped to "low" and
+    # surface a server-built `pricing_disclaimer` (NEVER LLM-authored, so
+    # a malicious listing can't fake or strip it). `anchor_source` tells
+    # the UI/telemetry which path was taken.
+    anchor_source:       str   = ""    # "sold_comps" | "new_retail" | "none" | ""
+    pricing_disclaimer:  str   = ""    # Fixed-template caveat for new-retail fallback
     # ── Task #59: composite trust / scam digest line ──
     # `trust_signals` is the list of fired heuristics. Each entry is
     # {id, label, why}. UI renders one digest line per item plus a
@@ -1027,12 +1058,19 @@ async def score_listing(listing: ListingRequest, request: Request):
     # the task started ~1.5-3s earlier so it's almost certainly done by then.
     try:
         effective_photo_count = max(listing.photo_count or 0, len(listing.image_urls or []))
+        # Task #78 — choose price anchor BEFORE scoring so the prompt can
+        # tell Claude to score against new-retail when used comps are thin.
+        _anchor_source = determine_anchor_source(
+            int(market_value_dict.get("sold_count", 0) or 0),
+            float(market_value_dict.get("new_price", 0) or 0),
+        )
         deal_score = await score_deal(
             listing_dict,
             market_value_dict,
             image_urls         = all_image_urls_sync,
             product_evaluation = product_eval,
             photo_count        = effective_photo_count,
+            anchor_source      = _anchor_source,
         )
     except RuntimeError as e:
         # Task #77: drain so uvicorn doesn't warn 'Task was destroyed but it is pending!'
@@ -1921,11 +1959,17 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
 
             try:
                 effective_photo_count = max(listing.photo_count or 0, len(listing.image_urls or []))
+                # Task #78 — see /score for rationale; identical anchor decision.
+                _anchor_source = determine_anchor_source(
+                    int(market_value_dict.get("sold_count", 0) or 0),
+                    float(market_value_dict.get("new_price", 0) or 0),
+                )
                 deal_score = await score_deal(
                     listing_dict, market_value_dict,
                     image_urls         = all_image_urls,
                     product_evaluation = product_eval,
                     photo_count        = effective_photo_count,
+                    anchor_source      = _anchor_source,
                 )
             except Exception as _score_err:
                 _security_task.cancel()
