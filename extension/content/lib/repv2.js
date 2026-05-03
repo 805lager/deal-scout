@@ -191,8 +191,13 @@
       const st = document.createElement('style');
       st.id = 'ds-neg-styles';
       st.textContent =
-        '.ds-neg-summary::-webkit-details-marker{display:none}' +
-        '.ds-neg-summary::marker{content:""}';
+        '.ds-neg-summary::-webkit-details-marker{display:none !important}' +
+        '.ds-neg-summary::marker{content:"" !important}' +
+        '.ds-neg-summary{display:flex !important;align-items:center !important;' +
+        'justify-content:space-between !important;gap:8px !important;' +
+        'flex-wrap:nowrap !important;list-style:none !important;cursor:pointer;' +
+        'outline:none;min-height:18px}' +
+        '.ds-neg-summary>*{min-width:0}';
       (document.head || document.documentElement).appendChild(st);
     } catch (_) { /* style injection is best-effort */ }
   }
