@@ -311,6 +311,16 @@ VERSION 0.46.2 → 0.46.3, manifest 0.46.1 → 0.46.3.
 Five low-risk perf wins on `/score` and `/score-stream` with no behavior
 change. Extension manifest stays at v0.46.1.
 
+**Cache validation — FAILED 2026-05-03 (Task #79).** Sample: 32 score_log
+rows / 253 Claude calls over 24h. Result: every label 0% hit rate AND
+0 cache_creation_input_tokens — i.e. the Replit Modelfarm proxy
+(`http://localhost:1106/modelfarm/anthropic/v1/messages`) silently
+strips the `cache_control` field before forwarding to Anthropic, so
+neither cache reads nor cache writes ever happen. The #74 system-block
+caching is a no-op end-to-end. Follow-up debug task opened to verify
+proxy behaviour with a one-line repro and decide whether to wait for
+proxy support or bypass to the official Anthropic endpoint.
+
 1. **Anthropic prompt caching on every system block.** All eight Haiku
    call sites now pass `system=` as a list of content blocks with
    `cache_control: {"type":"ephemeral"}` so the static prefix can be
