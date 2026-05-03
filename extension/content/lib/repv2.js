@@ -183,6 +183,20 @@
     container.appendChild(section);
   }
 
+  // Cross-browser hiding of the native <details> disclosure triangle on
+  // the Negotiation summary. Idempotent — only injects once per document.
+  function _ensureNegStyles() {
+    try {
+      if (document.getElementById('ds-neg-styles')) return;
+      const st = document.createElement('style');
+      st.id = 'ds-neg-styles';
+      st.textContent =
+        '.ds-neg-summary::-webkit-details-marker{display:none}' +
+        '.ds-neg-summary::marker{content:""}';
+      (document.head || document.documentElement).appendChild(st);
+    } catch (_) { /* style injection is best-effort */ }
+  }
+
   function renderNegotiation(r, container) {
     const neg = r && r.negotiation;
     if (!neg || (!neg.variants && !neg.strategy)) {
@@ -192,19 +206,74 @@
     const strategy = String(neg.strategy || '').toLowerCase();
     const ps = '$';
 
-    const wrap = document.createElement('div');
+    // Task #85 (v0.46.6) — outer wrapper is a native <details> so the
+    // negotiation block can collapse to a single-line summary. Default
+    // collapsed except for pay_asking, where the "Strong deal — pay
+    // asking" note IS the primary actionable signal and should stay
+    // visible. Inner content (variants, leverage, counter, walk-away)
+    // is unchanged.
+    const wrap = document.createElement('details');
     wrap.style.cssText = 'margin:6px 12px 8px;background:rgba(99,102,241,0.06);border:1px solid rgba(99,102,241,0.25);border-radius:10px;padding:10px 12px';
+    wrap.open = (strategy === 'pay_asking');
 
-    const hdr = document.createElement('div');
-    hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:6px';
-    const hLeft = document.createElement('span');
-    hLeft.style.cssText = 'font-size:11px;font-weight:700;color:#9ca3af;letter-spacing:0.5px;text-transform:uppercase';
-    hLeft.textContent = '\uD83D\uDCAC Negotiation';
-    const hRight = document.createElement('span');
-    hRight.style.cssText = 'font-size:10.5px;font-weight:700;color:#a5b4fc;background:rgba(165,180,252,0.10);border-radius:5px;padding:2px 7px';
-    hRight.textContent = strategy.replace(/_/g, ' ') || 'standard';
-    hdr.appendChild(hLeft); hdr.appendChild(hRight);
-    wrap.appendChild(hdr);
+    // Build a compact preview line for the closed state: polite target
+    // (or pay_asking note) + walk-away ceiling. Lets the user skim the
+    // headline negotiation numbers without expanding the section.
+    const variantsForPreview = neg.variants || {};
+    const politeTgt = (variantsForPreview.polite && typeof variantsForPreview.polite.target_offer === 'number' && variantsForPreview.polite.target_offer > 0)
+      ? variantsForPreview.polite.target_offer : 0;
+    const previewBits = [];
+    if (strategy === 'pay_asking') {
+      previewBits.push('\u2705 pay asking');
+    } else if (politeTgt > 0) {
+      previewBits.push('Polite ' + ps + politeTgt.toFixed(0));
+    }
+    if (typeof neg.walk_away === 'number' && neg.walk_away > 0) {
+      previewBits.push('\uD83D\uDED1 ' + ps + Number(neg.walk_away).toFixed(0));
+    }
+
+    // Inject the marker-suppression stylesheet once per document. Inline
+    // `list-style:none` on the summary covers Firefox/Gecko, but Safari/
+    // WebKit needs the `::-webkit-details-marker` pseudo-element rule and
+    // older Chromium versions honour `summary::marker` — both are
+    // unreachable from inline `style.cssText`, so we ship them as a
+    // class-scoped <style> tag.
+    _ensureNegStyles();
+    const sum = document.createElement('summary');
+    sum.className = 'ds-neg-summary';
+    sum.style.cssText = 'cursor:pointer;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:8px;outline:none';
+    const sLeft = document.createElement('span');
+    sLeft.style.cssText = 'display:flex;align-items:center;gap:8px;min-width:0;flex:1';
+    const sLabel = document.createElement('span');
+    sLabel.style.cssText = 'font-size:11px;font-weight:700;color:#9ca3af;letter-spacing:0.5px;text-transform:uppercase';
+    sLabel.textContent = '\uD83D\uDCAC Negotiation';
+    const sStrategy = document.createElement('span');
+    sStrategy.style.cssText = 'font-size:10.5px;font-weight:700;color:#a5b4fc;background:rgba(165,180,252,0.10);border-radius:5px;padding:2px 7px';
+    sStrategy.textContent = strategy.replace(/_/g, ' ') || 'standard';
+    sLeft.appendChild(sLabel); sLeft.appendChild(sStrategy);
+    if (previewBits.length) {
+      const sPreview = document.createElement('span');
+      sPreview.style.cssText = 'font-size:11px;color:#cbd5e1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+      sPreview.textContent = previewBits.join(' \u00B7 ');
+      sLeft.appendChild(sPreview);
+    }
+    const sChev = document.createElement('span');
+    sChev.style.cssText = 'color:#a5b4fc;font-size:10px;flex-shrink:0;transition:transform .15s ease';
+    sChev.textContent = '\u25BE';
+    // Flip chevron on open/close. Use the toggle event so it tracks any
+    // state change (keyboard, click, programmatic).
+    wrap.addEventListener('toggle', () => {
+      sChev.style.transform = wrap.open ? 'rotate(180deg)' : 'rotate(0deg)';
+    });
+    if (wrap.open) sChev.style.transform = 'rotate(180deg)';
+    sum.appendChild(sLeft); sum.appendChild(sChev);
+    wrap.appendChild(sum);
+
+    // Inner body container — separates the summary from the existing
+    // content blocks so the top margin doesn't collide with <summary>.
+    const inner = document.createElement('div');
+    inner.style.cssText = 'margin-top:6px';
+    wrap.appendChild(inner);
 
     // Score-8+ short-circuit / pay_asking
     if (strategy === 'pay_asking') {
@@ -212,7 +281,7 @@
       note.style.cssText = 'font-size:12px;color:#86efac;font-weight:600';
       const askPrice = (typeof r.price === 'number' && r.price > 0) ? (' (' + ps + r.price.toFixed(0) + ')') : '';
       note.textContent = '\u2705 Strong deal — pay asking' + askPrice + ' and act fast.';
-      wrap.appendChild(note);
+      inner.appendChild(note);
     }
 
     // Variants
@@ -241,7 +310,7 @@
       body.style.cssText = 'font-size:12px;color:#d1d5db;line-height:1.45;white-space:pre-wrap';
       body.textContent = v.message;
       card.appendChild(body);
-      wrap.appendChild(card);
+      inner.appendChild(card);
     });
 
     // Leverage points
@@ -250,7 +319,7 @@
       const hdr2 = document.createElement('div');
       hdr2.style.cssText = 'margin-top:10px;font-size:10.5px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.5px';
       hdr2.textContent = 'Leverage points';
-      wrap.appendChild(hdr2);
+      inner.appendChild(hdr2);
       lev.slice(0, 4).forEach(pt => {
         const li = document.createElement('div');
         li.style.cssText = 'font-size:11.5px;color:#d1d5db;margin-top:3px;padding-left:10px;position:relative';
@@ -259,19 +328,20 @@
         dot.textContent = '\u2022';
         li.appendChild(dot);
         li.appendChild(document.createTextNode(' ' + String(pt)));
-        wrap.appendChild(li);
+        inner.appendChild(li);
       });
     }
 
-    // Counter-response (collapsible)
+    // Counter-response (collapsible — inner <details>, independent of
+    // the outer Negotiation collapsible).
     const cr = neg.counter_response || {};
     if (cr.if_seller_says && cr.you_respond) {
       const det = document.createElement('details');
       det.style.cssText = 'margin-top:10px;background:rgba(255,255,255,0.03);border:1px dashed rgba(255,255,255,0.12);border-radius:8px;padding:6px 10px';
-      const sum = document.createElement('summary');
-      sum.style.cssText = 'cursor:pointer;font-size:11px;font-weight:700;color:#fde68a';
-      sum.textContent = 'If they counter\u2026';
-      det.appendChild(sum);
+      const crSum = document.createElement('summary');
+      crSum.style.cssText = 'cursor:pointer;font-size:11px;font-weight:700;color:#fde68a';
+      crSum.textContent = 'If they counter\u2026';
+      det.appendChild(crSum);
       const sLine = document.createElement('div');
       sLine.style.cssText = 'font-size:11.5px;color:#9ca3af;margin-top:5px;font-style:italic';
       sLine.textContent = 'Seller: ' + cr.if_seller_says;
@@ -279,7 +349,7 @@
       yLine.style.cssText = 'font-size:12px;color:#d1d5db;margin-top:3px;line-height:1.4';
       yLine.textContent = 'You: ' + cr.you_respond;
       det.appendChild(sLine); det.appendChild(yLine);
-      wrap.appendChild(det);
+      inner.appendChild(det);
     }
 
     // Walk-away ceiling
@@ -287,7 +357,7 @@
       const wa = document.createElement('div');
       wa.style.cssText = 'margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.08);font-size:11.5px;color:#fca5a5;font-weight:700';
       wa.textContent = '\uD83D\uDED1 Walk-away ceiling: ' + ps + Number(neg.walk_away).toFixed(0);
-      wrap.appendChild(wa);
+      inner.appendChild(wa);
     }
 
     container.appendChild(wrap);

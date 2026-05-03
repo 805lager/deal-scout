@@ -673,12 +673,8 @@
     chipRow.appendChild(arrow);
     wrap.appendChild(chipRow);
 
-    // Task #78 — inline new-retail-fallback caveat INSIDE the confidence
-    // panel body (in addition to the header-level banner above the panel).
-    // Server-built text, textContent only. No-op when empty.
-    if (window.DealScoutDigest && window.DealScoutDigest.renderPricingDisclaimerInline) {
-      window.DealScoutDigest.renderPricingDisclaimerInline(wrap, r.pricing_disclaimer);
-    }
+    // Task #85 (v0.46.6) — inline disclaimer removed; it duplicated the
+    // header-level pricing_disclaimer banner. Chip already conveys "LOW".
 
     // Task #58 — when can_price === false, show the verdict copy as a
     // PRIMARY always-visible banner (not hidden in the expand). It is
