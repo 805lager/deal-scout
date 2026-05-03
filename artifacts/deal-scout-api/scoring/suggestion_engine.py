@@ -60,17 +60,8 @@ log = logging.getLogger(__name__)
 AMAZON_TAG  = os.getenv("AMAZON_ASSOCIATE_TAG", "dealscout03f-20")
 EBAY_CAMPID = os.getenv("EBAY_CAMPAIGN_ID", "5339144027")
 
-_client: Optional[anthropic.Anthropic] = None
-
-
-def _get_client() -> anthropic.Anthropic:
-    global _client
-    if _client is None:
-        _client = anthropic.Anthropic(
-            api_key=os.getenv("AI_INTEGRATIONS_ANTHROPIC_API_KEY", "placeholder"),
-            base_url=os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"),
-        )
-    return _client
+# Task #80: delegate to the shared Anthropic client (one TLS pool per process).
+from scoring._anthropic_client import get_anthropic_client as _get_client
 
 
 # ── Data Model ────────────────────────────────────────────────────────────────

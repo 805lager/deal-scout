@@ -363,10 +363,9 @@ Base this only on real owner feedback and documented issues, not marketing.
 If you lack model-specific data but know the brand's general reliability, use the brand-level tier at "low" confidence rather than returning "unknown". Only return "unknown" if the brand itself is obscure or you genuinely have no quality signal at all."""
 
     try:
-        client = _anthropic.Anthropic(
-            api_key=_os.getenv("AI_INTEGRATIONS_ANTHROPIC_API_KEY", "placeholder"),
-            base_url=_os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"),
-        )
+        # Task #80: shared Anthropic client (one TLS pool per process).
+        from scoring._anthropic_client import get_anthropic_client as _get_shared_client
+        client = _get_shared_client()
         from scoring import claude_call_with_retry
         response = await _asyncio.wait_for(
             claude_call_with_retry(

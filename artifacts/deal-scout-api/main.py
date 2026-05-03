@@ -2404,10 +2404,9 @@ async def _validate_query_background(
             '"better_query": "<improved eBay search query if not relevant, otherwise repeat the original>"}'
         )
 
-        _client = _anthropic.Anthropic(
-            api_key  = os.getenv("AI_INTEGRATIONS_ANTHROPIC_API_KEY", "placeholder"),
-            base_url = os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"),
-        )
+        # Task #80: shared Anthropic client (one TLS pool per process).
+        from scoring._anthropic_client import get_anthropic_client as _get_shared_client
+        _client = _get_shared_client()
         loop = asyncio.get_event_loop()
         resp = await loop.run_in_executor(
             None,
@@ -2471,10 +2470,9 @@ async def test_claude_connection(request: Request):
 
     try:
         loop = asyncio.get_event_loop()
-        c = anthropic.Anthropic(
-            api_key=os.getenv("AI_INTEGRATIONS_ANTHROPIC_API_KEY", "placeholder"),
-            base_url=os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"),
-        )
+        # Task #80: shared Anthropic client (one TLS pool per process).
+        from scoring._anthropic_client import get_anthropic_client as _get_shared_client
+        c = _get_shared_client()
         r = await loop.run_in_executor(
             None,
             lambda: c.messages.create(

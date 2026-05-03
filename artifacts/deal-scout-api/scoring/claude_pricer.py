@@ -37,11 +37,9 @@ _price_cache_table_lock = None
 
 
 def _get_client():
-    import anthropic
-    return anthropic.Anthropic(
-        api_key=os.getenv("AI_INTEGRATIONS_ANTHROPIC_API_KEY", "placeholder"),
-        base_url=os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"),
-    )
+    # Task #80: shared Anthropic client (process-wide pool).
+    from scoring._anthropic_client import get_anthropic_client
+    return get_anthropic_client()
 
 
 def claude_is_configured() -> bool:

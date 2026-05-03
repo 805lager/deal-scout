@@ -912,11 +912,9 @@ async def _verify_comps_with_llm(items: list[dict], listing_title: str, query: s
         return items
 
     try:
-        import anthropic
-        client = anthropic.Anthropic(
-            api_key=os.getenv("AI_INTEGRATIONS_ANTHROPIC_API_KEY", "placeholder"),
-            base_url=os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"),
-        )
+        # Task #80: shared Anthropic client (one TLS pool per process).
+        from scoring._anthropic_client import get_anthropic_client as _get_shared_client
+        client = _get_shared_client()
 
         from scoring._prompt_safety import (
             wrap as _wrap_untrusted,
@@ -999,11 +997,9 @@ async def _llm_sanity_check(
     ratio = listing_price / estimated_value if estimated_value > 0 else 1.0
 
     try:
-        import anthropic
-        client = anthropic.Anthropic(
-            api_key=os.getenv("AI_INTEGRATIONS_ANTHROPIC_API_KEY", "placeholder"),
-            base_url=os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"),
-        )
+        # Task #80: shared Anthropic client (one TLS pool per process).
+        from scoring._anthropic_client import get_anthropic_client as _get_shared_client
+        client = _get_shared_client()
 
         from scoring._prompt_safety import (
             wrap as _wrap_untrusted,

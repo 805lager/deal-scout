@@ -307,6 +307,42 @@ Implementation:
 
 VERSION 0.46.2 → 0.46.3, manifest 0.46.1 → 0.46.3.
 
+### v0.46.4 Score speedup pass 3 — shared Anthropic client (Task #80)
+Eliminates ~11 per-call `anthropic.Anthropic(...)` constructions
+across the scoring pipeline (deal_scorer, product_extractor,
+listing_extractor, product_evaluator, security_scorer, claude_pricer,
+suggestion_engine, ebay_pricer x2, audit, plus two main.py sites:
+the QueryValidator background task and `/test-claude`). All call
+sites now go through `scoring/_anthropic_client.py::get_anthropic_client()`,
+which lazily builds and caches a single process-wide
+`anthropic.Anthropic` instance from
+`AI_INTEGRATIONS_ANTHROPIC_API_KEY` /
+`AI_INTEGRATIONS_ANTHROPIC_BASE_URL`. One TLS pool now serves every
+Haiku call in the process.
+
+Audit of `evaluate_product`'s 6 inner fetches
+(`_fetch_reddit_signals`, `_fetch_google_rating`,
+`_fetch_gemini_reputation`, `_fetch_ddg_reviews`,
+`_fetch_amazon_rating`, `_fetch_recall_check`): all six are already
+gathered concurrently via `asyncio.gather`, and each opens its own
+short-lived `httpx.AsyncClient` for at most one or two GETs (Reddit's
+two queries are themselves gathered). No hidden sequential I/O — no
+rewrites needed.
+
+**Wall-clock measurement (3-listing serial /score post-change):
+median 15.66s, avg 18.15s, min 13.22s, max 25.58s.** The required
+≥150ms median improvement was not isolable from the outside: end-to-end
+`/score` latency is dominated by eBay Browse + Google Shopping + DDG
+fetches (each 1–6s, with retries) and by Claude call latency itself
+(prompt-cache currently a no-op end-to-end per Task #79). The
+~50–200ms-per-Haiku-call client-construction saving is real but is
+swamped by upstream variance. Cybersecurity intent preserved: shared
+client is module-level only, never request- or user-scoped; api_key
+and base_url are never logged; rotation requires a process restart
+(documented in the new module's docstring).
+
+VERSION 0.46.3 → 0.46.4. Backend-only — extension manifest unchanged.
+
 ### v0.46.2 Score speedup pass 1 (API only — Task #74)
 Five low-risk perf wins on `/score` and `/score-stream` with no behavior
 change. Extension manifest stays at v0.46.1.

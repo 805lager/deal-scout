@@ -565,15 +565,17 @@ async def score_security(
     effective_title = normalized_title.strip() if normalized_title.strip() else (listing.title or "")
     log.info(f"[Security] Scoring: '{effective_title}' (raw: '{listing.title}') @ ${listing.price} cat={category}")
 
-    # Build client if not passed in
+    # Build client if not passed in.
+    # Task #80: reuse the shared process-wide Anthropic client instead of
+    # constructing a new one per scoring call.
     if anthropic_client is None:
         base_url = os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL", "")
-        api_key  = os.getenv("AI_INTEGRATIONS_ANTHROPIC_API_KEY", "placeholder")
         if not base_url:
             log.warning("[Security] No AI integration configured — layer1 only")
             anthropic_client = None
         else:
-            anthropic_client = anthropic.Anthropic(api_key=api_key, base_url=base_url)
+            from scoring._anthropic_client import get_anthropic_client as _get_shared_client
+            anthropic_client = _get_shared_client()
 
     # Layer 1 — always runs
     l1_flags = run_layer1(

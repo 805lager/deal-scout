@@ -58,13 +58,10 @@ DATA_DIR = Path(__file__).parent.parent / "data"
 #   1. Consistent with product_extractor.py and suggestion_engine.py
 #   2. If API key is rotated after server start, next call picks it up from os.getenv
 #   3. Avoids a client object with api_key=None if .env isn't loaded at import time
-_scoring_client: Optional[anthropic.Anthropic] = None
-
-def _get_scoring_client() -> anthropic.Anthropic:
-    global _scoring_client
-    if _scoring_client is None:
-        _scoring_client = anthropic.Anthropic(api_key=os.getenv("AI_INTEGRATIONS_ANTHROPIC_API_KEY", "placeholder"), base_url=os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"))
-    return _scoring_client
+# Task #80: delegate to the process-wide shared Anthropic client so every
+# DealScorer call reuses the same TLS connection pool as ProductExtractor,
+# SecurityScorer, etc.
+from scoring._anthropic_client import get_anthropic_client as _get_scoring_client
 
 
 # ── Data Model ────────────────────────────────────────────────────────────────

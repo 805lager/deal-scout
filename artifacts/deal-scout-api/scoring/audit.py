@@ -446,7 +446,9 @@ Return ONLY the JSON array, no markdown fences, no explanation."""
         if not api_key or not base_url:
             return {"error": "Claude API not configured", "findings": []}
 
-        client = anthropic.Anthropic(api_key=api_key, base_url=base_url)
+        # Task #80: shared Anthropic client (one TLS pool per process).
+        from scoring._anthropic_client import get_anthropic_client as _get_shared_client
+        client = _get_shared_client()
 
         from scoring import claude_call_with_retry
         loop = asyncio.get_running_loop()

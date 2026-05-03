@@ -38,14 +38,8 @@ log = logging.getLogger(__name__)
 _extract_client: Optional[anthropic.Anthropic] = None
 
 
-def _get_client() -> anthropic.Anthropic:
-    global _extract_client
-    if _extract_client is None:
-        _extract_client = anthropic.Anthropic(
-            api_key=os.getenv("AI_INTEGRATIONS_ANTHROPIC_API_KEY", "placeholder"),
-            base_url=os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"),
-        )
-    return _extract_client
+# Task #80: delegate to the shared Anthropic client (one TLS pool per process).
+from scoring._anthropic_client import get_anthropic_client as _get_client
 
 
 _EXTRACT_PROMPT = """\
