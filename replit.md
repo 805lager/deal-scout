@@ -337,9 +337,27 @@ are zero on every call — including the very first call against any
 given system block, which would otherwise have populated
 `cache_creation_input_tokens` if the proxy honored the field.
 
+Note on label coverage: `ListingExtractor` does not appear in the
+table because it is only called by `/score-stream` (the streaming
+endpoint used by the extension's content scripts), and the synthetic
+load for this validation went through `/score`. `MergedExtractor`
+shows just 1 call from a real `/score-stream` request that happened
+to land in the 24h window. Both extractor labels share the same
+`claude_call_with_retry` wrapper as `ProductExtractor` and would
+exhibit identical cache behaviour — the 0% result on
+`ProductExtractor` (54 calls) is representative.
+
 A two-call usage-only repro against Modelfarm with a >2,500-token
-cached system block confirmed 0/0 on both calls (output captured in
-the follow-up task plan). The #74 system-block caching investment is
+cached system block confirmed 0/0 on both calls. Repro command
+(verbatim, run from the project root):
+
+```
+$ python .local/cache_repro.py
+[call-1 (expect cache_creation>0 if honored)] usage: input=2655 output=4 cache_read=0 cache_creation=0
+[call-2 (expect cache_read>0 if honored)]    usage: input=2655 output=4 cache_read=0 cache_creation=0
+```
+
+The #74 system-block caching investment is
 therefore a no-op end-to-end. Follow-up debug task #82 opened to (a)
 mirror the repro against the official Anthropic endpoint to confirm
 the proxy is the layer dropping the field, (b) file with Replit's
