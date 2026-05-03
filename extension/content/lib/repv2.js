@@ -239,41 +239,53 @@
     // unreachable from inline `style.cssText`, so we ship them as a
     // class-scoped <style> tag.
     _ensureNegStyles();
+    // Summary is shaped to match the other section headers in the panel
+    // ("Category leaders", "Same-budget alternatives", "Leverage points"):
+    // a single row with an uppercase 11px gray label on the left and a
+    // compact metric/control on the right. The strategy badge moved into
+    // the open body so the closed line stays on one row even on narrow
+    // panels.
     const sum = document.createElement('summary');
     sum.className = 'ds-neg-summary';
-    sum.style.cssText = 'cursor:pointer;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:8px;outline:none';
-    const sLeft = document.createElement('span');
-    sLeft.style.cssText = 'display:flex;align-items:center;gap:8px;min-width:0;flex:1';
+    sum.style.cssText = 'cursor:pointer;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:8px;outline:none;min-height:18px';
     const sLabel = document.createElement('span');
-    sLabel.style.cssText = 'font-size:11px;font-weight:700;color:#9ca3af;letter-spacing:0.5px;text-transform:uppercase';
+    sLabel.style.cssText = 'font-size:11px;font-weight:700;color:#9ca3af;letter-spacing:0.5px;text-transform:uppercase;flex-shrink:0';
     sLabel.textContent = '\uD83D\uDCAC Negotiation';
-    const sStrategy = document.createElement('span');
-    sStrategy.style.cssText = 'font-size:10.5px;font-weight:700;color:#a5b4fc;background:rgba(165,180,252,0.10);border-radius:5px;padding:2px 7px';
-    sStrategy.textContent = strategy.replace(/_/g, ' ') || 'standard';
-    sLeft.appendChild(sLabel); sLeft.appendChild(sStrategy);
+    const sRight = document.createElement('span');
+    sRight.style.cssText = 'display:flex;align-items:center;gap:8px;min-width:0';
     if (previewBits.length) {
       const sPreview = document.createElement('span');
-      sPreview.style.cssText = 'font-size:11px;color:#cbd5e1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+      sPreview.style.cssText = 'font-size:11.5px;color:#cbd5e1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600';
       sPreview.textContent = previewBits.join(' \u00B7 ');
-      sLeft.appendChild(sPreview);
+      sRight.appendChild(sPreview);
     }
     const sChev = document.createElement('span');
     sChev.style.cssText = 'color:#a5b4fc;font-size:10px;flex-shrink:0;transition:transform .15s ease';
     sChev.textContent = '\u25BE';
-    // Flip chevron on open/close. Use the toggle event so it tracks any
-    // state change (keyboard, click, programmatic).
     wrap.addEventListener('toggle', () => {
       sChev.style.transform = wrap.open ? 'rotate(180deg)' : 'rotate(0deg)';
     });
     if (wrap.open) sChev.style.transform = 'rotate(180deg)';
-    sum.appendChild(sLeft); sum.appendChild(sChev);
+    sRight.appendChild(sChev);
+    sum.appendChild(sLabel); sum.appendChild(sRight);
     wrap.appendChild(sum);
 
     // Inner body container — separates the summary from the existing
     // content blocks so the top margin doesn't collide with <summary>.
+    // First child of inner is a small strategy badge row (moved out of
+    // the summary so the closed-state stays single-line).
     const inner = document.createElement('div');
-    inner.style.cssText = 'margin-top:6px';
+    inner.style.cssText = 'margin-top:8px';
     wrap.appendChild(inner);
+    if (strategy && strategy !== 'pay_asking') {
+      const stratRow = document.createElement('div');
+      stratRow.style.cssText = 'margin-bottom:8px';
+      const sStrategy = document.createElement('span');
+      sStrategy.style.cssText = 'font-size:10.5px;font-weight:700;color:#a5b4fc;background:rgba(165,180,252,0.10);border-radius:5px;padding:2px 7px;text-transform:capitalize';
+      sStrategy.textContent = 'Strategy: ' + (strategy.replace(/_/g, ' '));
+      stratRow.appendChild(sStrategy);
+      inner.appendChild(stratRow);
+    }
 
     // Score-8+ short-circuit / pay_asking
     if (strategy === 'pay_asking') {
