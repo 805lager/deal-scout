@@ -527,11 +527,16 @@
 
   // Inline variant — appends the same server-built disclaimer text INSIDE
   // an existing parent (typically the `wrap` element of the confidence
-  // block), without the outer margin/border. This satisfies the spec
-  // requirement that the caveat appear in BOTH the header banner path
-  // AND inline within the confidence panel/collapsible body, so a user
-  // reading either area sees the warning. textContent only — never
-  // innerHTML — even though the source string is server-authored.
+  // block), without the outer margin/border.
+  //
+  // Task #85 (v0.46.6) — no longer wired by default in any content script.
+  // Earlier versions called this AND `renderPricingDisclaimer` together,
+  // which surfaced the same string twice on every thin-comps panel and
+  // read as visual noise. The header banner alone is now sufficient
+  // (the chip already conveys "LOW"). Kept exported as an opt-in helper
+  // for anyone who wants to surface the caveat inside a collapsible body
+  // again. textContent only — never innerHTML — even though the source
+  // string is server-authored.
   function renderPricingDisclaimerInline(parent, text) {
     const t = (typeof text === 'string') ? text.trim() : '';
     if (!t || !parent) return;
