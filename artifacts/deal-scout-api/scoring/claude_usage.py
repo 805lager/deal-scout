@@ -19,6 +19,12 @@ Each call site (or, in practice, the central `claude_call_with_retry`
 wrapper) calls `claude_usage.record(response, label="...")` after every
 successful `.messages.create()`. Calls made outside an active `track_run`
 context are silently ignored, so this is safe to enable everywhere.
+
+Cache telemetry (Task #75): the Anthropic Usage object also carries
+`cache_read_input_tokens` and `cache_creation_input_tokens` whenever the
+request includes a `cache_control` block. We aggregate those per-label so
+the admin dashboard can verify prompt caching is actually firing in
+production. A "cache hit" is any call with cache_read_input_tokens > 0.
 """
 
 from contextlib import contextmanager
@@ -38,14 +44,22 @@ _DEFAULT_PRICING = {"input": 1.0, "output": 5.0}  # assume Haiku-class
 _run: ContextVar[Optional[dict]] = ContextVar("claude_usage_run", default=None)
 
 
-def _new_state() -> dict:
+def _new_bucket() -> dict:
     return {
         "input_tokens": 0,
         "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
         "calls": 0,
-        "by_model": {},
-        "by_label": {},
+        "cache_hit_calls": 0,
     }
+
+
+def _new_state() -> dict:
+    b = _new_bucket()
+    b["by_model"] = {}
+    b["by_label"] = {}
+    return b
 
 
 @contextmanager
@@ -89,38 +103,72 @@ def cost_usd(input_tokens: int, output_tokens: int, model: str = "claude-haiku-4
     return (input_tokens * p["input"] + output_tokens * p["output"]) / 1_000_000.0
 
 
+def extract_usage(response) -> dict:
+    """
+    Pull token + cache fields off an Anthropic message response.
+
+    Returns a flat dict with int values; missing fields default to 0.
+    Safe on any response shape — never raises.
+    """
+    out = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "model": "",
+    }
+    try:
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return out
+        out["input_tokens"]  = int(getattr(usage, "input_tokens", 0) or 0)
+        out["output_tokens"] = int(getattr(usage, "output_tokens", 0) or 0)
+        out["cache_read_input_tokens"] = int(
+            getattr(usage, "cache_read_input_tokens", 0) or 0
+        )
+        out["cache_creation_input_tokens"] = int(
+            getattr(usage, "cache_creation_input_tokens", 0) or 0
+        )
+        out["model"] = getattr(response, "model", "") or ""
+    except Exception:
+        pass
+    return out
+
+
 def record(response, *, label: str = "anthropic") -> None:
     """Record token usage from a Claude response object. No-op outside a run."""
     state = _run.get()
     if state is None or response is None:
         return
     try:
-        usage = getattr(response, "usage", None)
-        if usage is None:
+        u = extract_usage(response)
+        in_tok  = u["input_tokens"]
+        out_tok = u["output_tokens"]
+        cache_r = u["cache_read_input_tokens"]
+        cache_c = u["cache_creation_input_tokens"]
+        if in_tok == 0 and out_tok == 0 and cache_r == 0 and cache_c == 0:
             return
-        in_tok = int(getattr(usage, "input_tokens", 0) or 0)
-        out_tok = int(getattr(usage, "output_tokens", 0) or 0)
-        if in_tok == 0 and out_tok == 0:
-            return
-        model = getattr(response, "model", "") or ""
+        model = u["model"]
 
-        state["input_tokens"] += in_tok
+        state["input_tokens"]  += in_tok
         state["output_tokens"] += out_tok
+        state["cache_read_input_tokens"]     += cache_r
+        state["cache_creation_input_tokens"] += cache_c
         state["calls"] += 1
 
-        bm = state["by_model"].setdefault(model or "unknown", {
-            "input_tokens": 0, "output_tokens": 0, "calls": 0,
-        })
-        bm["input_tokens"] += in_tok
-        bm["output_tokens"] += out_tok
-        bm["calls"] += 1
+        def _add(bucket: dict) -> None:
+            bucket["input_tokens"]  += in_tok
+            bucket["output_tokens"] += out_tok
+            bucket["cache_read_input_tokens"]     += cache_r
+            bucket["cache_creation_input_tokens"] += cache_c
+            bucket["calls"] += 1
+            if cache_r > 0:
+                bucket["cache_hit_calls"] = bucket.get("cache_hit_calls", 0) + 1
 
-        bl = state["by_label"].setdefault(label or "anthropic", {
-            "input_tokens": 0, "output_tokens": 0, "calls": 0,
-        })
-        bl["input_tokens"] += in_tok
-        bl["output_tokens"] += out_tok
-        bl["calls"] += 1
+        bm = state["by_model"].setdefault(model or "unknown", _new_bucket())
+        _add(bm)
+        bl = state["by_label"].setdefault(label or "anthropic", _new_bucket())
+        _add(bl)
     except Exception:
         # Never let usage tracking break a scoring run
         pass
@@ -134,11 +182,18 @@ def totals() -> Optional[dict]:
 
     cost = 0.0
     for model, m in state["by_model"].items():
+        # Cached reads are billed at ~10% of normal input price by Anthropic;
+        # uncached input includes both fresh input_tokens and cache writes
+        # (which Anthropic bills at 1.25x). We keep the existing simple
+        # input*price model here — cache cost adjustments would require a
+        # separate price table and aren't needed for the hit-rate metric.
         cost += cost_usd(m["input_tokens"], m["output_tokens"], model)
 
     return {
         "input_tokens":  state["input_tokens"],
         "output_tokens": state["output_tokens"],
+        "cache_read_input_tokens":     state["cache_read_input_tokens"],
+        "cache_creation_input_tokens": state["cache_creation_input_tokens"],
         "calls":         state["calls"],
         "cost_usd":      round(cost, 6),
         "by_model":      {k: dict(v) for k, v in state["by_model"].items()},

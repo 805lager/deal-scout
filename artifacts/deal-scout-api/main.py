@@ -3418,12 +3418,102 @@ async def admin_dashboard(request: Request):
                 score_cache_metric["rows_live"]  = int(row["live"])
     except Exception:
         pass
+    claude_cache_metric = await _claude_cache_summary()
     return {
         "pipeline": "Deal Scout Market Intelligence",
         "description": "Anonymized used-market price signals. No PII collected.",
         "stats": summary,
         "score_cache": score_cache_metric,
+        "claude_cache": claude_cache_metric,
     }
+
+
+async def _claude_cache_summary(hours: int = 24) -> dict:
+    """
+    Aggregate prompt-cache telemetry from score_log over the last N hours
+    (Task #75). Walks every row's claude_usage.by_label and sums input_tokens,
+    cache_read_input_tokens, cache_creation_input_tokens, calls, and
+    cache_hit_calls per label. Returns per-label hit_rate_pct (cache_hit_calls
+    / calls) and token_read_pct (cache_read / (cache_read + input)).
+
+    A <10% hit_rate_pct on a label that should be cacheable (DealScorer /
+    *Extractor) means cache_control is being stripped or the system text is
+    shifting between calls. Best-effort; returns {"error": ...} on DB failure.
+    """
+    out = {"window_hours": hours, "rows_scanned": 0, "by_label": {}, "totals": {}}
+    try:
+        await _ensure_score_log_table()
+        from scoring.data_pipeline import _get_pool
+        pool = await _get_pool()
+        if not pool:
+            out["error"] = "DB unavailable"
+            return out
+
+        rows = await pool.fetch(
+            f"""SELECT (payload->'claude_usage'->'by_label') AS by_label
+                FROM score_log
+                WHERE server_ts > now() - interval '{int(hours)} hours'
+                  AND payload ? 'claude_usage'
+                  AND payload->'claude_usage' ? 'by_label'"""
+        )
+        out["rows_scanned"] = len(rows)
+
+        import json as _json
+        agg: dict = {}
+        for r in rows:
+            raw = r["by_label"]
+            if raw is None:
+                continue
+            if isinstance(raw, str):
+                try:
+                    raw = _json.loads(raw)
+                except Exception:
+                    continue
+            if not isinstance(raw, dict):
+                continue
+            for label, b in raw.items():
+                if not isinstance(b, dict):
+                    continue
+                bucket = agg.setdefault(label, {
+                    "calls": 0,
+                    "input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                    "cache_creation_input_tokens": 0,
+                    "cache_hit_calls": 0,
+                })
+                bucket["calls"]                       += int(b.get("calls", 0) or 0)
+                bucket["input_tokens"]                += int(b.get("input_tokens", 0) or 0)
+                bucket["cache_read_input_tokens"]     += int(b.get("cache_read_input_tokens", 0) or 0)
+                bucket["cache_creation_input_tokens"] += int(b.get("cache_creation_input_tokens", 0) or 0)
+                bucket["cache_hit_calls"]             += int(b.get("cache_hit_calls", 0) or 0)
+
+        totals = {
+            "calls": 0,
+            "input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_hit_calls": 0,
+        }
+        for label, b in agg.items():
+            calls = b["calls"]
+            cache_r = b["cache_read_input_tokens"]
+            in_tok = b["input_tokens"]
+            denom_tok = cache_r + in_tok
+            b["hit_rate_pct"]   = round((b["cache_hit_calls"] / calls) * 100, 1) if calls else 0.0
+            b["token_read_pct"] = round((cache_r / denom_tok) * 100, 1) if denom_tok else 0.0
+            for k in totals:
+                totals[k] += b[k]
+
+        t_calls = totals["calls"]
+        t_denom = totals["cache_read_input_tokens"] + totals["input_tokens"]
+        totals["hit_rate_pct"]   = round((totals["cache_hit_calls"] / t_calls) * 100, 1) if t_calls else 0.0
+        totals["token_read_pct"] = round((totals["cache_read_input_tokens"] / t_denom) * 100, 1) if t_denom else 0.0
+
+        out["by_label"] = dict(sorted(agg.items()))
+        out["totals"]   = totals
+    except Exception as e:
+        out["error"] = str(e)
+    return out
 
 
 @app.post("/admin/score-cache/clear")

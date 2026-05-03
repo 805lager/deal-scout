@@ -190,6 +190,17 @@ async def extract_listing_from_text(
             try:
                 from scoring import claude_usage
                 claude_usage.record(msg, label="ListingExtractor")
+                import logging as _lg
+                _u = claude_usage.extract_usage(msg)
+                _lg.getLogger("scoring").info(
+                    "[ClaudeCache] label=%s model=%s in=%d out=%d "
+                    "cache_read=%d cache_creation=%d hit=%s",
+                    "ListingExtractor", _u.get("model") or "?",
+                    _u.get("input_tokens", 0), _u.get("output_tokens", 0),
+                    _u.get("cache_read_input_tokens", 0),
+                    _u.get("cache_creation_input_tokens", 0),
+                    "Y" if _u.get("cache_read_input_tokens", 0) > 0 else "N",
+                )
             except Exception:
                 pass
             text = msg.content[0].text.strip()
@@ -392,6 +403,17 @@ async def extract_listing_and_product(
             try:
                 from scoring import claude_usage
                 claude_usage.record(msg, label="MergedExtractor")
+                import logging as _lg
+                _u = claude_usage.extract_usage(msg)
+                _lg.getLogger("scoring").info(
+                    "[ClaudeCache] label=%s model=%s in=%d out=%d "
+                    "cache_read=%d cache_creation=%d hit=%s",
+                    "MergedExtractor", _u.get("model") or "?",
+                    _u.get("input_tokens", 0), _u.get("output_tokens", 0),
+                    _u.get("cache_read_input_tokens", 0),
+                    _u.get("cache_creation_input_tokens", 0),
+                    "Y" if _u.get("cache_read_input_tokens", 0) > 0 else "N",
+                )
             except Exception:
                 pass
             text = msg.content[0].text.strip()
