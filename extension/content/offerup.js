@@ -343,11 +343,14 @@
     }
 
     renderHeader(r, digest);
-    renderConfidenceBlock(r, digest);
-    // Task #78 — server-built new-retail-fallback caveat (no-op when empty).
+    // Task #78 — server-built new-retail-fallback caveat. Rendered BEFORE
+    // the confidence block so it sits with the verdict header path; a
+    // second inline copy is injected INSIDE the confidence wrap by
+    // renderConfidenceBlock. No-op when r.pricing_disclaimer is empty.
     if (window.DealScoutDigest && window.DealScoutDigest.renderPricingDisclaimer) {
       window.DealScoutDigest.renderPricingDisclaimer(digest, r.pricing_disclaimer);
     }
+    renderConfidenceBlock(r, digest);
     renderTrustBlock(r, digest);
     renderLeverageBlock(r, digest);
 
@@ -669,6 +672,13 @@
     chipRow.appendChild(chipLeft);
     chipRow.appendChild(arrow);
     wrap.appendChild(chipRow);
+
+    // Task #78 — inline new-retail-fallback caveat INSIDE the confidence
+    // panel body (in addition to the header-level banner above the panel).
+    // Server-built text, textContent only. No-op when empty.
+    if (window.DealScoutDigest && window.DealScoutDigest.renderPricingDisclaimerInline) {
+      window.DealScoutDigest.renderPricingDisclaimerInline(wrap, r.pricing_disclaimer);
+    }
 
     // Task #58 — when can_price === false, show the verdict copy as a
     // PRIMARY always-visible banner (not hidden in the expand). It is

@@ -525,11 +525,30 @@
     container.appendChild(banner);
   }
 
+  // Inline variant — appends the same server-built disclaimer text INSIDE
+  // an existing parent (typically the `wrap` element of the confidence
+  // block), without the outer margin/border. This satisfies the spec
+  // requirement that the caveat appear in BOTH the header banner path
+  // AND inline within the confidence panel/collapsible body, so a user
+  // reading either area sees the warning. textContent only — never
+  // innerHTML — even though the source string is server-authored.
+  function renderPricingDisclaimerInline(parent, text) {
+    const t = (typeof text === 'string') ? text.trim() : '';
+    if (!t || !parent) return;
+    const note = document.createElement('div');
+    note.style.cssText = 'border-top:1px solid #f59e0b33;padding:6px 10px;'
+      + 'font-size:11px;color:#fbbf24;line-height:1.4;font-weight:500;'
+      + 'background:#f59e0b0a';
+    note.textContent = t;
+    parent.appendChild(note);
+  }
+
   window.DealScoutDigest = {
     beginDigest: beginDigest,
     openCollapsible: openCollapsible,
     attachSaveStar: attachSaveStar,
     renderPricingDisclaimer: renderPricingDisclaimer,
+    renderPricingDisclaimerInline: renderPricingDisclaimerInline,
     _loadState: _loadState,
     _humanAgo: _humanAgo,
   };
