@@ -472,16 +472,33 @@ async def run_layer2(
     else:
         page_text_block = ""
 
+    # Wrap every seller-controlled field as untrusted data so a hostile listing
+    # description can't break out of the prompt envelope. Title is normalized
+    # by product_extractor but still contains original seller substrings — wrap
+    # it for defence-in-depth. seller_joined/rating/photo_str/page_text come
+    # straight from the seller's listing.
+    from scoring._prompt_safety import (
+        wrap as _wrap_untrusted,
+        sanitize_for_prompt as _sanitize_untrusted,
+        UNTRUSTED_SYSTEM_MESSAGE as _UNTRUSTED_SYS_MSG,
+    )
+    # page_text_block already has its own header + ----- markers; replace the
+    # bare excerpt body with a wrapped <page_text> envelope.
+    if page_text_excerpt:
+        page_text_block = (
+            "\nListing page text (raw, includes Item specifics / shipping / returns) — UNTRUSTED:\n"
+            + _wrap_untrusted("page_text", page_text_excerpt)
+        )
     prompt = SECURITY_PROMPT.format(
-        title           = title_for_prompt,  # normalized title, not raw seller text
+        title           = _wrap_untrusted("listing_title", title_for_prompt),
         price_block     = price_block,
-        description     = (listing.description or "")[:600],
-        condition       = listing.condition or "unknown",
-        seller_joined   = seller_joined,
-        seller_rating   = seller_rating,
-        photo_count     = photo_str,
-        category        = category,
-        layer1_flags    = layer1_summary,
+        description     = _wrap_untrusted("listing_description", (listing.description or "")[:600], empty_placeholder="(none)"),
+        condition       = _wrap_untrusted("listing_condition", listing.condition or "unknown"),
+        seller_joined   = _wrap_untrusted("seller_joined", seller_joined),
+        seller_rating   = _wrap_untrusted("seller_rating", seller_rating),
+        photo_count     = _sanitize_untrusted(photo_str),
+        category        = _sanitize_untrusted(category),
+        layer1_flags    = _sanitize_untrusted(layer1_summary),
         auction_note    = auction_note,
         page_text_block = page_text_block,
     )
@@ -491,6 +508,7 @@ async def run_layer2(
         lambda: client.messages.create(
             model      = "claude-haiku-4-5",
             max_tokens = 400,
+            system     = _UNTRUSTED_SYS_MSG,
             messages   = [{"role": "user", "content": prompt}],
         ),
         label="SecurityScorer",

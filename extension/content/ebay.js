@@ -630,8 +630,11 @@
       const _ratio      = _hasNew ? (r.price / r.new_price) : 0;
       const _buyTrigger = r.buy_new_trigger || _ratio >= 0.72;
       if (_hasCards || _buyTrigger) {
+        // v0.45.2: auto-expand on first view when a better-deal card exists.
+        const _hasBetterDeal = _hasCards
+          && r.affiliate_cards.some(c => c.deal_tier === 'better_deal');
         const sec = window.DealScoutDigest.openCollapsible(sections, 'compare',
-          { title: '\uD83D\uDD0D Compare Prices' });
+          { title: '\uD83D\uDD0D Compare Prices', defaultCollapsed: !_hasBetterDeal });
         renderBuyNewSection(r, sec.body);
         let _best = 0;
         if (_hasCards) {

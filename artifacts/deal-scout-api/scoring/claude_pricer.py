@@ -338,10 +338,22 @@ Use this description to identify: exact model/variant, included accessories, sig
 modifications, missing parts, or any details that affect pricing.
 """
 
+    # Sanitise every seller-controlled field before interpolation. `query` and
+    # `condition` come from the merged extractor, but the upstream raw_text
+    # could contain injection attempts that survived as a substring, so we
+    # treat them as untrusted defense-in-depth.
+    from scoring._prompt_safety import (
+        wrap as _wrap_untrusted,
+        sanitize_for_prompt as _sanitize_untrusted,
+        UNTRUSTED_SYSTEM_MESSAGE as _UNTRUSTED_SYS_MSG,
+    )
+    _safe_query     = _sanitize_untrusted(query)
+    _safe_condition = _sanitize_untrusted(condition)
+
     prompt = f"""You are a used marketplace pricing expert. Provide accurate used/secondhand market pricing for:
 
-Item: {query}
-Condition: {condition}
+Item: {_safe_query}
+Condition: {_safe_condition}
 {f"Seller is asking: ${listing_price:.0f}" if listing_price > 0 else ""}{category_context}
 {web_context}{description_context}
 {condition_guide}
@@ -376,6 +388,7 @@ Return ONLY the JSON, no explanation."""
             lambda: client.messages.create(
                 model=CLAUDE_MODEL,
                 max_tokens=300,
+                system=_UNTRUSTED_SYS_MSG,
                 messages=[{"role": "user", "content": prompt}],
             ),
             label="ClaudePricer",

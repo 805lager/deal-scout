@@ -2186,13 +2186,20 @@ async def _validate_query_background(
     """
     import anthropic as _anthropic
     from scoring.corrections import save_correction as _save_correction
+    from scoring._prompt_safety import (
+        wrap as _wrap_untrusted,
+        sanitize_for_prompt as _sanitize_untrusted,
+        UNTRUSTED_SYSTEM_MESSAGE as _UNTRUSTED_SYS_MSG,
+    )
 
     try:
-        results_block = "\n".join(f"  - {t}" for t in sample_titles[:3])
+        results_block = "\n".join(
+            f"  - {_sanitize_untrusted((t or '')[:200])}" for t in sample_titles[:3]
+        )
         prompt = (
-            f'Listing title: "{listing_title}"\n'
-            f'eBay search query used: "{query_used}"\n'
-            f"Top eBay results returned:\n{results_block}\n\n"
+            f'Listing title: {_wrap_untrusted("listing_title", listing_title[:200])}\n'
+            f'eBay search query used: {_wrap_untrusted("listing_search_query", query_used[:200])}\n'
+            f"Top eBay results returned (each title is UNTRUSTED seller text):\n{results_block}\n\n"
             "Are the eBay results relevant price comps for this listing?\n"
             "A result is relevant if it is the same product type, not an accessory, "
             "not a completely different item, and not a wildly different tier/brand.\n\n"
@@ -2217,6 +2224,7 @@ async def _validate_query_background(
             lambda: _client.messages.create(
                 model      = "claude-haiku-4-5",
                 max_tokens = 120,
+                system     = _UNTRUSTED_SYS_MSG,
                 messages   = [{"role": "user", "content": prompt}],
             ),
         )
@@ -2257,11 +2265,16 @@ async def _validate_query_background(
 
 
 @app.get("/test-claude-connection")
-async def test_claude_connection():
+async def test_claude_connection(request: Request):
     """
     Directly tests the Claude API connection from inside the server.
     Visit http://localhost:8000/test-claude to diagnose key/credit issues.
+
+    SECURITY: gated behind DS_API_KEY — when the key is set, this endpoint
+    cannot be used by random callers to burn through Anthropic credits or
+    confirm the integration is wired up.
     """
+    _check_api_key(request)
     import anthropic
     if not os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"):
         return {"status": "error", "detail": "AI Claude integration not configured"}
@@ -2336,11 +2349,17 @@ async def test_ebay():
 
 @app.get("/test-claude")
 async def test_claude(
+    request:       Request,
     query:         str   = "Celestron NexStar 6SE telescope",
     condition:     str   = "Used",
     listing_price: float = 600.0,
 ):
-    """Tests Claude AI pricing integration end-to-end."""
+    """Tests Claude AI pricing integration end-to-end.
+
+    SECURITY: gated behind DS_API_KEY (see test_claude_connection) so the
+    endpoint can't be abused as an unauthenticated proxy to Claude.
+    """
+    _check_api_key(request)
     from scoring.claude_pricer import get_claude_market_price, claude_is_configured
     if not claude_is_configured():
         return {
@@ -2697,13 +2716,17 @@ class FeedbackRequest(BaseModel):
     """
     Manual query correction submitted via the sidebar or /admin page.
     Tells the system: "for listings like this, use THIS query instead."
+
+    SECURITY: max_length caps prevent a malicious caller from posting
+    multi-MB payloads that would either bloat the corrections.jsonl file
+    or be echoed verbatim into a future Claude prompt.
     """
-    listing_title:       str
-    bad_query:           str
-    good_query:          str
+    listing_title:       str   = Field(..., max_length=500)
+    bad_query:           str   = Field(..., max_length=300)
+    good_query:          str   = Field(..., max_length=300)
     correct_price_low:   float = 0.0
     correct_price_high:  float = 0.0
-    notes:               str   = ""
+    notes:               str   = Field("",  max_length=2000)
 
 
 class ThumbsRequest(BaseModel):
@@ -3124,10 +3147,21 @@ async function submitCorrection() {{
 # Admin view:  GET /admin/dashboard  (summary stats)
 
 def _check_data_key(request: Request) -> None:
-    """Simple API key gate for the market data endpoints."""
+    """API key gate for the market data endpoints.
+
+    SECURITY (v0.45.2 hardening): previously this fell open when
+    MARKET_DATA_API_KEY was unset, leaking the aggregate market signal table
+    to any anonymous caller. Now it falls back to the standard `_check_api_key`
+    (DS_API_KEY) so the endpoint shares the same auth as every other
+    extension-facing route — and `_check_api_key` itself only falls open
+    when DS_API_KEY is unset (development mode).
+    """
     required_key = os.getenv("MARKET_DATA_API_KEY", "")
     if not required_key:
-        return  # Open access until you set the env var
+        # Fall back to the shared extension key so the endpoint isn't
+        # silently open in production when MARKET_DATA_API_KEY is forgotten.
+        _check_api_key(request)
+        return
     provided = request.headers.get("X-API-Key", "") or request.query_params.get("api_key", "")
     if provided != required_key:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")

@@ -1554,8 +1554,14 @@
     const _ratio      = _hasNew ? (r.price / r.new_price) : 0;
     const _buyTrigger = r.buy_new_trigger || _ratio >= 0.72;
     if (_hasCards || _buyTrigger) {
+      // v0.45.2: auto-expand the Compare Prices panel on first view when the
+      // backend flagged a `better_deal` affiliate card (i.e. a cheaper option
+      // is available now). Persisted user preference still wins on subsequent
+      // views — we only override the default-closed initial state.
+      const _hasBetterDeal = _hasCards
+        && r.affiliate_cards.some(c => c.deal_tier === 'better_deal');
       const sec = window.DealScoutDigest.openCollapsible(sections, 'compare',
-        { title: '\uD83D\uDD0D Compare Prices' });
+        { title: '\uD83D\uDD0D Compare Prices', defaultCollapsed: !_hasBetterDeal });
       renderBuyNewSection(r, sec.body);
       // Best-alt summary: walk every card, pick the cheapest item / hint.
       let _best = 0;
