@@ -46,7 +46,12 @@ import anthropic
 
 _shared_client: Optional[anthropic.Anthropic] = None
 
-
+# TASK-80 BENCHMARK FLAG: when env var DS_DISABLE_CLIENT_POOL=1 is set,
+# get_anthropic_client() constructs a fresh client on every call. This
+# simulates the pre-Task-80 behavior so we can run a clean A/B
+# benchmark on /score. In production this env var is unset and the
+# singleton behavior is the default. REMOVE THIS FLAG after the
+# benchmark is recorded if it's never needed again.
 def get_anthropic_client() -> anthropic.Anthropic:
     """Return the process-wide shared Anthropic client.
 
@@ -54,6 +59,11 @@ def get_anthropic_client() -> anthropic.Anthropic:
     ``AI_INTEGRATIONS_ANTHROPIC_API_KEY`` and
     ``AI_INTEGRATIONS_ANTHROPIC_BASE_URL``.
     """
+    if os.getenv("DS_DISABLE_CLIENT_POOL") == "1":
+        return anthropic.Anthropic(
+            api_key=os.getenv("AI_INTEGRATIONS_ANTHROPIC_API_KEY", "placeholder"),
+            base_url=os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"),
+        )
     global _shared_client
     if _shared_client is None:
         _shared_client = anthropic.Anthropic(
