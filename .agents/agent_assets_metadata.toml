@@ -108,3 +108,9 @@ id = "e_86D_OnEyH9ZoA1QtvyT"
 uri = "file://extension/deal-scout-v0.46.8.zip"
 type = "unspecified"
 title = "Deal Scout v0.46.8 (collapsed Negotiation row fix)"
+
+[[outputs]]
+id = "a1VdFB4LdExZj1kmcl0mf"
+uri = "file://extension/deal-scout-v0.46.9.zip"
+type = "unspecified"
+title = "Deal Scout v0.46.9 (Negotiation matches other sections + star/help spacing)"

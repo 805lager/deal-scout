@@ -246,8 +246,8 @@
     // touch every platform script's header builder.
     const controls = document.createElement('div');
     controls.style.cssText =
-      'position:absolute;top:8px;right:38px;z-index:6;'
-      + 'display:flex;align-items:center;gap:6px';
+      'position:absolute;top:8px;right:48px;z-index:6;'
+      + 'display:flex;align-items:center;gap:10px';
     digest.style.position = digest.style.position || 'sticky';
     digest.appendChild(controls);
 
