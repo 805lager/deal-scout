@@ -746,7 +746,7 @@ async def _fetch_image_base64(image_url: str) -> Optional[tuple[str, str]]:
         return None
 
 
-async def _fetch_multiple_images(image_urls: list[str], max_images: int = 3) -> list[tuple[str, str]]:
+async def _fetch_multiple_images(image_urls: list[str], max_images: int = 5) -> list[tuple[str, str]]:
     """
     Fetch up to max_images concurrently. Returns list of (base64_data, media_type) tuples.
     Skips failed fetches gracefully.
@@ -1153,7 +1153,7 @@ async def score_deal(
     """
     Send listing + market data to Claude and parse the deal score response.
 
-    image_urls: list of image URLs for multi-image vision analysis (up to 3).
+    image_urls: list of image URLs for multi-image vision analysis (up to 5).
     image_url: legacy single URL fallback (used if image_urls not provided).
     """
     if not os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"):

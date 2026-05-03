@@ -1010,9 +1010,6 @@ async def score_listing(listing: ListingRequest, request: Request):
     # right after the gather unpack, Task #74). The await happens after the
     # deal scorer finishes so we still get to surface security findings, but
     # the task started ~1.5-3s earlier so it's almost certainly done by then.
-    # We re-import CATEGORY_PROGRAMS here because downstream code uses it.
-    from scoring.affiliate_router import CATEGORY_PROGRAMS  # noqa: F401  (used later in this fn)
-
     try:
         effective_photo_count = max(listing.photo_count or 0, len(listing.image_urls or []))
         deal_score = await score_deal(
