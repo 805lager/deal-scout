@@ -53,6 +53,7 @@ from scoring.confidence import (
     derive_confidence,
     cant_price_message,
     new_retail_disclaimer,
+    thin_comps_disclaimer,
     determine_anchor_source,
 )
 from dataclasses import asdict as dc_asdict_top
@@ -403,10 +404,15 @@ def _build_confidence_payload(market_value, product_info, asking_price: float) -
     # plus a server-built `pricing_disclaimer` so the user gets a usable
     # score with a clear caveat instead of a dead-end "no comps" message.
     cp_message  = "" if can_price else cant_price_message(asking_price)
-    pricing_disclaimer = (
-        new_retail_disclaimer(_new_price_val)
-        if anchor_source == "new_retail" else ""
-    )
+    if anchor_source == "new_retail":
+        pricing_disclaimer = new_retail_disclaimer(_new_price_val)
+    elif anchor_source == "sold_comps_thin":
+        pricing_disclaimer = thin_comps_disclaimer(
+            int(comp_summary.get("count", 0) or 0),
+            float(comp_summary.get("median", 0.0) or 0.0),
+        )
+    else:
+        pricing_disclaimer = ""
 
     # "What we tried" expandable — minimal payload from what we have on hand.
     queries_attempted = []

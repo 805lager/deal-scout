@@ -30,20 +30,29 @@ def determine_anchor_source(comp_count: int, new_price: float) -> str:
     """
     Single source of truth for which price reference anchors the score.
 
-    Task #78 — when used-comp count is too thin to anchor (<3 cleaned comps)
-    BUT we know the typical new-retail price for the item (from Google
-    Shopping, Claude knowledge, or Amazon), we fall back to scoring against
-    new-retail with a forced "low" confidence + a server-built disclaimer.
+    Task #78 — when used-comp count is too thin (<3) BUT we know the typical
+    new-retail price (from Google Shopping, Claude, or Amazon), we fall back
+    to scoring against new-retail with a forced "low" confidence + a
+    server-built disclaimer.
+
+    Task #84 — when used-comp count is 1 or 2 AND no new-retail price is
+    available, we anchor on the thin used comp set (rather than dead-ending
+    with CAN'T PRICE) and surface a server-built disclaimer telling the user
+    the score rests on very few sales. Only the genuine "0 used comps AND
+    no new-retail" case keeps anchor_source="none".
 
     Returns one of:
-        "sold_comps"  — normal path, anchor on used sold comps
-        "new_retail"  — fallback, anchor on new retail price (force conf=low)
-        "none"        — neither anchor available; can_price will be False
+        "sold_comps"       — normal path, ≥3 cleaned used comps
+        "sold_comps_thin"  — 1-2 cleaned used comps, no new-retail (force low)
+        "new_retail"       — 0 cleaned used comps, new-retail known (force low)
+        "none"             — no anchor at all; can_price will be False
     """
     if comp_count >= 3:
         return "sold_comps"
     if new_price and new_price > 0:
         return "new_retail"
+    if comp_count >= 1:
+        return "sold_comps_thin"
     return "none"
 
 
@@ -90,7 +99,10 @@ def derive_confidence(
     elif comp_count >= 3:
         comp_signal = "low"
     else:
-        # <3 comps — try new-retail fallback before bailing to "none" (Task #78)
+        # <3 comps. Try fallbacks in order before bailing to "none":
+        #   1. new-retail price known           → anchor_source=new_retail (Task #78)
+        #   2. 1-2 used comps, no new-retail    → anchor_source=sold_comps_thin (Task #84)
+        #   3. zero anchor of any kind          → "none" / CAN'T PRICE
         if new_price and new_price > 0:
             return "low", {
                 "comp_count":      "low",   # we have AN anchor, just not from used sales
@@ -99,6 +111,15 @@ def derive_confidence(
                 "market":          (market_confidence or "n/a").lower(),
                 "anchor_source":   "new_retail",
                 "winning_signal":  "new_retail_anchor",
+            }
+        if comp_count >= 1:
+            return "low", {
+                "comp_count":      "low",   # 1-2 sold comps — anchor exists, just thin
+                "spread":          "n/a",   # spread on n=1 is meaningless
+                "extraction":      _normalise_conf(extraction_confidence),
+                "market":          (market_confidence or "n/a").lower(),
+                "anchor_source":   "sold_comps_thin",
+                "winning_signal":  "sold_comps_thin_anchor",
             }
         return "none", {
             "comp_count":     "none",
@@ -182,6 +203,28 @@ def new_retail_disclaimer(new_price: float) -> str:
             f"no used sales found — confidence is low."
         )
     return ""
+
+
+def thin_comps_disclaimer(comp_count: int, comp_median: float) -> str:
+    """
+    Task #84 — server-built (NEVER LLM-authored) disclaimer for the
+    "1-2 used comps, no new-retail" case. Same fixed-template guarantee
+    as new_retail_disclaimer so a malicious listing cannot strip or
+    fake the warning.
+    """
+    if comp_count <= 0:
+        return ""
+    sale_word = "sale" if comp_count == 1 else "sales"
+    if comp_median and comp_median > 0:
+        return (
+            f"Score anchored on only {comp_count} comparable {sale_word} "
+            f"(~${comp_median:.0f}); confidence is low — treat as a "
+            f"starting point."
+        )
+    return (
+        f"Score anchored on only {comp_count} comparable {sale_word}; "
+        f"confidence is low — treat as a starting point."
+    )
 
 
 def _normalise_conf(value: str) -> str:
