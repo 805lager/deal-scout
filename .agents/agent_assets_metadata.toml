@@ -96,3 +96,9 @@ id = "28vE28Z9HWEO_gPoQ1ISF"
 uri = "file://extension/deal-scout-v0.42.6.zip"
 type = "unspecified"
 title = "Deal Scout v0.42.6 — Chrome Web Store upload"
+
+[[outputs]]
+id = "XIBPN4b2XigY2jTfggqLZ"
+uri = "file://extension/deal-scout-v0.46.7.zip"
+type = "unspecified"
+title = "Deal Scout v0.46.7 (unpacked extension)"
