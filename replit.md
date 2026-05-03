@@ -337,6 +337,12 @@ are zero on every call — including the very first call against any
 given system block, which would otherwise have populated
 `cache_creation_input_tokens` if the proxy honored the field.
 
+Cross-check: the per-call `[ClaudeCache]` log lines (added in #75) were
+spot-checked against the dashboard aggregate. Every line in the sample
+window reads `cache_read=0 cache_creation=0 hit=N`, matching the 0/0
+totals above — i.e. there is no row-level disagreement between the
+per-call telemetry and the aggregated `claude_cache` block.
+
 Note on label coverage: `ListingExtractor` does not appear in the
 table because it is only called by `/score-stream` (the streaming
 endpoint used by the extension's content scripts), and the synthetic
