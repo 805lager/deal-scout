@@ -281,10 +281,12 @@ No backend or scoring behavior changed.
   the old footer indigo.
 - Removed the `auto-score-hint` paragraph under the Auto-score toggle —
   the label was self-explanatory and the hint added vertical noise.
-- `checkAPIHealth` now hides the entire `#api-status` bar on success
-  (`display:none`, status text cleared). The green dot already
-  communicated the same fact; the "Connected · Claude: … · eBay: …"
-  string was noise. Errors restore the bar with the failure message.
+- `checkAPIHealth` keeps the `#api-status` bar visible on success — the
+  green dot still signals connection health — but clears the verbose
+  "Connected · Claude: … · eBay: …" text. Errors write the failure
+  message back into the same bar. `setStatus(...)` in the manual-score
+  path defensively re-shows the bar (`display:""`) before writing, so
+  progress and errors always surface.
 
 **In-page panel — collapsible header**
 - New `digest.js::makeCollapsibleHeader(container, name, opts)` returns

@@ -1700,8 +1700,14 @@
         _shareTopbar = window.DealScoutSocial.renderCompactRateShare(null);
       }
     } catch (_) {}
-    if (_shareTopbar) topBar.appendChild(_shareTopbar);
-    topBar.appendChild(closeBtn);
+    // v0.47.1 — group right-side controls (share + close) in a single
+    // flex container so placement is deterministic regardless of how
+    // justify-content distributes space-between siblings.
+    const topRight = document.createElement('div');
+    topRight.style.cssText = 'display:inline-flex;align-items:center;gap:6px;flex-shrink:0';
+    if (_shareTopbar) topRight.appendChild(_shareTopbar);
+    topRight.appendChild(closeBtn);
+    topBar.appendChild(topRight);
 
     topBar.addEventListener('mousedown', (e) => {
       if (e.target === closeBtn) return;
