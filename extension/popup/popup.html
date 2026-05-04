@@ -193,6 +193,13 @@
       font-weight: 600;
       color: #cbd5e1;
     }
+    .auto-score-off-hint {
+      font-size: 10.5px;
+      color: #fbbf24;
+      margin-top: 3px;
+      line-height: 1.4;
+    }
+    .auto-score-off-hint strong { color: #fcd34d; }
     .switch {
       position: relative;
       display: inline-block;
@@ -489,6 +496,9 @@
   <div class="auto-score-row">
     <div class="auto-score-info">
       <div class="auto-score-label">Auto-score on page load</div>
+      <div class="auto-score-off-hint" id="auto-score-off-hint" style="display:none">
+        Off &mdash; click <strong>Score Current Listing</strong> to score this page.
+      </div>
     </div>
     <label class="switch">
       <input type="checkbox" id="auto-score-toggle" checked>

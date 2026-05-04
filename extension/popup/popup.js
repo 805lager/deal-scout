@@ -24,16 +24,16 @@ async function checkAPIHealth() {
   try {
     const resp = await fetch(`${API_BASE}/health`, { headers: { "X-DS-Ext-Version": EXT_VERSION }, signal: AbortSignal.timeout(4000) });
     if (resp.ok) {
-      // v0.47.1 — on success, hide the status bar entirely. The "Connected · Claude…"
-      // line was noise once the green dot communicated the same fact.
+      // v0.47.1 — on success, keep the status bar visible (green dot still
+      // communicates connection health) but drop the verbose "Connected ·
+      // Claude … · eBay …" text. Bar stays in the DOM so manual-score
+      // setStatus() calls can write progress/error messages into it.
       await resp.json();
       statusEl.className = "active";
-      statusEl.style.display = "none";
       statusTxt.textContent = "";
     } else { throw new Error(`HTTP ${resp.status}`); }
   } catch (e) {
     statusEl.className = "error";
-    statusEl.style.display = "";
     const msg = (e.name === "TypeError" || e.message.includes("fetch"))
       ? "Can\u2019t reach Deal Scout servers \u2014 check your connection"
       : `API offline \xb7 ${e.message}`;
@@ -189,6 +189,10 @@ document.getElementById("score-current").addEventListener("click", async () => {
   const platform  = detectPlatform(tab?.url);
 
   const setStatus = (state, msg) => {
+    // v0.47.1 — defensive: ensure the bar is visible whenever we write to
+    // it. checkAPIHealth no longer hides it, but if a future caller does
+    // we still want manual-score progress/errors to surface.
+    statusEl.style.display = "";
     statusEl.className = state;
     statusTxt.textContent = msg;
   };
@@ -317,17 +321,21 @@ function closeModal() {
 // base URL is no longer user-overridable from the popup; for advanced users
 // it can still be set via chrome.storage.local.ds_api_base from devtools.
 async function loadAutoScoreToggle() {
-  const cb = document.getElementById("auto-score-toggle");
+  const cb   = document.getElementById("auto-score-toggle");
+  const hint = document.getElementById("auto-score-off-hint");
+  const syncHint = () => { if (hint) hint.style.display = cb.checked ? "none" : ""; };
   try {
     const stored = await chrome.storage.local.get("ds_auto_score");
     cb.checked = stored.ds_auto_score !== false; // default ON
   } catch {
     cb.checked = true;
   }
+  syncHint();
   cb.addEventListener("change", async () => {
     try {
       await chrome.storage.local.set({ ds_auto_score: cb.checked });
     } catch {}
+    syncHint();
   });
 }
 
