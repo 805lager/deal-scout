@@ -275,29 +275,34 @@ panel footer + popup footer):
   `max-height:calc(100vh-100px)` → `max-height:92vh` across all 4 content
   scripts (fbm.js, ebay.js, craigslist.js, offerup.js). Sub-laptop screens
   no longer get clipped.
-- **Auto-collapse on short viewports** — `digest.js::openCollapsible` now
-  forces `defaultCollapsed = true` when `window.innerHeight < 700`, so the
-  panel fits without scrolling on short laptops. Caller-provided
-  `defaultCollapsed:false` is honored only on tall screens.
-- **Per-site resize grip** — new `social.js::attachResizer(panel, key)`
-  adds a bottom-right drag handle, persists `{w,h}` per host in
-  `chrome.storage.local` under `ds_panel_size_<hostname>`, restores on next
-  open. Min 280×220, max viewport-20px.
+- **Auto-collapse on short viewports** — `digest.js::openCollapsible`
+  ORs `window.innerHeight < 700` into the default-collapsed calculation,
+  so even open-by-default sections start closed on short laptops.
+  Persisted user toggles still win via the existing `_setCollapsed`
+  cache.
+- **Resize grip** — new `social.js::attachResizer(panel, key)` adds a
+  bottom-right drag handle and persists `{w,h}` in `chrome.storage.local`
+  under one global key (`ds_panel_size_v1`). Bounds: min **280×320**,
+  max **92vw × 92vh**. Restored sizes are clamped to the current
+  viewport. The MutationObserver self-disconnects when the panel is
+  removed from the DOM.
 - **Rate / Share row** — new `extension/content/lib/social.js` exports
-  `renderRateShareRow(container)` rendering "Enjoying Deal Scout? ★ Rate"
-  + 5 share buttons (Copy link, X, Facebook, LinkedIn, Reddit) plus a 6th
-  ⤴ Native Web Share button when `navigator.share` is available. Mounted
-  in: (a) all 4 in-page panel footers, (b) the browser-action popup
-  between settings and footer. Rate button → Chrome Web Store URL
-  (`mbkhagpggkmefaompfjkbbnbmmameapk`). Same-origin clipboard write for
-  Copy link with ✓ confirmation flash.
+  `renderRateShareRow(container)` rendering "Enjoying Deal Scout? ★ Rate
+  · Share ▾". The Share button opens a small dropdown with Copy link,
+  X / Twitter, Facebook, Reddit, LinkedIn, and a "Share via system…"
+  item that only appears when `navigator.share` is available. Mounted
+  in: (a) all 4 in-page panel footers (at the absolute end, after the
+  version line), (b) the browser-action popup. Rate button → Chrome Web
+  Store URL (`mbkhagpggkmefaompfjkbbnbmmameapk`). Same-origin clipboard
+  write for Copy link with ✓ confirmation flash.
 - `social.js` registered in all 4 content_script bundles in `manifest.json`
-  (BEFORE platform script, AFTER saved.js); also `<script>`-loaded by the
-  popup. Exposes `window.DealScoutSocial.{STORE_URL, renderRateShareRow,
-  attachResizer}`. Idempotent guard.
+  (immediately before each platform script, after `digest.js` + `repv2.js`);
+  also `<script>`-loaded by the popup. Exposes
+  `window.DealScoutSocial.{ RATE_URL, SHARE_URL, SHARE_TEXT,
+  renderRateShareRow, attachResizer }`. Idempotent guard.
 
 VERSION 0.46.9 → 0.47.0; manifest 0.46.9 → 0.47.0. Test zip at
-`/tmp/deal-scout-v0.47.0-test.zip`.
+`.local/dist/deal-scout-v0.47.0-test.zip`.
 
 ### v0.46.3 CAN'T PRICE → new-retail fallback (Task #78)
 When sold/active comps are too thin (<3 cleaned) but a new-retail price

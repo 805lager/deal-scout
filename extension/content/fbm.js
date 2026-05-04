@@ -2648,14 +2648,14 @@
       thumbSection.appendChild(thumbWrap);
       footer.appendChild(thumbSection);
     }
-    // v0.47.0 — Rate / Share row
-    if (window.DealScoutSocial && window.DealScoutSocial.renderRateShareRow) {
-      try { window.DealScoutSocial.renderRateShareRow(footer); } catch (_) {}
-    }
     const versionEl = document.createElement('div');
     versionEl.style.cssText = 'text-align:center;font-size:10px;color:#374151;margin-top:' + (r ? '8px' : '0');
     versionEl.textContent = `Deal Scout v${VERSION}`;
     footer.appendChild(versionEl);
+    // v0.47.0 — Rate / Share row at the absolute end of the footer
+    if (window.DealScoutSocial && window.DealScoutSocial.renderRateShareRow) {
+      try { window.DealScoutSocial.renderRateShareRow(footer); } catch (_) {}
+    }
     container.appendChild(footer);
   }
 

@@ -1443,13 +1443,13 @@
       thumbSection.appendChild(thumbWrap);
       footer.appendChild(thumbSection);
     }
-    if (window.DealScoutSocial && window.DealScoutSocial.renderRateShareRow) {
-      try { window.DealScoutSocial.renderRateShareRow(footer); } catch (_) {}
-    }
     const versionEl = document.createElement("div");
     versionEl.style.cssText = "text-align:center;font-size:10px;color:#374151;margin-top:" + (r && r.score_id ? "8px" : "0");
     versionEl.textContent = "Deal Scout v" + VERSION + " · eBay";
     footer.appendChild(versionEl);
+    if (window.DealScoutSocial && window.DealScoutSocial.renderRateShareRow) {
+      try { window.DealScoutSocial.renderRateShareRow(footer); } catch (_) {}
+    }
     container.appendChild(footer);
   }
 
