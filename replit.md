@@ -290,8 +290,10 @@ No backend or scoring behavior changed.
 
 **In-page panel — collapsible header**
 - New `digest.js::makeCollapsibleHeader(container, name, opts)` returns
-  `{expanded, setSummary, wrap, collapsedRow, _getCollapsed, _setCollapsed}`.
-  The expanded body is the existing render target; `setSummary` accepts
+  `{expanded, setSummary, wrap, collapsedRow}` (the `_getCollapsed` /
+  `_setCollapsed` helpers are exposed at module scope on
+  `window.DealScoutDigest`, not on the per-call return object). The
+  expanded body is the existing render target; `setSummary` accepts
   either a string or a DOM node and is shown when collapsed. Default
   collapsed when `window.innerHeight < 700`; persisted user toggles win
   via the existing `_setCollapsed` cache (key `ds_collapsed_<name>_v1`).

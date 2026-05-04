@@ -817,7 +817,7 @@
     // v0.47.1 — collapsed-header summary chip
     if (_collapsibleApi) {
       try {
-        const sevLabel = score >= 7 ? 'GOOD' : score >= 5 ? 'FAIR' : 'OVERPRICED';
+        const sevLabel = score >= 7 ? 'GOOD DEAL' : score >= 5 ? 'FAIR DEAL' : 'OVERPRICED';
         const sumWrap = document.createElement('span');
         sumWrap.style.cssText = 'display:inline-flex;align-items:center;gap:6px;min-width:0';
         const chip = document.createElement('span');
