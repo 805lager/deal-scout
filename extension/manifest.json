@@ -44,9 +44,9 @@
       "js": [
         "lib/purify.min.js",
         "content/lib/saved.js",
-        "content/lib/social.js",
         "content/lib/digest.js",
         "content/lib/repv2.js",
+        "content/lib/social.js",
         "content/fbm.js"
       ],
       "run_at": "document_idle"
@@ -58,9 +58,9 @@
       "js": [
         "lib/purify.min.js",
         "content/lib/saved.js",
-        "content/lib/social.js",
         "content/lib/digest.js",
         "content/lib/repv2.js",
+        "content/lib/social.js",
         "content/craigslist.js"
       ],
       "run_at": "document_idle",
@@ -88,9 +88,9 @@
       "js": [
         "lib/purify.min.js",
         "content/lib/saved.js",
-        "content/lib/social.js",
         "content/lib/digest.js",
         "content/lib/repv2.js",
+        "content/lib/social.js",
         "content/ebay.js"
       ],
       "run_at": "document_idle"
@@ -105,9 +105,9 @@
       "js": [
         "lib/purify.min.js",
         "content/lib/saved.js",
-        "content/lib/social.js",
         "content/lib/digest.js",
         "content/lib/repv2.js",
+        "content/lib/social.js",
         "content/offerup.js"
       ],
       "run_at": "document_idle"

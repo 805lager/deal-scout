@@ -261,7 +261,7 @@
     document.addEventListener("mouseup", onUp);
     document.body.appendChild(panel);
     if (window.DealScoutSocial && window.DealScoutSocial.attachResizer) {
-      try { window.DealScoutSocial.attachResizer(panel, "ds_panel_size_" + location.hostname); } catch (_) {}
+      try { window.DealScoutSocial.attachResizer(panel, "ds_panel_size_v1"); } catch (_) {}
     }
     return panel;
   }

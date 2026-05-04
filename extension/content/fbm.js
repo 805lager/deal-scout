@@ -1220,7 +1220,7 @@
     // drag it bigger and we remember per-host).
     if (window.DealScoutSocial && window.DealScoutSocial.attachResizer) {
       try {
-        window.DealScoutSocial.attachResizer(panel, 'ds_panel_size_' + location.hostname);
+        window.DealScoutSocial.attachResizer(panel, 'ds_panel_size_v1');
       } catch (_) {}
     }
     return panel;
