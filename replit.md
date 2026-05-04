@@ -266,6 +266,39 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 Current: **v0.45.0** (extension) / **v0.45.0** (API — read from `artifacts/deal-scout-api/VERSION`)
 
+### v0.47.0 Small-screen panel sizing + Rate / Share buttons (Task #90)
+
+Two UX wins shipped together because they share the same surface (in-page
+panel footer + popup footer):
+
+- **Responsive panel sizing** — `width:320px` → `width:min(380px,92vw)`,
+  `max-height:calc(100vh-100px)` → `max-height:92vh` across all 4 content
+  scripts (fbm.js, ebay.js, craigslist.js, offerup.js). Sub-laptop screens
+  no longer get clipped.
+- **Auto-collapse on short viewports** — `digest.js::openCollapsible` now
+  forces `defaultCollapsed = true` when `window.innerHeight < 700`, so the
+  panel fits without scrolling on short laptops. Caller-provided
+  `defaultCollapsed:false` is honored only on tall screens.
+- **Per-site resize grip** — new `social.js::attachResizer(panel, key)`
+  adds a bottom-right drag handle, persists `{w,h}` per host in
+  `chrome.storage.local` under `ds_panel_size_<hostname>`, restores on next
+  open. Min 280×220, max viewport-20px.
+- **Rate / Share row** — new `extension/content/lib/social.js` exports
+  `renderRateShareRow(container)` rendering "Enjoying Deal Scout? ★ Rate"
+  + 5 share buttons (Copy link, X, Facebook, LinkedIn, Reddit) plus a 6th
+  ⤴ Native Web Share button when `navigator.share` is available. Mounted
+  in: (a) all 4 in-page panel footers, (b) the browser-action popup
+  between settings and footer. Rate button → Chrome Web Store URL
+  (`mbkhagpggkmefaompfjkbbnbmmameapk`). Same-origin clipboard write for
+  Copy link with ✓ confirmation flash.
+- `social.js` registered in all 4 content_script bundles in `manifest.json`
+  (BEFORE platform script, AFTER saved.js); also `<script>`-loaded by the
+  popup. Exposes `window.DealScoutSocial.{STORE_URL, renderRateShareRow,
+  attachResizer}`. Idempotent guard.
+
+VERSION 0.46.9 → 0.47.0; manifest 0.46.9 → 0.47.0. Test zip at
+`/tmp/deal-scout-v0.47.0-test.zip`.
+
 ### v0.46.3 CAN'T PRICE → new-retail fallback (Task #78)
 When sold/active comps are too thin (<3 cleaned) but a new-retail price
 is known (Google Shopping, Claude knowledge, or Amazon), the scorer no

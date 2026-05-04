@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Deal Scout \u2014 AI Deal Scorer",
-  "version": "0.46.9",
+  "version": "0.47.0",
   "description": "AI deal scorer for Facebook Marketplace, Craigslist, eBay & OfferUp. Uses sold prices, market analysis & scam detection.",
   "permissions": [
     "activeTab",
@@ -44,6 +44,7 @@
       "js": [
         "lib/purify.min.js",
         "content/lib/saved.js",
+        "content/lib/social.js",
         "content/lib/digest.js",
         "content/lib/repv2.js",
         "content/fbm.js"
@@ -57,6 +58,7 @@
       "js": [
         "lib/purify.min.js",
         "content/lib/saved.js",
+        "content/lib/social.js",
         "content/lib/digest.js",
         "content/lib/repv2.js",
         "content/craigslist.js"
@@ -86,6 +88,7 @@
       "js": [
         "lib/purify.min.js",
         "content/lib/saved.js",
+        "content/lib/social.js",
         "content/lib/digest.js",
         "content/lib/repv2.js",
         "content/ebay.js"
@@ -102,6 +105,7 @@
       "js": [
         "lib/purify.min.js",
         "content/lib/saved.js",
+        "content/lib/social.js",
         "content/lib/digest.js",
         "content/lib/repv2.js",
         "content/offerup.js"

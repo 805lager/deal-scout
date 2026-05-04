@@ -495,3 +495,11 @@ async function renderSavedListings() {
 }
 
 renderSavedListings();
+
+// ── Rate / Share row (v0.47.0) ──────────────────────────────────────
+try {
+  const mount = document.getElementById("rate-share-mount");
+  if (mount && window.DealScoutSocial && window.DealScoutSocial.renderRateShareRow) {
+    window.DealScoutSocial.renderRateShareRow(mount);
+  }
+} catch (_) {}

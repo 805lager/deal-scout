@@ -1184,8 +1184,8 @@
       'position:fixed',
       'top:80px',
       'right:20px',
-      'width:320px',
-      'max-height:calc(100vh - 100px)',
+      'width:min(380px, 92vw)',
+      'max-height:92vh',
       'overflow-y:auto',
       'z-index:2147483647',
       'background:#1e1b2e',
@@ -1215,6 +1215,14 @@
       }
     }).observe(document.body, { childList: true });
     document.body.appendChild(panel);
+    // v0.47.0 — per-site resizable panel grip (max(380,92vw) responsive
+    // sizing means most laptops get a sensible default; power users can
+    // drag it bigger and we remember per-host).
+    if (window.DealScoutSocial && window.DealScoutSocial.attachResizer) {
+      try {
+        window.DealScoutSocial.attachResizer(panel, 'ds_panel_size_' + location.hostname);
+      } catch (_) {}
+    }
     return panel;
   }
 
@@ -2639,6 +2647,10 @@
       thumbSection.appendChild(prompt);
       thumbSection.appendChild(thumbWrap);
       footer.appendChild(thumbSection);
+    }
+    // v0.47.0 — Rate / Share row
+    if (window.DealScoutSocial && window.DealScoutSocial.renderRateShareRow) {
+      try { window.DealScoutSocial.renderRateShareRow(footer); } catch (_) {}
     }
     const versionEl = document.createElement('div');
     versionEl.style.cssText = 'text-align:center;font-size:10px;color:#374151;margin-top:' + (r ? '8px' : '0');

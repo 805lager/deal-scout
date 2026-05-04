@@ -114,3 +114,9 @@ id = "a1VdFB4LdExZj1kmcl0mf"
 uri = "file://extension/deal-scout-v0.46.9.zip"
 type = "unspecified"
 title = "Deal Scout v0.46.9 (Negotiation matches other sections + star/help spacing)"
+
+[[outputs]]
+id = "nYntedUfku44CNmO8jL8J"
+uri = "file://.local/dist/deal-scout-v0.47.0-test.zip"
+type = "unspecified"
+title = "Deal Scout v0.47.0 (test zip — small-screen + Rate/Share)"

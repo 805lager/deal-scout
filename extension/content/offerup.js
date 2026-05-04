@@ -176,8 +176,8 @@
     const panel = document.createElement("div");
     panel.id = PANEL_ID;
     panel.style.cssText = [
-      "position:fixed", "top:80px", "right:20px", "width:320px",
-      "max-height:calc(100vh - 100px)", "overflow-y:auto",
+      "position:fixed", "top:80px", "right:20px", "width:min(380px, 92vw)",
+      "max-height:92vh", "overflow-y:auto",
       "z-index:2147483647",
       "background:#1e1b2e", "border:1px solid #3d3660", "border-radius:10px",
       "box-shadow:0 8px 32px rgba(0,0,0,0.6)",
@@ -195,6 +195,9 @@
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
     document.body.appendChild(panel);
+    if (window.DealScoutSocial && window.DealScoutSocial.attachResizer) {
+      try { window.DealScoutSocial.attachResizer(panel, "ds_panel_size_" + location.hostname); } catch (_) {}
+    }
     return panel;
   }
 
@@ -1178,6 +1181,9 @@
       versionEl.style.cssText = "text-align:center;font-size:10px;color:#374151";
       versionEl.textContent = "Deal Scout v" + VERSION + " · OfferUp";
       footer.appendChild(versionEl);
+    }
+    if (window.DealScoutSocial && window.DealScoutSocial.renderRateShareRow) {
+      try { window.DealScoutSocial.renderRateShareRow(footer); } catch (_) {}
     }
     container.appendChild(footer);
   }

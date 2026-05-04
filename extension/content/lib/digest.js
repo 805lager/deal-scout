@@ -121,8 +121,15 @@
   function openCollapsible(container, name, opts) {
     opts = opts || {};
     const title = opts.title || name;
-    const defaultCollapsed = opts.defaultCollapsed !== false;
-    let collapsed = _getCollapsed(name, defaultCollapsed);
+    // v0.47.0 — auto-collapse on small viewports (sub-laptop screens) so
+    // the panel fits without scrolling. On short screens we IGNORE the
+    // persisted "open" state too — otherwise a user who once opened a
+    // section on a tall monitor would re-trigger the overflow on a
+    // laptop. Only the user clicking the row in the current session can
+    // override (handled below in the click listener).
+    const _smallViewport = (typeof window !== "undefined") && (window.innerHeight || 0) < 700;
+    const defaultCollapsed = _smallViewport ? true : (opts.defaultCollapsed !== false);
+    let collapsed = _smallViewport ? true : _getCollapsed(name, defaultCollapsed);
     // Track whether the user has clicked this row. Used by the post-load
     // reconciliation pass below — we never overwrite a deliberate toggle.
     let _userClicked = false;
@@ -179,7 +186,7 @@
     // ourselves for reconciliation. The post-load pass re-reads the
     // cache and re-applies state — but only if the user hasn't already
     // clicked us in the meantime.
-    if (!_stateCache) {
+    if (!_stateCache && !_smallViewport) {
       const _entry = {
         name: name,
         dirty: false,
