@@ -262,11 +262,106 @@
     _mo.observe(document.body, { childList: true, subtree: false });
   }
 
+  /**
+   * renderCompactRateShare(container) — v0.47.1 topbar-friendly variant.
+   * Same behavior as renderRateShareRow but without the wrapper card,
+   * label, or padding. Renders just two pill buttons (★ Rate · Share ▾)
+   * suitable for inlining into a 280-px-wide panel topbar between the
+   * title and close button. The dropdown opens *below* the buttons (the
+   * full version opens upward, which doesn't fit at the top of a panel).
+   *
+   * Returns the wrap element. Caller decides where to insertBefore.
+   * If `container` is provided, appends to it.
+   */
+  function renderCompactRateShare(container) {
+    const wrap = document.createElement("div");
+    wrap.className = "ds-rate-share-compact";
+    wrap.style.cssText =
+      "display:inline-flex;align-items:center;gap:4px;position:relative;flex-shrink:0";
+
+    const rateBtn = document.createElement("button");
+    rateBtn.type = "button";
+    rateBtn.title = "Rate Deal Scout on the Chrome Web Store";
+    rateBtn.style.cssText =
+      "padding:2px 7px;background:rgba(251,191,36,0.16);" +
+      "border:1px solid rgba(251,191,36,0.4);border-radius:5px;color:#fbbf24;" +
+      "font-size:10px;font-weight:700;cursor:pointer;font-family:inherit;line-height:1.3";
+    rateBtn.textContent = "\u2605 Rate";
+    rateBtn.addEventListener("click", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      _openTab(RATE_URL);
+    });
+    wrap.appendChild(rateBtn);
+
+    const shareBtn = document.createElement("button");
+    shareBtn.type = "button";
+    shareBtn.title = "Share Deal Scout";
+    shareBtn.style.cssText =
+      "padding:2px 7px;background:rgba(124,140,248,0.14);" +
+      "border:1px solid rgba(124,140,248,0.4);border-radius:5px;color:#c7d2fe;" +
+      "font-size:10px;font-weight:700;cursor:pointer;font-family:inherit;line-height:1.3";
+    shareBtn.textContent = "Share \u25BE";
+    wrap.appendChild(shareBtn);
+
+    const menu = document.createElement("div");
+    menu.style.cssText =
+      "position:absolute;right:0;top:calc(100% + 4px);min-width:160px;" +
+      "background:#1e1b2e;border:1px solid rgba(255,255,255,0.12);" +
+      "border-radius:8px;padding:4px;display:none;flex-direction:column;gap:1px;" +
+      "box-shadow:0 4px 14px rgba(0,0,0,0.45);z-index:2147483646";
+    wrap.appendChild(menu);
+
+    function _mkItem(label, onClick) {
+      const it = document.createElement("button");
+      it.type = "button";
+      it.style.cssText =
+        "text-align:left;padding:6px 10px;background:transparent;border:0;" +
+        "color:#cbd5e1;font-size:11.5px;font-family:inherit;cursor:pointer;border-radius:5px";
+      it.textContent = label;
+      it.addEventListener("mouseenter", () => { it.style.background = "rgba(124,140,248,0.16)"; });
+      it.addEventListener("mouseleave", () => { it.style.background = "transparent"; });
+      it.addEventListener("click", (e) => {
+        e.preventDefault(); e.stopPropagation();
+        onClick(it);
+        menu.style.display = "none";
+      });
+      return it;
+    }
+
+    for (const t of TARGETS) {
+      menu.appendChild(_mkItem(t.label, (el) => _doShare(t.id, el)));
+    }
+    if (typeof navigator !== "undefined" && typeof navigator.share === "function") {
+      menu.appendChild(_mkItem("Share via system\u2026", (el) => _doShare("native", el)));
+    }
+
+    function _closeMenu(e) {
+      if (e && (e.target === shareBtn || menu.contains(e.target))) return;
+      menu.style.display = "none";
+      document.removeEventListener("click", _closeMenu, true);
+    }
+    shareBtn.addEventListener("click", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const open = menu.style.display === "flex";
+      if (open) {
+        menu.style.display = "none";
+        document.removeEventListener("click", _closeMenu, true);
+      } else {
+        menu.style.display = "flex";
+        setTimeout(() => document.addEventListener("click", _closeMenu, true), 0);
+      }
+    });
+
+    if (container) container.appendChild(wrap);
+    return wrap;
+  }
+
   window.DealScoutSocial = {
     RATE_URL: RATE_URL,
     SHARE_URL: SHARE_URL,
     SHARE_TEXT: SHARE_TEXT,
     renderRateShareRow: renderRateShareRow,
+    renderCompactRateShare: renderCompactRateShare,
     attachResizer: attachResizer,
   };
 })();

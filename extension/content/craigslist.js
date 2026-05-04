@@ -884,18 +884,27 @@
     const shouldBuy = r.should_buy;
 
     const hdr = document.createElement("div");
-    hdr.style.cssText = "background:#13111f;border-bottom:1px solid #3d3660;border-radius:10px 10px 0 0;padding:10px 12px";
+    hdr.style.cssText = "background:#13111f;border-bottom:1px solid #3d3660;border-radius:10px 10px 0 0";
 
     const topRow = document.createElement("div");
-    topRow.style.cssText = "display:flex;align-items:center;justify-content:space-between;margin-bottom:6px";
-    topRow.innerHTML = DOMPurify.sanitize('<span style="font-weight:700;font-size:13px;color:#7c8cf8" title="Drag to move" style="cursor:move">📊 Deal Scout</span>');
+    topRow.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:10px 12px;gap:8px;cursor:move";
+    topRow.innerHTML = DOMPurify.sanitize('<span style="font-weight:700;font-size:13px;color:#7c8cf8;flex-shrink:0" title="Drag to move">📊 Deal Scout</span>');
+    // v0.47.1 — compact ★ Rate / Share ▾ between title and close button.
+    let _shareTopbar = null;
+    try {
+      if (window.DealScoutSocial && window.DealScoutSocial.renderCompactRateShare) {
+        _shareTopbar = window.DealScoutSocial.renderCompactRateShare(null);
+      }
+    } catch (_) {}
+    if (_shareTopbar) topRow.appendChild(_shareTopbar);
     const closeBtn = document.createElement("button");
     closeBtn.textContent = "✕";
-    closeBtn.style.cssText = "background:none;border:none;color:#6b7280;font-size:15px;cursor:pointer;padding:1px 4px";
+    closeBtn.style.cssText = "background:none;border:none;color:#6b7280;font-size:15px;cursor:pointer;padding:1px 4px;flex-shrink:0";
     closeBtn.onclick = removePanel;
     topRow.appendChild(closeBtn);
     topRow.addEventListener("mousedown", (e) => {
       if (e.target === closeBtn) return;
+      if (_shareTopbar && _shareTopbar.contains(e.target)) return;
       // Always grab the panel itself — `container` may now be the sticky
       // digest wrapper introduced by the Approach A layout (Task #68).
       const p = getPanel();
@@ -904,6 +913,19 @@
       p._ds_drag = { on: true, ox: e.clientX - _rect.left, oy: e.clientY - _rect.top };
     });
     hdr.appendChild(topRow);
+
+    // v0.47.1 — wrap score block in a collapsible region.
+    let _collapsibleApi = null;
+    let _scoreHost;
+    if (window.DealScoutDigest && window.DealScoutDigest.makeCollapsibleHeader) {
+      _collapsibleApi = window.DealScoutDigest.makeCollapsibleHeader(hdr, 'header');
+      _scoreHost = _collapsibleApi.expanded;
+      _scoreHost.style.cssText = "padding:8px 12px 10px";
+    } else {
+      _scoreHost = document.createElement("div");
+      _scoreHost.style.cssText = "padding:0 12px 10px";
+      hdr.appendChild(_scoreHost);
+    }
 
     const scoreRow = document.createElement("div");
     scoreRow.style.cssText = "display:flex;align-items:center;gap:10px";
@@ -922,8 +944,54 @@
       '<div style="font-size:11px;color:#94a3b8;margin-top:2px">' + (shouldBuy === false ? "⛔ Skip" : shouldBuy ? "✅ Worth buying" : "") + '</div>' +
       '<div style="font-size:10px;color:#6b7280;margin-top:1px">🏷 Craigslist · $' + (r.price || 0).toFixed(0) + '</div>' +
       ratHtml + '</div>');
-    hdr.appendChild(scoreRow);
+    _scoreHost.appendChild(scoreRow);
+
+    // v0.47.1 — collapsed-header summary chip
+    if (_collapsibleApi) {
+      try {
+        const sevLabel = score >= 7 ? 'GOOD' : score >= 5 ? 'FAIR' : 'OVERPRICED';
+        const sumWrap = document.createElement('span');
+        sumWrap.style.cssText = 'display:inline-flex;align-items:center;gap:6px;min-width:0';
+        const chip = document.createElement('span');
+        chip.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;'
+          + 'min-width:18px;height:18px;border-radius:9px;padding:0 5px;'
+          + 'background:' + _ringColor + '22;color:' + _ringColor + ';'
+          + 'border:1px solid ' + _ringColor + '66;'
+          + 'font-size:11px;font-weight:800;line-height:1;flex-shrink:0';
+        chip.textContent = _scoreText;
+        sumWrap.appendChild(chip);
+        const tag = document.createElement('span');
+        tag.style.cssText = 'color:' + _ringColor + ';font-weight:700;flex-shrink:0';
+        tag.textContent = sevLabel;
+        sumWrap.appendChild(tag);
+        const sep = document.createElement('span');
+        sep.style.cssText = 'color:#6b7280;flex-shrink:0';
+        sep.textContent = '\u00b7';
+        sumWrap.appendChild(sep);
+        const px = document.createElement('span');
+        px.style.cssText = 'color:#cbd5e1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0';
+        px.textContent = '$' + Math.round(r.price || 0);
+        sumWrap.appendChild(px);
+        _collapsibleApi.setSummary(sumWrap);
+      } catch (_) {}
+    }
+
     container.appendChild(hdr);
+
+    // v0.47.1 — overflow coordination
+    requestAnimationFrame(() => {
+      try {
+        if (!document.body.contains(topRow)) return;
+        const overflows = topRow.scrollWidth > topRow.clientWidth + 1;
+        if (overflows) {
+          if (_shareTopbar && _shareTopbar.parentNode) _shareTopbar.remove();
+        } else {
+          const panel = getPanel();
+          const fs = panel && panel._ds_share_footer;
+          if (fs && fs.parentNode) fs.remove();
+        }
+      } catch (_) {}
+    });
   }
 
   function renderSummary(r, container) {
@@ -1334,7 +1402,10 @@
     versionEl.textContent = "Deal Scout v" + VERSION + " · Craigslist";
     footer.appendChild(versionEl);
     if (window.DealScoutSocial && window.DealScoutSocial.renderRateShareRow) {
-      try { window.DealScoutSocial.renderRateShareRow(footer); } catch (_) {}
+      try {
+        const _wrap = window.DealScoutSocial.renderRateShareRow(footer);
+        if (_wrap) container._ds_share_footer = _wrap;
+      } catch (_) {}
     }
     container.appendChild(footer);
   }

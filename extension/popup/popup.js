@@ -24,12 +24,16 @@ async function checkAPIHealth() {
   try {
     const resp = await fetch(`${API_BASE}/health`, { headers: { "X-DS-Ext-Version": EXT_VERSION }, signal: AbortSignal.timeout(4000) });
     if (resp.ok) {
-      const data = await resp.json();
+      // v0.47.1 — on success, hide the status bar entirely. The "Connected · Claude…"
+      // line was noise once the green dot communicated the same fact.
+      await resp.json();
       statusEl.className = "active";
-      statusTxt.textContent = `Connected · Claude: ${data.anthropic_key} · eBay: ${data.ebay_key}`;
+      statusEl.style.display = "none";
+      statusTxt.textContent = "";
     } else { throw new Error(`HTTP ${resp.status}`); }
   } catch (e) {
     statusEl.className = "error";
+    statusEl.style.display = "";
     const msg = (e.name === "TypeError" || e.message.includes("fetch"))
       ? "Can\u2019t reach Deal Scout servers \u2014 check your connection"
       : `API offline \xb7 ${e.message}`;
@@ -308,35 +312,10 @@ function closeModal() {
   document.getElementById("report-text").value = "";
 }
 
-// ── Settings ──────────────────────────────────────────────────────────────────
-document.getElementById("settings-toggle").addEventListener("click", async () => {
-  const panel = document.getElementById("settings-panel");
-  panel.classList.toggle("open");
-  if (panel.classList.contains("open")) {
-    const current = await getApiBase();
-    document.getElementById("api-url-input").value = current;
-  }
-});
-
-document.getElementById("settings-save").addEventListener("click", async () => {
-  const url = document.getElementById("api-url-input").value.trim().replace(/\/$/, "");
-  if (!url) return;
-  await chrome.storage.local.set({ ds_api_base: url });
-  const saved = document.getElementById("settings-saved");
-  saved.style.display = "inline";
-  setTimeout(() => { saved.style.display = "none"; }, 2000);
-  checkAPIHealth();
-});
-
 // ── Auto-score toggle ────────────────────────────────────────────────────────
-function updateFooterHint(enabled) {
-  const hint = document.getElementById("footer-hint");
-  if (!hint) return;
-  hint.innerHTML = enabled
-    ? 'Navigate to a listing \u2014 scored automatically.<br>Or click <strong>Score Current Listing</strong>.'
-    : 'Auto-score is <strong>off</strong>. Click <strong>Score Current Listing</strong> to score this page.';
-}
-
+// v0.47.1 — the API Settings (⚙) panel and footer-hint were removed. The API
+// base URL is no longer user-overridable from the popup; for advanced users
+// it can still be set via chrome.storage.local.ds_api_base from devtools.
 async function loadAutoScoreToggle() {
   const cb = document.getElementById("auto-score-toggle");
   try {
@@ -345,12 +324,10 @@ async function loadAutoScoreToggle() {
   } catch {
     cb.checked = true;
   }
-  updateFooterHint(cb.checked);
   cb.addEventListener("change", async () => {
     try {
       await chrome.storage.local.set({ ds_auto_score: cb.checked });
     } catch {}
-    updateFooterHint(cb.checked);
   });
 }
 

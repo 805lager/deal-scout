@@ -193,12 +193,6 @@
       font-weight: 600;
       color: #cbd5e1;
     }
-    .auto-score-hint {
-      font-size: 10.5px;
-      color: #6b7280;
-      margin-top: 2px;
-      line-height: 1.4;
-    }
     .switch {
       position: relative;
       display: inline-block;
@@ -237,100 +231,21 @@
       transform: translateX(16px);
     }
 
-    /* ── Settings row ── */
-    .settings-row {
+    /* ── Header report link (v0.47.1 — moved from footer) ── */
+    .header-right {
       display: flex;
       align-items: center;
-      justify-content: flex-end;
-      padding: 0 16px;
-      margin-bottom: 4px;
+      gap: 8px;
+      flex-shrink: 0;
     }
-    #settings-toggle {
-      background: none;
-      border: none;
-      cursor: pointer;
-      color: #4b5563;
-      font-size: 11px;
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      padding: 0;
-      transition: color 0.15s;
-    }
-    #settings-toggle:hover { color: #7c8cf8; }
-
-    #settings-panel {
-      display: none;
-      background: rgba(255,255,255,0.03);
-      border: 1px solid rgba(255,255,255,0.07);
-      border-radius: 10px;
-      padding: 12px;
-      margin: 0 16px 10px;
-      font-size: 12px;
-    }
-    #settings-panel.open { display: block; }
-    #settings-panel label {
-      color: #6b7280;
-      font-weight: 600;
-      display: block;
-      margin-bottom: 5px;
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-    }
-    #settings-panel input {
-      width: 100%;
-      background: rgba(255,255,255,0.05);
-      border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 6px;
-      padding: 7px 9px;
-      font-size: 12px;
-      font-family: inherit;
-      color: #e2e8f0;
-      margin-bottom: 10px;
-    }
-    #settings-panel input::placeholder { color: #4b5563; }
-    #settings-panel input:focus {
-      outline: none;
-      border-color: rgba(124,140,248,0.5);
-    }
-    #settings-save {
-      padding: 6px 14px;
-      background: rgba(124,140,248,0.15);
-      border: 1px solid rgba(124,140,248,0.35);
-      border-radius: 6px;
-      color: #a5b4fc;
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: background 0.15s;
-    }
-    #settings-save:hover { background: rgba(124,140,248,0.25); }
-    #settings-saved { display: none; color: #4ade80; font-size: 11px; margin-left: 8px; }
-
-    /* ── Footer ── */
-    .footer {
-      padding: 10px 16px 12px;
-      border-top: 1px solid rgba(255,255,255,0.05);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-    .footer-hint {
-      font-size: 10.5px;
-      color: #374151;
-      line-height: 1.5;
-    }
-    .footer-hint strong { color: #4b5563; }
     #report-link {
       font-size: 10.5px;
-      color: #374151;
+      color: #6b7280;
       text-decoration: none;
-      flex-shrink: 0;
-      margin-left: 8px;
       transition: color 0.15s;
+      cursor: pointer;
     }
-    #report-link:hover { color: #7c8cf8; }
+    #report-link:hover { color: #fca5a5; }
 
     /* ── Report Modal ── */
     #report-modal {
@@ -517,7 +432,10 @@
       <img class="header-logo" src="../icons/icon48.png" alt="Deal Scout">
       <span class="header-title">Deal<span> Scout</span></span>
     </div>
-    <span class="version-badge" id="version-label"></span>
+    <div class="header-right">
+      <a id="report-link" href="#" title="Report an issue">⚠ Report</a>
+      <span class="version-badge" id="version-label"></span>
+    </div>
   </div>
 
   <!-- API status -->
@@ -571,7 +489,6 @@
   <div class="auto-score-row">
     <div class="auto-score-info">
       <div class="auto-score-label">Auto-score on page load</div>
-      <div class="auto-score-hint">Off: only score when you click the button above.</div>
     </div>
     <label class="switch">
       <input type="checkbox" id="auto-score-toggle" checked>
@@ -579,28 +496,8 @@
     </label>
   </div>
 
-  <!-- Settings -->
-  <div class="settings-row">
-    <button id="settings-toggle">⚙ API Settings</button>
-  </div>
-  <div id="settings-panel">
-    <label for="api-url-input">API Base URL</label>
-    <input id="api-url-input" type="url" placeholder="https://deal-scout-production.up.railway.app">
-    <button id="settings-save">Save</button>
-    <span id="settings-saved">✅ Saved!</span>
-  </div>
-
   <!-- Rate / Share row (v0.47.0) -->
   <div id="rate-share-mount" style="padding:0 16px 8px;"></div>
-
-  <!-- Footer -->
-  <div class="footer">
-    <div class="footer-hint" id="footer-hint">
-      Navigate to a listing — scored automatically.<br>
-      Or click <strong>Score Current Listing</strong>.
-    </div>
-    <a id="report-link" href="#" title="Report an issue">⚠ Report</a>
-  </div>
 
   <!-- Saved listings (Task #69 — popup recall) -->
   <div id="saved-section">

@@ -268,18 +268,10 @@
     star.addEventListener('mouseenter', () => { star.style.transform = 'scale(1.15)'; });
     star.addEventListener('mouseleave', () => { star.style.transform = 'scale(1)'; });
 
-    const help = document.createElement('span');
-    help.title = 'Saved listings appear in the Deal Scout extension icon in your toolbar.';
-    help.setAttribute('aria-label', help.title);
-    help.style.cssText =
-      'display:inline-flex;align-items:center;justify-content:center;'
-      + 'width:14px;height:14px;border-radius:50%;'
-      + 'background:rgba(255,255,255,0.1);color:#9ca3af;'
-      + 'font-size:10px;font-weight:700;cursor:help;user-select:none';
-    help.textContent = '?';
-
+    // v0.47.1 — the (?) help icon next to the save star was removed:
+    // hover-only tooltips are invisible to most users, and the toolbar
+    // saved-listings panel is discoverable on its own.
     controls.appendChild(star);
-    controls.appendChild(help);
 
     // Tracks live state so click handlers don't re-query storage on
     // every press. Initialised async — the star renders as ☆ until the
@@ -553,13 +545,108 @@
     parent.appendChild(note);
   }
 
+  // ────────────────────────────────────────────────────────────────────
+  // makeCollapsibleHeader (Task #91 / v0.47.1)
+  // ────────────────────────────────────────────────────────────────────
+  // Wraps a *header* block in a single collapsible region. Differs from
+  // openCollapsible:
+  //   • No outer border/padding wrap — the caller's header card supplies
+  //     its own chrome.
+  //   • The "always-visible" row is a thin one-liner summary the caller
+  //     populates via setSummary(node), intended to surface score / tag /
+  //     asking → rec when the body is collapsed.
+  //   • Auto-collapse on short viewports (<700px), persisted state wins.
+  //
+  // Returns: { expanded, setSummary(node|string|null), wrap, collapsedRow }
+  // The expanded body is appended to `container`; callers append their
+  // existing header content into `expanded`.
+  function makeCollapsibleHeader(container, name, opts) {
+    opts = opts || {};
+    const _smallVp = (typeof window !== "undefined") && (window.innerHeight || 0) < 700;
+    const defaultCollapsed = (opts.defaultCollapsed != null)
+      ? !!opts.defaultCollapsed
+      : _smallVp;
+    let collapsed = _getCollapsed(name, defaultCollapsed);
+    let _userClicked = false;
+
+    const collapsedRow = document.createElement('div');
+    collapsedRow.style.cssText =
+      'display:flex;align-items:center;gap:8px;'
+      + 'padding:7px 12px;cursor:pointer;user-select:none;font-size:12px;'
+      + 'background:rgba(255,255,255,0.02);'
+      + 'border-bottom:1px solid rgba(255,255,255,0.05)';
+
+    const chev = document.createElement('span');
+    chev.style.cssText =
+      'color:#7c8cf8;font-size:9px;flex-shrink:0;'
+      + 'transition:transform .15s ease;display:inline-block;width:9px';
+    chev.textContent = '\u25B6';
+
+    const sumContent = document.createElement('div');
+    sumContent.style.cssText =
+      'display:flex;align-items:center;gap:8px;min-width:0;flex:1;'
+      + 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'
+      + 'color:#cbd5e1;font-weight:500';
+
+    collapsedRow.appendChild(chev);
+    collapsedRow.appendChild(sumContent);
+
+    const expanded = document.createElement('div');
+
+    function applyState() {
+      expanded.style.display = collapsed ? 'none' : 'block';
+      chev.style.transform = collapsed ? 'rotate(0deg)' : 'rotate(90deg)';
+      collapsedRow.title = collapsed ? 'Expand details' : 'Collapse';
+    }
+    applyState();
+
+    function _onClick() {
+      _userClicked = true;
+      collapsed = !collapsed;
+      applyState();
+      _setCollapsed(name, collapsed);
+    }
+
+    if (!_stateCache) {
+      const _entry = {
+        name: name,
+        dirty: false,
+        apply: () => {
+          if (_userClicked) return;
+          collapsed = _getCollapsed(name, defaultCollapsed);
+          applyState();
+        },
+      };
+      _pendingSections.push(_entry);
+    }
+    collapsedRow.addEventListener('click', _onClick);
+
+    container.appendChild(collapsedRow);
+    container.appendChild(expanded);
+
+    function setSummary(node) {
+      sumContent.textContent = '';
+      if (node == null) return;
+      if (typeof node === 'string') {
+        sumContent.textContent = node;
+      } else {
+        sumContent.appendChild(node);
+      }
+    }
+
+    return { expanded: expanded, setSummary: setSummary, wrap: collapsedRow, collapsedRow: collapsedRow };
+  }
+
   window.DealScoutDigest = {
     beginDigest: beginDigest,
     openCollapsible: openCollapsible,
+    makeCollapsibleHeader: makeCollapsibleHeader,
     attachSaveStar: attachSaveStar,
     renderPricingDisclaimer: renderPricingDisclaimer,
     renderPricingDisclaimerInline: renderPricingDisclaimerInline,
     _loadState: _loadState,
+    _getCollapsed: _getCollapsed,
+    _setCollapsed: _setCollapsed,
     _humanAgo: _humanAgo,
   };
 })();

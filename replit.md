@@ -264,7 +264,71 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 ## Extension Version
 
-Current: **v0.45.0** (extension) / **v0.45.0** (API — read from `artifacts/deal-scout-api/VERSION`)
+Current: **v0.47.1** (extension) / **v0.47.1** (API — read from `artifacts/deal-scout-api/VERSION`)
+
+### v0.47.1 Popup chrome cleanup + collapsible header summary (Task #91)
+
+Pure-UI cleanup pass on both surfaces (browser-action popup + in-page panel).
+No backend or scoring behavior changed.
+
+**Popup**
+- Removed the ⚙ API Settings toggle, the `#settings-panel` body, and the
+  footer wrapper (footer-hint + footer-positioned report link). The API
+  base URL is no longer user-overridable from the popup; advanced users
+  can still set `chrome.storage.local.ds_api_base` from devtools.
+- Moved the ⚠ Report link into the header next to the version chip
+  (`.header-right` group). Hover color shifts to `#fca5a5` instead of
+  the old footer indigo.
+- Removed the `auto-score-hint` paragraph under the Auto-score toggle —
+  the label was self-explanatory and the hint added vertical noise.
+- `checkAPIHealth` now hides the entire `#api-status` bar on success
+  (`display:none`, status text cleared). The green dot already
+  communicated the same fact; the "Connected · Claude: … · eBay: …"
+  string was noise. Errors restore the bar with the failure message.
+
+**In-page panel — collapsible header**
+- New `digest.js::makeCollapsibleHeader(container, name, opts)` returns
+  `{expanded, setSummary, wrap, collapsedRow, _getCollapsed, _setCollapsed}`.
+  The expanded body is the existing render target; `setSummary` accepts
+  either a string or a DOM node and is shown when collapsed. Default
+  collapsed when `window.innerHeight < 700`; persisted user toggles win
+  via the existing `_setCollapsed` cache (key `ds_collapsed_<name>_v1`).
+- All 4 platform `renderHeader` functions wrap their score block in
+  this collapsible. The collapsed summary is a one-liner:
+  `[score chip] SEV_LABEL · $price[ → $rec]`. fbm shows asking → rec;
+  ebay/craigslist/offerup show only `$price` (no `recommended_offer`
+  in those response shapes).
+
+**In-page panel — Rate / Share moved to topbar**
+- New `social.js::renderCompactRateShare(container)` — pill-button
+  variant of the existing footer row, sized to fit a 280-px-wide panel
+  topbar. The Share menu opens *down* (`top:calc(100% + 4px)`) instead
+  of upward (the full footer variant opens up because it sits at the
+  bottom). Returns the wrap so callers can `insertBefore`.
+- Each platform's `renderHeader` mounts the compact variant in the
+  topbar before the close button. Mousedown drag guards extended to
+  also exclude `_shareTopbar.contains(e.target)` so clicking the
+  share buttons doesn't start a panel drag.
+- Each platform's `renderFooter` continues to render the full
+  `renderRateShareRow` and now stores the returned wrap on
+  `container._ds_share_footer`. Inside `renderHeader`, an rAF callback
+  measures `topRow.scrollWidth > clientWidth + 1`. If the topbar
+  overflows, the topbar copy is removed (footer wins). Otherwise the
+  footer copy is removed (topbar wins). Net result: exactly one
+  rate/share row per panel, with the topbar copy preferred whenever it
+  fits.
+
+**digest.js**
+- Removed the `?` help icon next to the save (★) button on the panel
+  digest. It opened nothing actionable and added clutter to a tight row.
+
+**Refactor — header layout in ebay/craigslist/offerup**
+- The `hdr` wrapper had `padding:10px 12px` applied to the whole block.
+  To support the collapsible split (always-visible topRow + collapsible
+  scoreRow), padding moved off `hdr` and onto each child:
+  `topRow` gets `padding:10px 12px`, the collapsible `_scoreHost` gets
+  `padding:8px 12px 10px`. fbm.js uses the same pattern but its body
+  was already a child div with its own padding.
 
 ### v0.47.0 Small-screen panel sizing + Rate / Share buttons (Task #90)
 

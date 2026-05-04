@@ -1689,10 +1689,25 @@
     closeBtn.onmouseenter = () => closeBtn.style.color = '#e0e0e0';
     closeBtn.onmouseleave = () => closeBtn.style.color = '#6b7280';
     closeBtn.onclick = (e) => { e.stopPropagation(); removePanel(); };
+
+    // v0.47.1 — compact ★ Rate / Share ▾ in the topbar, between title and close.
+    // Mirrored copy lives in the footer; an rAF overflow check below keeps
+    // exactly one copy. Failure to mount (missing social.js) is silent — the
+    // footer copy is the fallback.
+    let _shareTopbar = null;
+    try {
+      if (window.DealScoutSocial && window.DealScoutSocial.renderCompactRateShare) {
+        _shareTopbar = window.DealScoutSocial.renderCompactRateShare(null);
+      }
+    } catch (_) {}
+    if (_shareTopbar) topBar.appendChild(_shareTopbar);
     topBar.appendChild(closeBtn);
 
     topBar.addEventListener('mousedown', (e) => {
       if (e.target === closeBtn) return;
+      // v0.47.1 — don't start a panel drag when interacting with the new
+      // compact ★ Rate / Share ▾ controls in the topbar.
+      if (_shareTopbar && _shareTopbar.contains(e.target)) return;
       const panel = document.getElementById(PANEL_ID);
       if (!panel || !panel._ds_drag) return;
       const rect = panel.getBoundingClientRect();
@@ -1708,10 +1723,21 @@
     });
     container.appendChild(topBar);
 
-    const body = document.createElement('div');
+    // v0.47.1 — wrap the entire header summary block in a collapsible region.
+    // Default state: collapsed on viewports <700px tall, expanded otherwise
+    // (persisted user toggles win). The expanded body keeps the same id used
+    // by renderAISummary to append the "Why this score" paragraph.
+    let body;
+    let _collapsibleApi = null;
+    if (window.DealScoutDigest && window.DealScoutDigest.makeCollapsibleHeader) {
+      _collapsibleApi = window.DealScoutDigest.makeCollapsibleHeader(container, 'header');
+      body = _collapsibleApi.expanded;
+    } else {
+      body = document.createElement('div');
+      container.appendChild(body);
+    }
     body.id = PANEL_ID + '-body';
     body.style.cssText = 'padding:12px 12px 10px';
-    container.appendChild(body);
 
     const topRow = document.createElement('div');
     topRow.style.cssText = 'display:flex;align-items:flex-start;gap:11px;margin-bottom:10px';
@@ -1787,6 +1813,54 @@
     if (r.shipping_cost > 0)
       metaRow.appendChild(makeBadge('\uD83D\uDE9A +' + ps + r.shipping_cost + ' ship', 'rgba(234,179,8,0.12)', '#fde68a'));
     body.appendChild(metaRow);
+
+    // v0.47.1 — populate the collapsed-header one-liner: score chip · sevLabel · asking → rec.
+    if (_collapsibleApi) {
+      try {
+        const sumWrap = document.createElement('span');
+        sumWrap.style.cssText = 'display:inline-flex;align-items:center;gap:6px;min-width:0';
+        const chip = document.createElement('span');
+        chip.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;'
+          + 'min-width:18px;height:18px;border-radius:9px;padding:0 5px;'
+          + 'background:' + scoreColor + '22;color:' + scoreColor + ';'
+          + 'border:1px solid ' + scoreColor + '66;'
+          + 'font-size:11px;font-weight:800;line-height:1;flex-shrink:0';
+        chip.textContent = (r.can_price === false) ? '?' : String(r.score);
+        sumWrap.appendChild(chip);
+        const tag = document.createElement('span');
+        tag.style.cssText = 'color:' + scoreColor + ';font-weight:700;flex-shrink:0';
+        tag.textContent = sevLabel;
+        sumWrap.appendChild(tag);
+        const sep = document.createElement('span');
+        sep.style.cssText = 'color:#6b7280;flex-shrink:0';
+        sep.textContent = '\u00b7';
+        sumWrap.appendChild(sep);
+        const px = document.createElement('span');
+        px.style.cssText = 'color:#cbd5e1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0';
+        px.textContent = ps + Math.round(r.price || 0) + ' \u2192 ' + ps + Math.round(r.recommended_offer || 0);
+        sumWrap.appendChild(px);
+        _collapsibleApi.setSummary(sumWrap);
+      } catch (_) {}
+    }
+
+    // v0.47.1 — overflow coordination: after layout, decide whether the topbar
+    // share fits. If the topbar overflows, drop the topbar copy (footer wins);
+    // otherwise drop the footer copy. Runs after renderFooter (which appends
+    // its own share copy synchronously below renderHeader in displayResults).
+    requestAnimationFrame(() => {
+      try {
+        const tb = topBar;
+        if (!tb || !document.body.contains(tb)) return;
+        const overflows = tb.scrollWidth > tb.clientWidth + 1;
+        if (overflows) {
+          if (_shareTopbar && _shareTopbar.parentNode) _shareTopbar.remove();
+        } else {
+          const panel = document.getElementById(PANEL_ID);
+          const fs = panel && panel._ds_share_footer;
+          if (fs && fs.parentNode) fs.remove();
+        }
+      } catch (_) {}
+    });
   }
 
   // ── Confidence Block (Task #58) ──────────────────────────────────────────
@@ -2652,9 +2726,14 @@
     versionEl.style.cssText = 'text-align:center;font-size:10px;color:#374151;margin-top:' + (r ? '8px' : '0');
     versionEl.textContent = `Deal Scout v${VERSION}`;
     footer.appendChild(versionEl);
-    // v0.47.0 — Rate / Share row at the absolute end of the footer
+    // v0.47.0 — Rate / Share row at the absolute end of the footer.
+    // v0.47.1 — store a reference on the panel so renderHeader's rAF
+    // overflow check can drop this copy when the topbar variant fits.
     if (window.DealScoutSocial && window.DealScoutSocial.renderRateShareRow) {
-      try { window.DealScoutSocial.renderRateShareRow(footer); } catch (_) {}
+      try {
+        const _wrap = window.DealScoutSocial.renderRateShareRow(footer);
+        if (_wrap) container._ds_share_footer = _wrap;
+      } catch (_) {}
     }
     container.appendChild(footer);
   }
