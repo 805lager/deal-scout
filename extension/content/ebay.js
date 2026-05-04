@@ -982,18 +982,27 @@
     const timeLeft = a.time_left || "";
 
     const hdr = document.createElement("div");
-    hdr.style.cssText = "background:#13111f;border-bottom:1px solid #3d3660;border-radius:10px 10px 0 0;padding:10px 12px;cursor:move";
+    hdr.style.cssText = "background:#13111f;border-bottom:1px solid #3d3660;border-radius:10px 10px 0 0;cursor:move";
 
     const topRow = document.createElement("div");
-    topRow.style.cssText = "display:flex;align-items:center;justify-content:space-between;margin-bottom:6px";
-    topRow.innerHTML = DOMPurify.sanitize('<span style="font-weight:700;font-size:13px;color:#7c8cf8">📊 Deal Scout</span>');
+    topRow.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:10px 12px;gap:8px";
+    topRow.innerHTML = DOMPurify.sanitize('<span style="font-weight:700;font-size:13px;color:#7c8cf8;flex-shrink:0">📊 Deal Scout</span>');
+    // v0.47.1 — parity with renderHeader: compact ★ Rate / Share ▾ in topbar.
+    let _shareTopbar = null;
+    try {
+      if (window.DealScoutSocial && window.DealScoutSocial.renderCompactRateShare) {
+        _shareTopbar = window.DealScoutSocial.renderCompactRateShare(null);
+      }
+    } catch (_) {}
+    if (_shareTopbar) topRow.appendChild(_shareTopbar);
     const closeBtn = document.createElement("button");
     closeBtn.textContent = "✕";
-    closeBtn.style.cssText = "background:none;border:none;color:#6b7280;font-size:15px;cursor:pointer;padding:1px 4px";
+    closeBtn.style.cssText = "background:none;border:none;color:#6b7280;font-size:15px;cursor:pointer;padding:1px 4px;flex-shrink:0";
     closeBtn.onclick = removePanel;
     topRow.appendChild(closeBtn);
     hdr.addEventListener("mousedown", (e) => {
       if (e.target === closeBtn) return;
+      if (_shareTopbar && _shareTopbar.contains(e.target)) return;
       const p = getPanel();
       const rect = p.getBoundingClientRect();
       p._ds_drag = { on: true, ox: e.clientX - rect.left, oy: e.clientY - rect.top };
@@ -1001,7 +1010,10 @@
     hdr.appendChild(topRow);
 
     const auctionRow = document.createElement("div");
-    auctionRow.style.cssText = "display:flex;align-items:center;gap:10px";
+    // Auction header isn't collapsible — bid/timer info needs to stay visible.
+    // Just give the row its own padding now that hdr no longer pads.
+    auctionRow.dataset._auctionRow = "1";
+    auctionRow.style.cssText = "display:flex;align-items:center;gap:10px;padding:0 12px 10px";
     auctionRow.innerHTML = DOMPurify.sanitize(
       '<div style="background:linear-gradient(135deg,#7c3aed 0%,#a855f7 100%);color:#fff;padding:8px 10px;border-radius:8px;font-weight:800;font-size:11px;letter-spacing:0.5px;flex-shrink:0;text-align:center;min-width:62px">' +
         '<div style="font-size:14px;line-height:1">🔨</div>' +
@@ -1018,6 +1030,21 @@
     );
     hdr.appendChild(auctionRow);
     container.appendChild(hdr);
+
+    // v0.47.1 — overflow coordination so exactly one rate/share copy is shown.
+    requestAnimationFrame(() => {
+      try {
+        if (!document.body.contains(topRow)) return;
+        const overflows = topRow.scrollWidth > topRow.clientWidth + 1;
+        if (overflows) {
+          if (_shareTopbar && _shareTopbar.parentNode) _shareTopbar.remove();
+        } else {
+          const panel = getPanel();
+          const fs = panel && panel._ds_share_footer;
+          if (fs && fs.parentNode) fs.remove();
+        }
+      } catch (_) {}
+    });
   }
 
   // Bid Strategy panel — the headline output for auction mode.
