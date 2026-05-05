@@ -1297,17 +1297,50 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         log.warning(f"[BrowseAPI PRIMARY] Failed for '{query}': {e}")
         log.info(f"[Telemetry] browse_outcome=error query='{query}'")
 
-    # ── Step 1b: Google Shopping prices (always try for affiliate price hints) ─
+    # ── Step 1b: Live retail prices for affiliate hints + new_price ──────────
+    # Source preference (Task #99):
+    #   1. Amazon PA-API 5 (official, structured) — when 3 secrets are set
+    #   2. Google Shopping scraper (degraded by anti-bot) — fallback
+    # The fallback is *transparent*: same `[{price,title,condition}]` shape,
+    # so downstream code (prices_to_market_stats, MarketValue.new_price,
+    # affiliate price_hint) does not care which source answered.
     _google_stats = None
     goog_prices = []
+    _retail_source = "none"
     try:
         from scoring.google_pricer import get_google_shopping_prices, prices_to_market_stats
-        goog_prices = await get_google_shopping_prices(query, max_results=12, min_price=listing_price)
+        try:
+            from scoring.amazon_pricer import get_amazon_prices
+        except Exception:
+            get_amazon_prices = None  # type: ignore[assignment]
+
+        amz_rows = None
+        if get_amazon_prices is not None:
+            try:
+                amz_rows = await get_amazon_prices(query, max_results=12, min_price=listing_price)
+            except Exception as e:
+                log.warning(f"[AmazonPrices] Threw, falling back to Google: {type(e).__name__}: {e}")
+                amz_rows = None
+
+        if amz_rows:  # non-empty list — primary path won
+            goog_prices = amz_rows
+            _retail_source = "amazon_paapi"
+        else:
+            # `None` (not configured) OR `[]` (configured but empty/error) —
+            # both fall back to the Google scraper.
+            goog_prices = await get_google_shopping_prices(query, max_results=12, min_price=listing_price)
+            _retail_source = "google_scraper" if goog_prices else "none"
+
         _google_stats = prices_to_market_stats(goog_prices)
         if _google_stats:
-            log.info(f"[GooglePrices] '{query}' → avg=${_google_stats['avg']:.0f} ({_google_stats['count']} prices)")
+            log.info(
+                f"[RetailPrices] source={_retail_source} '{query}' → "
+                f"avg=${_google_stats['avg']:.0f} ({_google_stats['count']} prices)"
+            )
+        else:
+            log.info(f"[RetailPrices] source={_retail_source} '{query}' → no usable stats")
     except Exception as e:
-        log.warning(f"[GooglePrices] Failed for '{query}': {e}")
+        log.warning(f"[RetailPrices] Failed for '{query}': {e}")
 
     # ── Step 1c: If Browse failed, try Claude AI pricing ─────────────────────
     ai_pricing_stats = None

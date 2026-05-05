@@ -3508,6 +3508,18 @@ async def admin_dashboard(request: Request):
         affiliate_skip_metric = get_filter_skip_stats()
     except Exception:
         affiliate_skip_metric = {"total": 0, "by_program": {}}
+    # Task #99 — Amazon PA-API live-pricing health. When any of the three
+    # AMAZON_PAAPI_* secrets are unset, `configured` is False and the
+    # retail-price source falls back to the Google scraper (transparent to
+    # the extension). When secrets are set, this surface lets the operator
+    # confirm activation without grepping logs.
+    try:
+        from scoring.amazon_pricer import get_health_state as _paapi_health
+        paapi_metric = _paapi_health()
+    except Exception:
+        paapi_metric = {"configured": False, "last_status": None,
+                        "last_called_at": None, "last_error": None,
+                        "ok_count": 0, "error_count": 0}
     return {
         "pipeline": "Deal Scout Market Intelligence",
         "description": "Anonymized used-market price signals. No PII collected.",
@@ -3515,6 +3527,7 @@ async def admin_dashboard(request: Request):
         "score_cache": score_cache_metric,
         "claude_cache": claude_cache_metric,
         "affiliate_filter_skips": affiliate_skip_metric,
+        "amazon_paapi": paapi_metric,
     }
 
 
