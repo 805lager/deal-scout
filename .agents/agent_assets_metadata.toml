@@ -126,3 +126,9 @@ id = "nQdSSOj-cLejjUpGC3Lu3"
 uri = "file://.local/dist/deal-scout-v0.47.1-test.zip"
 type = "unspecified"
 title = "Deal Scout Chrome Extension v0.47.1"
+
+[[outputs]]
+id = "yrfZiJS6s9WKi8vEHGB8j"
+uri = "file://.local/dist/deal-scout-v0.47.2-test.zip"
+type = "unspecified"
+title = "Deal Scout Chrome Extension v0.47.2"

@@ -17,27 +17,31 @@ function detectPlatform(url) {
   return null;
 }
 
+// v0.47.2 — the idle health-check status bar (green dot above
+// "Supported Platforms") was removed. The popup only surfaces a
+// connection error inline when the user actively tries to score and
+// the API is unreachable; otherwise the popup stays clean.
+function showInlineStatus(kind, msg) {
+  const el = document.getElementById("status-inline");
+  if (!el) return;
+  if (!msg) { el.style.display = "none"; el.textContent = ""; el.className = ""; return; }
+  el.className = kind === "progress" ? "progress" : "";
+  el.style.display = "block";
+  el.textContent = msg;
+}
+
 async function checkAPIHealth() {
-  const statusEl  = document.getElementById("api-status");
-  const statusTxt = document.getElementById("status-text");
-  const API_BASE  = await getApiBase();
+  const API_BASE = await getApiBase();
   try {
     const resp = await fetch(`${API_BASE}/health`, { headers: { "X-DS-Ext-Version": EXT_VERSION }, signal: AbortSignal.timeout(4000) });
-    if (resp.ok) {
-      // v0.47.1 — on success, keep the status bar visible (green dot still
-      // communicates connection health) but drop the verbose "Connected ·
-      // Claude … · eBay …" text. Bar stays in the DOM so manual-score
-      // setStatus() calls can write progress/error messages into it.
-      await resp.json();
-      statusEl.className = "active";
-      statusTxt.textContent = "";
-    } else { throw new Error(`HTTP ${resp.status}`); }
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    await resp.json();
+    // Healthy — leave the popup clean (no status bar).
   } catch (e) {
-    statusEl.className = "error";
     const msg = (e.name === "TypeError" || e.message.includes("fetch"))
       ? "Can\u2019t reach Deal Scout servers \u2014 check your connection"
       : `API offline \xb7 ${e.message}`;
-    statusTxt.textContent = msg;
+    showInlineStatus("error", msg);
   }
 }
 
@@ -184,17 +188,12 @@ function renderDealPanel(r, panelId, apiBase, extVersion) {
 // ── Score Current Listing button ──────────────────────────────────────────────
 document.getElementById("score-current").addEventListener("click", async () => {
   const [tab]     = await chrome.tabs.query({ active: true, currentWindow: true });
-  const statusEl  = document.getElementById("api-status");
-  const statusTxt = document.getElementById("status-text");
   const platform  = detectPlatform(tab?.url);
 
   const setStatus = (state, msg) => {
-    // v0.47.1 — defensive: ensure the bar is visible whenever we write to
-    // it. checkAPIHealth no longer hides it, but if a future caller does
-    // we still want manual-score progress/errors to surface.
-    statusEl.style.display = "";
-    statusEl.className = state;
-    statusTxt.textContent = msg;
+    // v0.47.2 — uses the inline error/progress strip beneath the platform
+    // grid; the idle health-check bar was removed.
+    showInlineStatus(state === "error" ? "error" : "progress", msg);
   };
 
   if (!platform) {

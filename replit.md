@@ -288,6 +288,26 @@ No backend or scoring behavior changed.
   path defensively re-shows the bar (`display:""`) before writing, so
   progress and errors always surface.
 
+### v0.47.2 — Save-star reposition + popup status-bar removal (Task #91 follow-up)
+
+**Popup**
+- Removed the always-on `#api-status` bar (green dot + box) that sat
+  above "Supported Platforms". The dot was idle eye-clutter and the
+  text was already empty on success. Connection problems now surface
+  only when the user clicks **Score Current Listing** and the API is
+  unreachable, via a new `#status-inline` strip beneath the platform
+  grid (red on error, indigo on progress).
+
+**In-page panel — save star (☆/★)**
+- Moved the save star out from under the topbar `Rate / Share / ✕`
+  controls; it now sits as a small pill just below the topbar at the
+  right edge of the panel. The star is mounted on the panel root, not
+  the digest header, so it stays visible when the header is collapsed.
+- Added a hover/focus hint popover that appears next to the star
+  reading: "Click ☆ to save this listing. View saved listings any
+  time from the Deal Scout toolbar icon." Replaces the dropped
+  `(?)` icon with discovery on the star itself.
+
 **In-page panel — collapsible header**
 - New `digest.js::makeCollapsibleHeader(container, name, opts)` returns
   `{expanded, setSummary, wrap, collapsedRow}` (the `_getCollapsed` /

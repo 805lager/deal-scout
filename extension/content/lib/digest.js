@@ -245,33 +245,71 @@
     if (!window.DealScoutSaved) return;
     const Saved = window.DealScoutSaved;
 
-    // Container holds star + (?) — absolutely positioned to sit just to
-    // the left of the close button at top-right of the sticky digest.
-    // We sit OUTSIDE the existing renderHeader DOM so we don't have to
-    // touch every platform script's header builder.
+    // v0.47.2 — moved the save star OUT of the topbar (it was getting
+    // covered by the new Rate / Share / ✕ controls) to sit just below
+    // the topbar at the right edge. We attach to the panel instead of
+    // the digest header so it stays visible when the header collapses.
     const controls = document.createElement('div');
     controls.style.cssText =
-      'position:absolute;top:8px;right:48px;z-index:6;'
-      + 'display:flex;align-items:center;gap:10px';
-    digest.style.position = digest.style.position || 'sticky';
-    digest.appendChild(controls);
+      'position:absolute;top:40px;right:10px;z-index:6;'
+      + 'display:flex;align-items:center;gap:8px';
+    const panelHost = digest.closest('[id^="deal-scout-"]') || digest;
+    if (getComputedStyle(panelHost).position === 'static') {
+      panelHost.style.position = 'relative';
+    }
+    panelHost.appendChild(controls);
 
     const star = document.createElement('button');
     star.type = 'button';
     star.title = 'Save listing';
     star.setAttribute('aria-label', 'Save listing');
     star.style.cssText =
-      'background:none;border:none;cursor:pointer;padding:0;'
-      + 'font-size:18px;line-height:1;color:#9ca3af;'
-      + 'transition:color .15s,transform .1s';
+      'background:rgba(19,17,31,0.85);border:1px solid rgba(124,140,248,0.25);'
+      + 'border-radius:99px;cursor:pointer;padding:3px 8px;'
+      + 'font-size:16px;line-height:1;color:#9ca3af;'
+      + 'transition:color .15s,transform .1s,border-color .15s;'
+      + 'box-shadow:0 2px 6px rgba(0,0,0,0.3)';
     star.textContent = '\u2606'; // ☆
-    star.addEventListener('mouseenter', () => { star.style.transform = 'scale(1.15)'; });
-    star.addEventListener('mouseleave', () => { star.style.transform = 'scale(1)'; });
-
-    // v0.47.1 — the (?) help icon next to the save star was removed:
-    // hover-only tooltips are invisible to most users, and the toolbar
-    // saved-listings panel is discoverable on its own.
+    star.addEventListener('mouseenter', () => {
+      star.style.transform = 'scale(1.1)';
+      star.style.borderColor = 'rgba(124,140,248,0.55)';
+      showHint();
+    });
+    star.addEventListener('mouseleave', () => {
+      star.style.transform = 'scale(1)';
+      star.style.borderColor = 'rgba(124,140,248,0.25)';
+      scheduleHideHint();
+    });
     controls.appendChild(star);
+
+    // v0.47.2 — explicit hover/focus hint explaining the star and
+    // pointing users at the Deal Scout toolbar popup where their
+    // saved listings are listed. Replaces the old (?) help icon —
+    // now triggered by the star itself per user feedback.
+    const hint = document.createElement('div');
+    hint.style.cssText =
+      'position:absolute;top:36px;right:0;z-index:7;'
+      + 'background:#13111f;border:1px solid rgba(124,140,248,0.45);'
+      + 'border-radius:8px;padding:8px 10px;font-size:11px;color:#e2e8f0;'
+      + 'box-shadow:0 6px 16px rgba(0,0,0,0.5);max-width:230px;'
+      + 'line-height:1.45;display:none;pointer-events:auto;'
+      + 'font-family:inherit;font-weight:400';
+    hint.textContent = 'Click \u2606 to save this listing. View saved listings any time from the Deal Scout toolbar icon.';
+    controls.appendChild(hint);
+
+    let hintHideTimer = null;
+    function showHint() {
+      if (hintHideTimer) { clearTimeout(hintHideTimer); hintHideTimer = null; }
+      hint.style.display = 'block';
+    }
+    function scheduleHideHint() {
+      if (hintHideTimer) clearTimeout(hintHideTimer);
+      hintHideTimer = setTimeout(() => { hint.style.display = 'none'; }, 350);
+    }
+    hint.addEventListener('mouseenter', showHint);
+    hint.addEventListener('mouseleave', scheduleHideHint);
+    star.addEventListener('focus', showHint);
+    star.addEventListener('blur', scheduleHideHint);
 
     // Tracks live state so click handlers don't re-query storage on
     // every press. Initialised async — the star renders as ☆ until the

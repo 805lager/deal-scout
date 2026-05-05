@@ -54,39 +54,23 @@
       letter-spacing: 0.02em;
     }
 
-    /* ── Status bar ── */
-    #api-status {
-      display: flex;
-      align-items: center;
-      gap: 7px;
-      margin: 12px 16px;
+    /* ── Inline status (errors only — v0.47.2 removed the idle bar) ── */
+    #status-inline {
+      display: none;
+      margin: 0 16px 10px;
       padding: 8px 12px;
       border-radius: 8px;
       font-size: 12px;
-      background: rgba(255,255,255,0.04);
-      border: 1px solid rgba(255,255,255,0.07);
-      color: #6b7280;
-      transition: background 0.2s, border-color 0.2s;
-    }
-    #api-status.active {
-      background: rgba(34,197,94,0.08);
-      border-color: rgba(34,197,94,0.22);
-      color: #86efac;
-    }
-    #api-status.error {
       background: rgba(239,68,68,0.08);
-      border-color: rgba(239,68,68,0.22);
+      border: 1px solid rgba(239,68,68,0.22);
       color: #fca5a5;
+      line-height: 1.4;
     }
-    .status-dot {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: #374151;
-      flex-shrink: 0;
+    #status-inline.progress {
+      background: rgba(124,140,248,0.08);
+      border-color: rgba(124,140,248,0.22);
+      color: #a5b4fc;
     }
-    #api-status.active  .status-dot { background: #22c55e; box-shadow: 0 0 6px #22c55e88; }
-    #api-status.error   .status-dot { background: #ef4444; }
 
     /* ── Platform grid ── */
     .section-label {
@@ -445,12 +429,6 @@
     </div>
   </div>
 
-  <!-- API status -->
-  <div id="api-status">
-    <div class="status-dot"></div>
-    <span id="status-text">Checking connection…</span>
-  </div>
-
   <!-- Platforms -->
   <div class="section-label">Supported Platforms</div>
   <div class="platform-grid">
@@ -483,6 +461,9 @@
       </div>
     </div>
   </div>
+
+  <!-- Inline status (only shown for progress / errors during manual scoring) -->
+  <div id="status-inline"></div>
 
   <!-- Score button -->
   <div class="btn-wrap">
