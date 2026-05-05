@@ -264,7 +264,17 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 ## Extension Version
 
-Current: **v0.47.1** (extension) / **v0.47.1** (API — read from `artifacts/deal-scout-api/VERSION`)
+Current: **v0.47.4** (extension) / **v0.47.4** (API — read from `artifacts/deal-scout-api/VERSION`)
+
+### v0.47.4 — Chrome Web Store listing refresh (Task #92)
+
+Listing-copy-only release. No code or scoring behavior changed.
+
+- **Title** (manifest `name`): "Deal Scout — AI Buying Assistant for FB, eBay, Craigslist & OfferUp" (67/75 chars). Lists the four marketplaces in the title for store search.
+- **Summary** (manifest `description`): "Scores listings 1–10 with sold-price comps, product reputation checks, cross-site price compare, and scam detection." (116/132 chars). Replaces the older "AI deal scorer for …" line; now advertises product reputation and cross-site compare.
+- **Detailed description** lives in `extension/STORE_LISTING.md` for the user to paste into the Chrome Web Store dashboard. Adds product reputation bullet, cross-site compare bullet, plural negotiation messages (3 tones), and a Save Listings line covering the v0.47.x save-star feature. Closes with a GET STARTED CTA.
+- Bumped manifest + `artifacts/deal-scout-api/VERSION` to `0.47.4`. Rebuilt zips at `extension/deal-scout-v0.47.4.zip` and `.local/dist/deal-scout-v0.47.4-test.zip`. Removed prior `0.47.3` zips.
+
 
 ### v0.47.1 Popup chrome cleanup + collapsible header summary (Task #91)
 

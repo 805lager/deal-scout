@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Deal Scout \u2014 AI Deal Scorer",
-  "version": "0.47.3",
-  "description": "AI deal scorer for Facebook Marketplace, Craigslist, eBay & OfferUp. Uses sold prices, market analysis & scam detection.",
+  "name": "Deal Scout \u2014 AI Buying Assistant for FB, eBay, Craigslist & OfferUp",
+  "version": "0.47.4",
+  "description": "Scores listings 1\u201310 with sold-price comps, product reputation checks, cross-site price compare, and scam detection.",
   "permissions": [
     "activeTab",
     "storage",
