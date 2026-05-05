@@ -71,6 +71,34 @@ load_dotenv()
 
 log = logging.getLogger(__name__)
 
+# Task #97 — visibility into how often filter_affiliate_cards drops malformed
+# rows. Process-local since-restart counters keyed by program_key (Amazon,
+# eBay, Walmart, etc.) so a partner suddenly shipping garbage prices shows up
+# as a spike instead of vanishing into DEBUG logs. Surfaced via
+# get_filter_skip_stats() (consumed by /admin/dashboard).
+_filter_skip_stats: dict = {"by_program": {}, "total": 0}
+
+# A single filter_affiliate_cards() call dropping this many rows for the same
+# program is almost always a schema regression on that partner — emit a
+# WARNING summary so it shows up without anyone tailing DEBUG.
+_FILTER_SKIP_WARN_THRESHOLD = 5
+
+
+def get_filter_skip_stats() -> dict:
+    """Snapshot of since-restart malformed-row counts, keyed by program_key.
+    Shape: {"total": int, "by_program": {program_key: int, ...}}.
+    Safe to call from anywhere — returns a shallow copy."""
+    return {
+        "total": _filter_skip_stats["total"],
+        "by_program": dict(_filter_skip_stats["by_program"]),
+    }
+
+
+def reset_filter_skip_stats() -> None:
+    """Clear the counters (test/admin use)."""
+    _filter_skip_stats["by_program"].clear()
+    _filter_skip_stats["total"] = 0
+
 # ── Affiliate Program Registry ────────────────────────────────────────────────
 # This is the ONLY place you need to touch to add a new program.
 # All routing, ranking, and link generation is driven by this config.
@@ -2031,6 +2059,11 @@ def filter_affiliate_cards(
         return cards
     asking = max(0.0, float(asking_price or 0.0))
 
+    # Per-call skip tally so we can emit a single WARNING summary at the end
+    # if any program crosses _FILTER_SKIP_WARN_THRESHOLD in one request,
+    # rather than spamming DEBUG line-by-line.
+    call_skips: dict = {}
+
     out = []
     for card in cards:
         program_key = card_get(card, "program_key", "?")
@@ -2060,6 +2093,15 @@ def filter_affiliate_cards(
                         continue
                     kept.append(it)
                 except Exception as _row_e:  # noqa: BLE001 — skip malformed row, keep card
+                    # Bump both the per-call tally (for the WARNING summary
+                    # below) and the since-restart counter surfaced via
+                    # /admin/dashboard. Tagged by program_key so a regression
+                    # in one partner's payload is attributable at a glance.
+                    call_skips[program_key] = call_skips.get(program_key, 0) + 1
+                    _filter_skip_stats["by_program"][program_key] = (
+                        _filter_skip_stats["by_program"].get(program_key, 0) + 1
+                    )
+                    _filter_skip_stats["total"] += 1
                     log.debug(
                         f"[AffiliateRouter] filter_affiliate_cards skip bad row "
                         f"(program_key={program_key}): {_row_e}"
@@ -2117,5 +2159,20 @@ def filter_affiliate_cards(
             if card_get(card, "confidence_label", "") in ("", None):
                 card_set(card, "confidence_label", "search")
             out.append(card)
+
+    # One-line per-request summary when any program crossed the threshold.
+    # Cheap spike alert without a metrics backend — operators grepping for
+    # "filter_affiliate_cards skip spike" will see the offending program(s).
+    if call_skips:
+        spiked = {p: n for p, n in call_skips.items() if n >= _FILTER_SKIP_WARN_THRESHOLD}
+        if spiked:
+            log.warning(
+                f"[AffiliateRouter] filter_affiliate_cards skip spike: {spiked} "
+                f"(threshold={_FILTER_SKIP_WARN_THRESHOLD}/call); all_skips={call_skips}"
+            )
+        else:
+            log.info(
+                f"[AffiliateRouter] filter_affiliate_cards skipped malformed rows: {call_skips}"
+            )
 
     return out

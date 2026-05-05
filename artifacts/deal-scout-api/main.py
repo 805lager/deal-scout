@@ -3500,12 +3500,21 @@ async def admin_dashboard(request: Request):
     except Exception:
         pass
     claude_cache_metric = await _claude_cache_summary()
+    # Task #97 — surface how often filter_affiliate_cards is dropping malformed
+    # comp rows, broken down by program_key. A sudden jump on one partner is
+    # the signal that their payload schema regressed.
+    try:
+        from scoring.affiliate_router import get_filter_skip_stats
+        affiliate_skip_metric = get_filter_skip_stats()
+    except Exception:
+        affiliate_skip_metric = {"total": 0, "by_program": {}}
     return {
         "pipeline": "Deal Scout Market Intelligence",
         "description": "Anonymized used-market price signals. No PII collected.",
         "stats": summary,
         "score_cache": score_cache_metric,
         "claude_cache": claude_cache_metric,
+        "affiliate_filter_skips": affiliate_skip_metric,
     }
 
 
