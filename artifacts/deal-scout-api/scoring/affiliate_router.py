@@ -1204,6 +1204,11 @@ class AffiliateCard:
     image_url:          str = ""
     product_price:      float = 0.0
     items:              list = field(default_factory=list)
+    # v0.47.5 — stamped by filter_affiliate_cards. Must be a declared field
+    # (not a dynamic attr) so dataclasses.asdict() preserves it on the way
+    # out to /score and /score/stream JSON. Values: exact | approximate |
+    # browse | search.
+    confidence_label:   str = "search"
 
 
 # ── Link Generators ───────────────────────────────────────────────────────────

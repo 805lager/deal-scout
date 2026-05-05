@@ -152,6 +152,33 @@ def test_empty_cards_list():
     assert filter_affiliate_cards([], asking_price=500.0, query="x") == []
 
 
+def test_confidence_label_survives_asdict_serialization():
+    """Reviewer-flagged regression guard: `confidence_label` must be a
+    declared dataclass field, otherwise dataclasses.asdict() (used in
+    main.py /score and /score/stream) drops it and the extension never
+    sees the exact/approximate/browse/search tiering."""
+    from dataclasses import asdict
+    card = _make_card(items=[
+        {"title": "Apple iPhone 13 Pro 256GB Unlocked", "price": 510.0},
+    ])
+    out = filter_affiliate_cards([card], asking_price=500.0,
+                                 query="iPhone 13 Pro 256GB")
+    serialized = asdict(out[0])
+    assert "confidence_label" in serialized, \
+        "confidence_label dropped by asdict — must be a declared field"
+    assert serialized["confidence_label"] == "exact"
+
+
+def test_default_confidence_label_on_unfiltered_card():
+    """A freshly-built AffiliateCard (before filter runs) should already
+    serialize with a confidence_label so the response shape is stable
+    even if filter_affiliate_cards is bypassed for any reason."""
+    from dataclasses import asdict
+    card = _make_card()
+    serialized = asdict(card)
+    assert serialized.get("confidence_label") == "search"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in list(globals().items()) if k.startswith("test_")]
     for fn in fns:

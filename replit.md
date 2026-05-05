@@ -268,7 +268,7 @@ Current: **v0.47.4** (extension) / **v0.47.4** (API — read from `artifacts/dea
 
 ### Server-only — Affiliate card filter fix (Task #94)
 
-`filter_affiliate_cards` was silently no-op since v0.46.0 because callers pass `AffiliateCard` dataclass instances and the function called `.get()`/`[k]=` (dict-only); added `card_get`/`card_set` helpers that handle both shapes, re-rank kept items by closeness to asking price, drop empty cards with no fallback, include `program_key` in the WARN log, fixed two `c.get("program_key")` flag-suppression sites in `main.py`, added `tests/test_filter_affiliate_cards.py` (9/9 green). No version bump (server-only).
+`filter_affiliate_cards` was silently no-op since v0.46.0 because callers pass `AffiliateCard` dataclass instances and the function called `.get()`/`[k]=` (dict-only); added `card_get`/`card_set` helpers that handle both shapes, declared `confidence_label` as a real dataclass field on `AffiliateCard` (otherwise `dataclasses.asdict()` would drop the dynamically-set attr before serializing), re-rank kept items by closeness to asking price, drop empty cards with no fallback, include `program_key` in the WARN log, fixed two `c.get("program_key")` flag-suppression sites in `main.py`, added `tests/test_filter_affiliate_cards.py` (11/11 green incl. asdict serialization guard). No version bump (server-only).
 
 ### v0.47.4 — Chrome Web Store listing refresh (Task #92)
 
