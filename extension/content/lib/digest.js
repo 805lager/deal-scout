@@ -286,16 +286,22 @@
     // pointing users at the Deal Scout toolbar popup where their
     // saved listings are listed. Replaces the old (?) help icon —
     // now triggered by the star itself per user feedback.
+    // v0.47.3 — pin a fixed width and attach to the panel host (not
+    // the flex `controls` row). Inside the flex parent the hint was
+    // collapsing to one column of characters; sized + parented at the
+    // panel level it wraps as a normal readable paragraph.
     const hint = document.createElement('div');
     hint.style.cssText =
-      'position:absolute;top:36px;right:0;z-index:7;'
+      'position:absolute;top:80px;right:10px;z-index:7;'
+      + 'box-sizing:border-box;width:240px;'
       + 'background:#13111f;border:1px solid rgba(124,140,248,0.45);'
-      + 'border-radius:8px;padding:8px 10px;font-size:11px;color:#e2e8f0;'
-      + 'box-shadow:0 6px 16px rgba(0,0,0,0.5);max-width:230px;'
-      + 'line-height:1.45;display:none;pointer-events:auto;'
+      + 'border-radius:8px;padding:9px 11px;font-size:11.5px;color:#e2e8f0;'
+      + 'box-shadow:0 6px 16px rgba(0,0,0,0.5);'
+      + 'line-height:1.5;display:none;pointer-events:auto;'
+      + 'white-space:normal;text-align:left;word-break:normal;'
       + 'font-family:inherit;font-weight:400';
-    hint.textContent = 'Click \u2606 to save this listing. View saved listings any time from the Deal Scout toolbar icon.';
-    controls.appendChild(hint);
+    hint.textContent = 'Click \u2606 to save this listing. View your saved listings any time from the Deal Scout toolbar icon.';
+    panelHost.appendChild(hint);
 
     let hintHideTimer = null;
     function showHint() {
