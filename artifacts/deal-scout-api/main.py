@@ -527,9 +527,24 @@ cors_origins = ["*"] if _cors_raw.strip() == "*" else [
     o.strip() for o in _cors_raw.split(",") if o.strip()
 ]
 
+# Marketplaces serve content scripts from many subdomains:
+#   craigslist:   losangeles.craigslist.org, sfbay.craigslist.org, etc.
+#   facebook:     www.facebook.com, m.facebook.com, web.facebook.com
+#   ebay:         www.ebay.com, www.ebay.co.uk, www.ebay.de, etc.
+#   offerup:      offerup.com, www.offerup.com
+# CORSMiddleware does exact origin matching, so the static allowlist above
+# only covers www.* and would 400 every Craigslist regional preflight.
+# allow_origin_regex matches any subdomain across these brands and any
+# eBay country TLD, so all marketplace content scripts pass preflight.
+_CORS_REGEX = (
+    r"^https://(?:[a-zA-Z0-9-]+\.)*"
+    r"(?:craigslist\.org|facebook\.com|ebay\.[a-z.]+|offerup\.com)$"
+)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
+    allow_origin_regex=_CORS_REGEX,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-DS-Key", "X-Admin-Token",
                     "X-DS-Ext-Version", "X-DS-Install-Id",
@@ -4805,6 +4820,7 @@ if _is_production:
     _root_app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
+        allow_origin_regex=_CORS_REGEX,
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["Content-Type", "Authorization", "X-DS-Key", "X-Admin-Token",
                         "X-DS-Ext-Version", "X-DS-Install-Id",
