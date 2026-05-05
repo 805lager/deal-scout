@@ -299,9 +299,10 @@ No backend or scoring behavior changed.
   via the existing `_setCollapsed` cache (key `ds_collapsed_<name>_v1`).
 - All 4 platform `renderHeader` functions wrap their score block in
   this collapsible. The collapsed summary is a one-liner:
-  `[score chip] SEV_LABEL · $price[ → $rec]`. fbm shows asking → rec;
-  ebay/craigslist/offerup show only `$price` (no `recommended_offer`
-  in those response shapes).
+  `[score chip] SEV_LABEL · $price → $rec` (em-dash placeholder when
+  no `recommended_offer` is present). fbm always has a rec; the
+  ebay/craigslist/offerup paths fall back to `$price → —` when no rec
+  is present in those response shapes.
 
 **In-page panel — Rate / Share moved to topbar**
 - New `social.js::renderCompactRateShare(container)` — pill-button

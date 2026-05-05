@@ -949,7 +949,7 @@
         const px = document.createElement('span');
         px.style.cssText = 'color:#cbd5e1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0';
         const _rec = (r.recommended_offer && r.recommended_offer > 0)
-          ? ' \u2192 $' + Math.round(r.recommended_offer) : '';
+          ? ' \u2192 $' + Math.round(r.recommended_offer) : ' \u2192 \u2014';
         px.textContent = '$' + Math.round(r.price || 0) + _rec;
         sumWrap.appendChild(px);
         _collapsibleApi.setSummary(sumWrap);
