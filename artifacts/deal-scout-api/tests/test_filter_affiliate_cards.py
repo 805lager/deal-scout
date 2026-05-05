@@ -148,6 +148,29 @@ def test_malformed_items_do_not_crash():
     assert len(out) <= 1
 
 
+def test_bad_row_does_not_lose_good_rows():
+    """Task #95: a single malformed row (e.g. non-numeric price) must not
+    cause the whole card to fall back to its unfiltered original. Other
+    valid rows must still be pruned, re-ranked by price-fit, and labeled."""
+    card = _make_card(items=[
+        {"title": "iPhone 13 Pro 256GB Unlocked", "price": "not-a-number"},  # bad row
+        {"title": "iPhone 13 Pro 256GB Unlocked", "price": 2200.0},          # far from asking
+        {"title": "iPhone 13 Pro 256GB Unlocked", "price": 510.0},           # closest to asking
+        {"title": "iPhone 13 Pro Case Cover", "price": 4.99},                # negative-keyword prune
+    ])
+    out = filter_affiliate_cards([card], asking_price=500.0,
+                                 query="iPhone 13 Pro 256GB")
+    assert len(out) == 1
+    items = card_get(out[0], "items")
+    titles = [card_get(it, "title") for it in items]
+    # Negative-keyword prune still ran on the surviving rows
+    assert "iPhone 13 Pro Case Cover" not in titles
+    # Re-rank still ran: closest-to-asking price comes first
+    assert card_get(items[0], "price") == 510.0
+    # Confidence label still stamped (not skipped via the card-level except)
+    assert card_get(out[0], "confidence_label") == "exact"
+
+
 def test_empty_cards_list():
     assert filter_affiliate_cards([], asking_price=500.0, query="x") == []
 

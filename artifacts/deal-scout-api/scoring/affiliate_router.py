@@ -2038,24 +2038,33 @@ def filter_affiliate_cards(
             items = list(card_get(card, "items", []) or [])
             kept = []
             for it in items:
-                title = str(card_get(it, "title", "") or "")
-                price = float(card_get(it, "price", 0.0) or 0.0)
-                tlow = title.lower()
-                # Negative keyword filter — never let a $4 case look like a $400 device
-                if any(k in tlow for k in _NEGATIVE_KEYWORDS):
+                try:
+                    if it is None:
+                        continue
+                    title = str(card_get(it, "title", "") or "")
+                    price = float(card_get(it, "price", 0.0) or 0.0)
+                    tlow = title.lower()
+                    # Negative keyword filter — never let a $4 case look like a $400 device
+                    if any(k in tlow for k in _NEGATIVE_KEYWORDS):
+                        continue
+                    # Bundle/refurb mismatch: if our listing is *not* multi-item or
+                    # refurbished, drop refurb-flavoured comps so prices align
+                    if not is_multi_item and any(k in tlow for k in _BUNDLE_REFURB_KEYWORDS):
+                        continue
+                    # Price sanity: anything under 50% of asking is almost
+                    # certainly a different SKU (or an accessory)
+                    if asking > 0 and price > 0 and price < (asking * 0.5):
+                        continue
+                    # Title relevance to extracted query
+                    if query and _title_token_overlap(title, query) < 0.15:
+                        continue
+                    kept.append(it)
+                except Exception as _row_e:  # noqa: BLE001 — skip malformed row, keep card
+                    log.debug(
+                        f"[AffiliateRouter] filter_affiliate_cards skip bad row "
+                        f"(program_key={program_key}): {_row_e}"
+                    )
                     continue
-                # Bundle/refurb mismatch: if our listing is *not* multi-item or
-                # refurbished, drop refurb-flavoured comps so prices align
-                if not is_multi_item and any(k in tlow for k in _BUNDLE_REFURB_KEYWORDS):
-                    continue
-                # Price sanity: anything under 50% of asking is almost
-                # certainly a different SKU (or an accessory)
-                if asking > 0 and price > 0 and price < (asking * 0.5):
-                    continue
-                # Title relevance to extracted query
-                if query and _title_token_overlap(title, query) < 0.15:
-                    continue
-                kept.append(it)
 
             # Re-rank kept items by closeness to asking price (best first).
             # Items missing a price sink to the bottom. Falls back to original
