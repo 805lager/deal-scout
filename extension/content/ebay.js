@@ -878,6 +878,12 @@
     hdr.addEventListener("mousedown", (e) => {
       if (e.target === closeBtn) return;
       if (_shareTopbar && _shareTopbar.contains(e.target)) return;
+      // v0.47.1 — don't arm a drag when the click is on the collapsible
+      // header's clickable rows (toggle chevron / collapsed summary).
+      if (_collapsibleApi) {
+        if (_collapsibleApi.wrap && _collapsibleApi.wrap.contains(e.target)) return;
+        if (_collapsibleApi.collapsedRow && _collapsibleApi.collapsedRow.contains(e.target)) return;
+      }
       const p = getPanel();
       const rect = p.getBoundingClientRect();
       p._ds_drag = { on: true, ox: e.clientX - rect.left, oy: e.clientY - rect.top };
