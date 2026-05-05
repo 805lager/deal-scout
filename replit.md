@@ -266,6 +266,10 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 Current: **v0.47.4** (extension) / **v0.47.4** (API — read from `artifacts/deal-scout-api/VERSION`)
 
+### Server-only — Affiliate card filter fix (Task #94)
+
+`filter_affiliate_cards` was silently no-op since v0.46.0 because callers pass `AffiliateCard` dataclass instances and the function called `.get()`/`[k]=` (dict-only); added `card_get`/`card_set` helpers that handle both shapes, re-rank kept items by closeness to asking price, drop empty cards with no fallback, include `program_key` in the WARN log, fixed two `c.get("program_key")` flag-suppression sites in `main.py`, added `tests/test_filter_affiliate_cards.py` (9/9 green). No version bump (server-only).
+
 ### v0.47.4 — Chrome Web Store listing refresh (Task #92)
 
 Listing-copy-only release: new manifest `name`/`description`, new `extension/STORE_LISTING.md` with full long-form CWS copy (product reputation + cross-site compare + 3-tone negotiation + save-listings + GET STARTED CTA), VERSION bump to 0.47.4, rebuilt zips.

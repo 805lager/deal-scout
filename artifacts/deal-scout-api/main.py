@@ -1217,7 +1217,8 @@ async def score_listing(listing: ListingRequest, request: Request):
     try:
         flagged = await _get_flagged_programs(listing.listing_url)
         if flagged:
-            affiliate_cards = [c for c in affiliate_cards if c.get("program_key") not in flagged]
+            from scoring.affiliate_router import card_get as _card_get
+            affiliate_cards = [c for c in affiliate_cards if _card_get(c, "program_key") not in flagged]
     except Exception as _se:
         log.warning(f"flag-suppression failed (non-fatal): {_se}")
 
@@ -2064,7 +2065,8 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
             try:
                 flagged = await _get_flagged_programs(listing.listing_url)
                 if flagged:
-                    affiliate_cards = [c for c in affiliate_cards if c.get("program_key") not in flagged]
+                    from scoring.affiliate_router import card_get as _card_get
+                    affiliate_cards = [c for c in affiliate_cards if _card_get(c, "program_key") not in flagged]
             except Exception as _se:
                 log.warning(f"flag-suppression (stream) failed (non-fatal): {_se}")
 

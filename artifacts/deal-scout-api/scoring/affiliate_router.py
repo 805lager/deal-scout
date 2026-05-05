@@ -1968,6 +1968,36 @@ def _title_token_overlap(a: str, b: str) -> float:
     return len(ta & tb) / max(1, min(len(ta), len(tb)))
 
 
+def card_get(card, key, default=None):
+    """Read `key` off a card whether it's an AffiliateCard dataclass or a dict.
+
+    The internal pipeline holds AffiliateCard instances; only after `asdict`
+    on the way out do they become dicts. Helpers like `filter_affiliate_cards`
+    and downstream flag-suppression need to work for both shapes.
+    """
+    if card is None:
+        return default
+    if isinstance(card, dict):
+        v = card.get(key, default)
+    else:
+        v = getattr(card, key, default)
+    return default if v is None else v
+
+
+def card_set(card, key, value) -> None:
+    """Write `key` on a card whether it's an AffiliateCard dataclass or a dict.
+
+    AffiliateCard adds new attrs like `confidence_label` dynamically (it's a
+    plain dataclass, not slotted), so setattr works without schema changes.
+    """
+    if card is None:
+        return
+    if isinstance(card, dict):
+        card[key] = value
+    else:
+        setattr(card, key, value)
+
+
 def filter_affiliate_cards(
     cards: list,
     asking_price: float,
@@ -1976,9 +2006,21 @@ def filter_affiliate_cards(
     is_multi_item: bool = False,
 ) -> list:
     """v0.46.0 — defense-in-depth pass over affiliate cards.
+    Updated v0.47.5 — works on AffiliateCard dataclass instances (which is
+    what callers actually pass) in addition to dicts. Previously every card
+    threw `AttributeError: 'AffiliateCard' object has no attribute 'get'`
+    so the filter was silently no-op for months.
 
-    Mutates each card dict to add `confidence_label` and prunes obviously bad
-    items. Returns the (possibly shorter) list of cards. Never raises.
+    For each card:
+    - Prunes items that match negative keywords, refurb-mismatch, sub-50%
+      asking, or weak title-overlap with the extracted query.
+    - Re-sorts kept items so the one closest to asking price is first
+      (best price comparison shows up at the top of the panel).
+    - Stamps `confidence_label`: exact | approximate | browse | search.
+    - Drops cards whose items were ALL pruned and which have no fallback
+      value (no `price_hint`, not a `lead` card type) — empty stubs are
+      worse than no card.
+    Returns the (possibly shorter) list. Never raises.
     """
     if not cards:
         return cards
@@ -1986,12 +2028,13 @@ def filter_affiliate_cards(
 
     out = []
     for card in cards:
+        program_key = card_get(card, "program_key", "?")
         try:
-            items = list(card.get("items") or [])
+            items = list(card_get(card, "items", []) or [])
             kept = []
             for it in items:
-                title = str(it.get("title") or "")
-                price = float(it.get("price") or 0.0)
+                title = str(card_get(it, "title", "") or "")
+                price = float(card_get(it, "price", 0.0) or 0.0)
                 tlow = title.lower()
                 # Negative keyword filter — never let a $4 case look like a $400 device
                 if any(k in tlow for k in _NEGATIVE_KEYWORDS):
@@ -2009,34 +2052,56 @@ def filter_affiliate_cards(
                     continue
                 kept.append(it)
 
+            # Re-rank kept items by closeness to asking price (best first).
+            # Items missing a price sink to the bottom. Falls back to original
+            # order when asking is 0 (no anchor to compare against).
+            if asking > 0 and len(kept) > 1:
+                def _price_distance(it):
+                    p = float(card_get(it, "price", 0.0) or 0.0)
+                    if p <= 0:
+                        return float("inf")
+                    return abs(p - asking) / asking
+                kept.sort(key=_price_distance)
+
             had_items = bool(items)
-            card["items"] = kept
+            card_set(card, "items", kept)
 
             # Decide confidence label
-            ctype = str(card.get("card_type") or "")
+            ctype = str(card_get(card, "card_type", "") or "")
             if kept:
                 # Item-level data survived → exact when prices line up tightly,
                 # approximate when at least one item is well within ±25%
                 top = kept[0]
-                tp = float(top.get("price") or 0.0)
+                tp = float(card_get(top, "price", 0.0) or 0.0)
                 if asking > 0 and tp > 0 and 0.75 <= (tp / asking) <= 1.25:
-                    card["confidence_label"] = "exact"
+                    card_set(card, "confidence_label", "exact")
                 else:
-                    card["confidence_label"] = "approximate"
+                    card_set(card, "confidence_label", "approximate")
             else:
                 # No item-level data — fall back to search/browse
                 if had_items:
                     # We had items but pruned them all → browse
-                    card["confidence_label"] = "browse"
+                    card_set(card, "confidence_label", "browse")
                 elif ctype == "lead":
-                    card["confidence_label"] = "browse"
+                    card_set(card, "confidence_label", "browse")
                 else:
-                    card["confidence_label"] = "search"
+                    card_set(card, "confidence_label", "search")
+
+            # Drop cards that pruned to nothing AND have no fallback signal.
+            # Lead cards (autotrader CPA, etc.) and cards with a price_hint
+            # still drive value even with no item rows.
+            price_hint = str(card_get(card, "price_hint", "") or "").strip()
+            if not kept and had_items and ctype != "lead" and not price_hint:
+                continue
 
             out.append(card)
         except Exception as _e:  # noqa: BLE001 — never break the response
-            log.warning(f"[AffiliateRouter] filter_affiliate_cards card error: {_e}")
-            card["confidence_label"] = card.get("confidence_label") or "search"
+            log.warning(
+                f"[AffiliateRouter] filter_affiliate_cards card error "
+                f"(program_key={program_key}): {_e}"
+            )
+            if card_get(card, "confidence_label", "") in ("", None):
+                card_set(card, "confidence_label", "search")
             out.append(card)
 
     return out
