@@ -144,3 +144,9 @@ id = "xp22ROTlFZcM4oyEZy9UX"
 uri = "file://extension/deal-scout-v0.47.4.zip"
 type = "unspecified"
 title = "Deal Scout v0.47.4 (Chrome extension)"
+
+[[outputs]]
+id = "L0XZooKrqLY_DsIeGgO9n"
+uri = "file://exports/deal-scout-data-product-summary.pdf"
+type = "pdf"
+title = "Deal Scout — Market Intelligence Data Product (Executive Summary)"
