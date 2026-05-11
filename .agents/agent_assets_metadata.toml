@@ -168,3 +168,9 @@ id = "pqne1lf3nM4e3FARtKv4Y"
 uri = "file://extension/deal-scout-v0.47.7-diag.zip"
 type = "unspecified"
 title = "Deal Scout v0.47.7 — Diagnostic build"
+
+[[outputs]]
+id = "jRhpumXlX3pd2U8jYvGNz"
+uri = "file://extension/deal-scout-v0.47.7.zip"
+type = "unspecified"
+title = "Deal Scout v0.47.7 — Chrome Web Store ready"
