@@ -162,3 +162,9 @@ id = "r_aEED4SWJzPuWWRuKzz6"
 uri = "file://extension/deal-scout-v0.47.6.zip"
 type = "unspecified"
 title = "Deal Scout v0.47.6 — Force-default API URL"
+
+[[outputs]]
+id = "pqne1lf3nM4e3FARtKv4Y"
+uri = "file://extension/deal-scout-v0.47.7-diag.zip"
+type = "unspecified"
+title = "Deal Scout v0.47.7 — Diagnostic build"

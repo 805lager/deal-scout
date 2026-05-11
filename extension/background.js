@@ -261,13 +261,15 @@ async function callScoringAPI(listing, _retryCount = 0) {
       await clearApiBaseOverride();
       return callScoringAPI(listing, _retryCount + 1);
     }
-    const error = await response.json().catch(() => ({}));
-    let detail = error.detail;
-    if (Array.isArray(detail)) {
-      detail = detail.map(d => d.msg || d.message || JSON.stringify(d)).join('; ');
-    }
+    const bodyText = await response.text().catch(() => "");
+    const srv = response.headers.get("server") || "?";
+    const ct = response.headers.get("content-type") || "?";
+    const cf = response.headers.get("cf-ray") ? " cf-ray=" + response.headers.get("cf-ray") : "";
+    const snippet = bodyText.slice(0, 120).replace(/\s+/g, " ");
+    let detail = "";
+    try { const j = JSON.parse(bodyText); detail = Array.isArray(j.detail) ? j.detail.map(d=>d.msg||d.message||JSON.stringify(d)).join("; ") : (j.detail || ""); } catch {}
     if (response.status >= 500) throw new Error("Deal Scout servers are temporarily unavailable \u2014 try again shortly");
-    throw new Error(detail || `API error ${response.status}`);
+    throw new Error(`API ${response.status} | url=${API_BASE} | server=${srv}${cf} | ct=${ct} | body=${snippet || detail || "(empty)"}`);
   }
 
   const text = await response.text();
