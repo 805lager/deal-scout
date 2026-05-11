@@ -150,3 +150,9 @@ id = "L0XZooKrqLY_DsIeGgO9n"
 uri = "file://exports/deal-scout-data-product-summary.pdf"
 type = "pdf"
 title = "Deal Scout — Market Intelligence Data Product (Executive Summary)"
+
+[[outputs]]
+id = "do9d7X2reY1Ati-feTMOf"
+uri = "file://extension/deal-scout-v0.47.5.zip"
+type = "unspecified"
+title = "Deal Scout v0.47.5 — 403 self-heal hotfix"
