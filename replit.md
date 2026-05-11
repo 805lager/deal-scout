@@ -264,7 +264,7 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 ## Extension Version
 
-Current: **v0.47.5** (extension) / **v0.47.4** (API — read from `artifacts/deal-scout-api/VERSION`)
+Current: **v0.47.7** (extension) / **v0.47.4** (API — read from `artifacts/deal-scout-api/VERSION`)
 
 ### Server-only — Amazon PA-API live pricing with graceful fallback (Task #99)
 
@@ -273,6 +273,23 @@ New `scoring/amazon_pricer.py` calls Amazon Product Advertising API 5 (`SearchIt
 ### Server-only — Affiliate card filter fix (Task #94)
 
 `filter_affiliate_cards` was silently no-op since v0.46.0 because callers pass `AffiliateCard` dataclass instances and the function called `.get()`/`[k]=` (dict-only); added `card_get`/`card_set` helpers that handle both shapes, declared `confidence_label` as a real dataclass field on `AffiliateCard` (otherwise `dataclasses.asdict()` would drop the dynamically-set attr before serializing), re-rank kept items by closeness to asking price, drop empty cards with no fallback, include `program_key` in the WARN log, fixed two `c.get("program_key")` flag-suppression sites in `main.py`, added `tests/test_filter_affiliate_cards.py` (11/11 green incl. asdict serialization guard). No version bump (server-only).
+
+### v0.47.7 — Force-default API URL + verbose error reporting (extension-only)
+
+After v0.47.5/0.47.6 didn't fully resolve the user's persistent
+`API error 403` (a fresh install showed a brand-new extension ID,
+proving stored override wasn't the cause), 0.47.7 hardened in two
+ways: (1) `getApiBase()` now wipes `ds_api_base` on every call and
+unconditionally returns the production default — the override
+feature is dead, no field user has any reason to need it; (2) the
+non-OK error thrown to the popup now includes URL, status, server
+header, content-type, cf-ray (if any), and a 120-char body snippet
+so future "API error N" reports identify the source layer
+(Google Frontend = us, cloudflare = edge, no header = local
+intercept) without needing DevTools console access. After
+reinstalling 0.47.7, scoring resumed working — root cause most
+likely a Chrome MV3 service-worker state cache that only fully
+released on a third reinstall cycle.
 
 ### v0.47.5 — Toolbar "API error 403" self-heal (extension-only hotfix)
 
