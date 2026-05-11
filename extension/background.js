@@ -27,10 +27,20 @@ const DS_API_KEY = atob("MDVlZmZjMGQ2NTg2MTJiYzc5N2QwNDM0NWVhYWM4OTBfZXZpbF9zZA=
 async function getApiBase() {
   try {
     const stored = await chrome.storage.local.get("ds_api_base");
-    return stored.ds_api_base || API_BASE_DEFAULT;
+    const override = stored.ds_api_base;
+    if (!override) return API_BASE_DEFAULT;
+    if (/\.replit\.dev(\/|$)/i.test(override) || !/^https:\/\//i.test(override)) {
+      await chrome.storage.local.remove("ds_api_base").catch(() => {});
+      return API_BASE_DEFAULT;
+    }
+    return override;
   } catch {
     return API_BASE_DEFAULT;
   }
+}
+
+async function clearApiBaseOverride() {
+  try { await chrome.storage.local.remove("ds_api_base"); } catch {}
 }
 
 async function getInstallId() {
@@ -257,6 +267,10 @@ async function callScoringAPI(listing, _retryCount = 0) {
   }
 
   if (!response.ok) {
+    if ((response.status === 401 || response.status === 403) && API_BASE !== API_BASE_DEFAULT && _retryCount < MAX_RETRIES) {
+      await clearApiBaseOverride();
+      return callScoringAPI(listing, _retryCount + 1);
+    }
     const error = await response.json().catch(() => ({}));
     let detail = error.detail;
     if (Array.isArray(detail)) {

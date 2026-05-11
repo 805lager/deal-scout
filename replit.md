@@ -264,7 +264,7 @@ The api-server proxies `/api/ds` → `http://localhost:8000` (stripping the pref
 
 ## Extension Version
 
-Current: **v0.47.4** (extension) / **v0.47.4** (API — read from `artifacts/deal-scout-api/VERSION`)
+Current: **v0.47.5** (extension) / **v0.47.4** (API — read from `artifacts/deal-scout-api/VERSION`)
 
 ### Server-only — Amazon PA-API live pricing with graceful fallback (Task #99)
 
@@ -273,6 +273,33 @@ New `scoring/amazon_pricer.py` calls Amazon Product Advertising API 5 (`SearchIt
 ### Server-only — Affiliate card filter fix (Task #94)
 
 `filter_affiliate_cards` was silently no-op since v0.46.0 because callers pass `AffiliateCard` dataclass instances and the function called `.get()`/`[k]=` (dict-only); added `card_get`/`card_set` helpers that handle both shapes, declared `confidence_label` as a real dataclass field on `AffiliateCard` (otherwise `dataclasses.asdict()` would drop the dynamically-set attr before serializing), re-rank kept items by closeness to asking price, drop empty cards with no fallback, include `program_key` in the WARN log, fixed two `c.get("program_key")` flag-suppression sites in `main.py`, added `tests/test_filter_affiliate_cards.py` (11/11 green incl. asdict serialization guard). No version bump (server-only).
+
+### v0.47.5 — Toolbar "API error 403" self-heal (extension-only hotfix)
+
+User reported a persistent `API error 403` badge on every score even
+after disabling all ad-blockers. Production API verified healthy:
+`/score/stream` returns 422 on a bad payload, OPTIONS preflight from
+facebook.com returns 200, and our codebase contains zero `403`
+HTTPException raises (auth failures use 401). The 403 was therefore
+not coming from our server — the most likely source is a stale
+`ds_api_base` override in `chrome.storage.local` pointing at a
+`*.replit.dev` workspace URL (which 403s anyone not signed into the
+owning Replit account).
+
+Two `extension/background.js` defenses:
+
+1. **`getApiBase()` rejects bad overrides up front** — any stored
+   `ds_api_base` that matches `*.replit.dev` or isn't `https://` is
+   removed from storage and the production default is used.
+2. **`callScoringAPI` self-heals on 401/403** — when the response
+   comes from a non-default API base, the override is cleared and
+   the call is retried once against the production default before
+   surfacing the error to the badge.
+
+Net effect: existing affected users no longer have to manually clear
+chrome.storage; the next score either succeeds against production or
+falls back cleanly. No server changes; no behavior change for users
+without a stored override.
 
 ### v0.47.4 — Chrome Web Store listing refresh (Task #92)
 
