@@ -25,18 +25,8 @@ const API_BASE_DEFAULT = "https://deal-scout-805lager.replit.app/api/ds";
 const DS_API_KEY = atob("MDVlZmZjMGQ2NTg2MTJiYzc5N2QwNDM0NWVhYWM4OTBfZXZpbF9zZA==").split('').reverse().join('');
 
 async function getApiBase() {
-  try {
-    const stored = await chrome.storage.local.get("ds_api_base");
-    const override = stored.ds_api_base;
-    if (!override) return API_BASE_DEFAULT;
-    if (/\.replit\.dev(\/|$)/i.test(override) || !/^https:\/\//i.test(override)) {
-      await chrome.storage.local.remove("ds_api_base").catch(() => {});
-      return API_BASE_DEFAULT;
-    }
-    return override;
-  } catch {
-    return API_BASE_DEFAULT;
-  }
+  try { await chrome.storage.local.remove("ds_api_base"); } catch {}
+  return API_BASE_DEFAULT;
 }
 
 async function clearApiBaseOverride() {
