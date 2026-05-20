@@ -210,3 +210,9 @@ id = "Z4ZSAZESyxaXLCJHduitt"
 uri = "file://extension/deal-scout-v0.48.5.zip"
 type = "unspecified"
 title = "Deal Scout v0.48.5 (waits for H1 hydration)"
+
+[[outputs]]
+id = "UAsRhAFem-_kyTRk32v-U"
+uri = "file://extension/deal-scout-v0.48.6.zip"
+type = "unspecified"
+title = "Deal Scout v0.48.6 (hard H1 gate — never submit titleless)"

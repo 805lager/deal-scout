@@ -1128,14 +1128,15 @@
 
     const _seeMoreClicked = await _expandSeeMore();
 
-    const _maxContentRetries = 8;
-    const _contentRetryDelays = [500, 800, 1000, 1500, 2000, 2000, 2000, 2000];
+    const _maxContentRetries = 12;
+    const _contentRetryDelays = [500, 800, 1000, 1500, 2000, 2000, 2500, 2500, 3000, 3000, 3000, 3000];
     let rawData = null;
     let _fpRetries = 0;
     let _titleCheckRetries = 0;
     let _contentTitleMatch = false;
-
     let _missingH1Retries = 0;
+    let _h1Ever = false;
+
     for (let cAttempt = 0; cAttempt < _maxContentRetries; cAttempt++) {
       if (window.__dealScoutNonce !== myNonce || location.href !== snapUrl) {
         window.__dealScoutRunning = false;
@@ -1144,19 +1145,22 @@
 
       rawData = extractRaw();
       const h1Now = _getCurrentH1Title();
+      const h1Ok = !!(h1Now && h1Now.length > 3 && !_GENERIC_TITLES.has(h1Now.toLowerCase()));
+      if (h1Ok) _h1Ever = true;
 
       // Task #103 fix: when opening a listing fresh from a shortlist pick,
       // FBM's SSR shell can deliver 100+ chars of raw_text (nav, footer)
-      // BEFORE React hydrates the H1 with the actual title. Without this
-      // gate the loop happily sent a titleless payload to Claude, which
-      // then surfaced "Could not read listing — page may still be loading"
-      // back to the user. Require a non-generic H1 before considering the
-      // extraction valid; budget half the retries to it before giving up.
-      if ((!h1Now || h1Now.length < 4 || _GENERIC_TITLES.has(h1Now.toLowerCase())) && cAttempt < Math.floor(_maxContentRetries / 2)) {
+      // BEFORE React hydrates the H1 with the actual title. Earlier
+      // versions fell through and sent a titleless payload to Claude;
+      // server then returned "Could not read listing — page may still be
+      // loading". Now we treat H1 presence as a HARD gate: retry the
+      // entire budget while it's missing, and if it never appears, render
+      // a "still loading" error WITHOUT submitting to the server.
+      if (!h1Ok) {
         _missingH1Retries++;
-        console.debug(`[DealScout] H1 not hydrated yet — retry ${cAttempt + 1}/${_maxContentRetries}`);
+        console.debug(`[DealScout] H1 not hydrated yet (h1="${h1Now}") — retry ${cAttempt + 1}/${_maxContentRetries}`);
         _dsDebugPost('content-retry', { urlId: listingId, attempt: cAttempt + 1, h1: (h1Now || '').slice(0, 40), reason: 'missing-h1' });
-        await new Promise(r => setTimeout(r, _contentRetryDelays[cAttempt] || 2000));
+        await new Promise(r => setTimeout(r, _contentRetryDelays[cAttempt] || 3000));
         continue;
       }
 
@@ -1207,8 +1211,22 @@
 
     if (!rawData || !rawData.raw_text || rawData.raw_text.length < 100) {
       console.debug('[DealScout] Insufficient page content after all retries — skipping');
-      _dsDebugPost('content-exhausted', { urlId: listingId });
+      _dsDebugPost('content-exhausted', { urlId: listingId, reason: 'short-raw-text' });
       renderError('Could not read listing — try RESCORE');
+      window.__dealScoutRunning = false;
+      return;
+    }
+
+    // Task #103 hard gate: refuse to submit a titleless payload to the
+    // server. Without this, Claude returns title='' and the server's
+    // /score/stream surfaces "Could not read listing — page may still be
+    // loading" — which from the user's POV is a hung shortlist click.
+    // Better to ask them to RESCORE (which they can hit once the page
+    // has visibly settled) than to silently send junk.
+    if (!_h1Ever) {
+      console.debug('[DealScout] Listing title never hydrated — refusing to submit');
+      _dsDebugPost('content-exhausted', { urlId: listingId, reason: 'no-h1', missingH1Retries: _missingH1Retries });
+      renderError('Listing still loading — tap RESCORE');
       window.__dealScoutRunning = false;
       return;
     }
