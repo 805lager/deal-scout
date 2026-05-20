@@ -1529,11 +1529,16 @@
     const el = document.getElementById('ds-diag-line');
     if (!el) return;
     try {
-      const { source, diag } = _getListingContainer();
       const h1 = _getCurrentH1Title();
-      const h1Short = h1 ? (h1.length > 28 ? h1.slice(0, 28) + '…' : h1) : '(no h1)';
-      el.textContent = `src:${source} · h1:${h1Short} · dlg:${diag.hasRoleDialog ? 'y' : 'n'}`;
-    } catch (_e) { el.textContent = 'diag err'; }
+      if (h1 && h1.length > 3 && !_GENERIC_TITLES.has(h1.toLowerCase())) {
+        const short = h1.length > 40 ? h1.slice(0, 40) + '…' : h1;
+        el.textContent = `Reading: ${short}`;
+      } else {
+        el.textContent = 'Waiting for listing to load…';
+      }
+    } catch (_e) {
+      el.textContent = '';
+    }
   }
 
   function renderLoading(listing) {
