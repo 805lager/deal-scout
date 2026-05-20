@@ -198,3 +198,9 @@ id = "Tf032CJCgYlRPaPekcj5n"
 uri = "file://extension/deal-scout-v0.48.3.zip"
 type = "unspecified"
 title = "Deal Scout v0.48.3 (force-score on pick + clearer toggle hint)"
+
+[[outputs]]
+id = "62KxFav3U9DJAiDNafBvv"
+uri = "file://extension/deal-scout-v0.48.4.zip"
+type = "unspecified"
+title = "Deal Scout v0.48.4 (hydration-safe shortlist scoring)"

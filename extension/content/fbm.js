@@ -183,9 +183,27 @@
   }
 
   // ── Auto-score on listing pages ───────────────────────────────────────────────
+  //
+  // Task #103: when this tab was opened via a "Score this" click on a
+  // shortlist pick, we force autoScore() regardless of the user's
+  // auto-score toggle. The user explicitly asked for a score by clicking
+  // that button — silently no-op'ing because of the toggle would make
+  // the shortlist UX feel broken. We rely on the content script's own
+  // hydration-aware retry loop (autoScore + retries) rather than a
+  // timed RESCORE from background, which previously raced FBM's SPA
+  // hydration and surfaced "Listing still loading" to the user.
 
   if (isListingPage()) {
-    _dsAutoIfEnabled(() => autoScore());
+    chrome.runtime.sendMessage({ type: "IS_SHORTLIST_ORIGIN" }, (resp) => {
+      // Swallow lastError — happens if background is asleep on first
+      // boot. We fall back to the normal toggle-gated path in that case.
+      void chrome.runtime.lastError;
+      if (resp && resp.fromShortlist) {
+        autoScore();
+      } else {
+        _dsAutoIfEnabled(() => autoScore());
+      }
+    });
   }
 
   // ── Message Handler (from background.js / popup) ──────────────────────────────

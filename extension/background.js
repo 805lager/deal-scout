@@ -219,6 +219,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // Task #103 — fbm.js asks at injection time whether THIS tab was opened
+  // via a shortlist pick. When true, fbm.js auto-scores even if the user's
+  // "Auto-score on page load" toggle is off, because the user explicitly
+  // requested a score by clicking "Score this".
+  if (message.type === "IS_SHORTLIST_ORIGIN") {
+    const tabId = sender && sender.tab && sender.tab.id;
+    const fromShortlist = !!(tabId && _shortlistPickByTabId.has(tabId));
+    sendResponse({ ok: true, fromShortlist });
+    return true;
+  }
+
   // Task #103 — popup asks for any session scores tied to its current picks
   // so it can render "Already scored: X/10 ↗" badges + a tap-to-focus link.
   if (message.type === "GET_SHORTLIST_SCORES") {
@@ -284,40 +295,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         openedAt: Date.now(),
       });
 
-      // Force-score the opened tab regardless of the user's "Auto-score on
-      // page load" toggle. The user explicitly asked for a score by
-      // clicking "Score this" on a shortlist pick — honoring the toggle
-      // here would make the button silently do nothing and require a
-      // manual refresh, which the user reported as confusing. We wait for
-      // the tab to finish loading, then send RESCORE (which bypasses the
-      // toggle). A small extra delay lets FBM's SPA hydrate before we
-      // poke it; the content script's own retry loop covers the rest.
-      const _scoreOpenedTab = () => {
-        chrome.tabs.sendMessage(targetTabId, { type: "RESCORE" }, () => {
-          if (chrome.runtime.lastError) {
-            // Content script not registered yet (slow hydration / discard
-            // recovery). Retry once after a longer wait — best effort.
-            setTimeout(() => {
-              chrome.tabs.sendMessage(targetTabId, { type: "RESCORE" }, () => { void chrome.runtime.lastError; });
-            }, 1800);
-          }
-        });
-      };
-      const onUpdated = (tabId, info) => {
-        if (tabId !== targetTabId) return;
-        if (info.status !== "complete") return;
-        chrome.tabs.onUpdated.removeListener(onUpdated);
-        setTimeout(_scoreOpenedTab, 900);
-      };
-      try {
-        chrome.tabs.onUpdated.addListener(onUpdated);
-        // Safety: clean up the listener if the tab never completes
-        // (closed, navigated away, etc.) so we don't accumulate
-        // dead listeners across long browsing sessions.
-        setTimeout(() => {
-          try { chrome.tabs.onUpdated.removeListener(onUpdated); } catch (_) {}
-        }, 30000);
-      } catch (_) {}
+      // NOTE: We do NOT eagerly send a timer-based RESCORE here. An earlier
+      // attempt fired RESCORE ~900ms after status=complete which raced FBM's
+      // SPA hydration — autoScore would burn its retry budget while the
+      // title was still empty and surface "Listing still loading — tap
+      // RESCORE" to the user. Instead, fbm.js queries IS_SHORTLIST_ORIGIN
+      // at injection time and runs autoScore() bypassing the auto-score
+      // toggle, using its own hydration-aware retry loop. That's far more
+      // reliable than guessing a wait time from here.
     }
     sendResponse({ ok: true });
     return true;
