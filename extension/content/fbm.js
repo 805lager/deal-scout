@@ -1135,6 +1135,7 @@
     let _titleCheckRetries = 0;
     let _contentTitleMatch = false;
 
+    let _missingH1Retries = 0;
     for (let cAttempt = 0; cAttempt < _maxContentRetries; cAttempt++) {
       if (window.__dealScoutNonce !== myNonce || location.href !== snapUrl) {
         window.__dealScoutRunning = false;
@@ -1143,6 +1144,21 @@
 
       rawData = extractRaw();
       const h1Now = _getCurrentH1Title();
+
+      // Task #103 fix: when opening a listing fresh from a shortlist pick,
+      // FBM's SSR shell can deliver 100+ chars of raw_text (nav, footer)
+      // BEFORE React hydrates the H1 with the actual title. Without this
+      // gate the loop happily sent a titleless payload to Claude, which
+      // then surfaced "Could not read listing — page may still be loading"
+      // back to the user. Require a non-generic H1 before considering the
+      // extraction valid; budget half the retries to it before giving up.
+      if ((!h1Now || h1Now.length < 4 || _GENERIC_TITLES.has(h1Now.toLowerCase())) && cAttempt < Math.floor(_maxContentRetries / 2)) {
+        _missingH1Retries++;
+        console.debug(`[DealScout] H1 not hydrated yet — retry ${cAttempt + 1}/${_maxContentRetries}`);
+        _dsDebugPost('content-retry', { urlId: listingId, attempt: cAttempt + 1, h1: (h1Now || '').slice(0, 40), reason: 'missing-h1' });
+        await new Promise(r => setTimeout(r, _contentRetryDelays[cAttempt] || 2000));
+        continue;
+      }
 
       if (!rawData.raw_text || rawData.raw_text.length < 100) {
         console.debug(`[DealScout] Insufficient content (${(rawData.raw_text || '').length} chars) — retry ${cAttempt + 1}/${_maxContentRetries}`);

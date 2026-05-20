@@ -204,3 +204,9 @@ id = "62KxFav3U9DJAiDNafBvv"
 uri = "file://extension/deal-scout-v0.48.4.zip"
 type = "unspecified"
 title = "Deal Scout v0.48.4 (hydration-safe shortlist scoring)"
+
+[[outputs]]
+id = "Z4ZSAZESyxaXLCJHduitt"
+uri = "file://extension/deal-scout-v0.48.5.zip"
+type = "unspecified"
+title = "Deal Scout v0.48.5 (waits for H1 hydration)"
