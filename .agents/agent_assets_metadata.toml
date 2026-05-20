@@ -180,3 +180,9 @@ id = "DMCZm-fw_a6JNc2NNmyoL"
 uri = "file://extension/deal-scout-v0.48.0.zip"
 type = "unspecified"
 title = "Deal Scout v0.48.0 (FBM Shortlist)"
+
+[[outputs]]
+id = "8y0kX56X-d6WLugmW7QDm"
+uri = "file://extension/deal-scout-v0.48.1.zip"
+type = "unspecified"
+title = "Deal Scout v0.48.1 (auto-inject fix)"

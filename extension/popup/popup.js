@@ -619,14 +619,43 @@ async function runShortlist(tab, setStatus) {
   // numeric in the next phase.
   setStatus("", "Reading visible listings…");
 
+  // Send SHORTLIST_PAGE to the content script. If the tab was open before
+  // the extension was installed/updated, fbm.js was never injected and the
+  // message fails with "Receiving end does not exist". In that case we
+  // programmatically inject the content-script bundle and retry once —
+  // this avoids a confusing error that the user can't fix without
+  // knowing to reload the FBM tab.
+  const sendScrape = () => new Promise((resolve) => {
+    chrome.tabs.sendMessage(tab.id, { type: "SHORTLIST_PAGE" }, (r) => {
+      if (chrome.runtime.lastError) resolve({ ok: false, error: chrome.runtime.lastError.message });
+      else                          resolve(r || { ok: false, error: "No response from page" });
+    });
+  });
+
   let scrapeResp;
   try {
-    scrapeResp = await new Promise((resolve) => {
-      chrome.tabs.sendMessage(tab.id, { type: "SHORTLIST_PAGE" }, (r) => {
-        if (chrome.runtime.lastError) resolve({ ok: false, error: chrome.runtime.lastError.message });
-        else                          resolve(r || { ok: false, error: "No response from page" });
-      });
-    });
+    scrapeResp = await sendScrape();
+    if (!scrapeResp.ok && /Receiving end does not exist|Could not establish connection/i.test(scrapeResp.error || "")) {
+      setStatus("", "Loading scanner into page…");
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: [
+            "lib/purify.min.js",
+            "content/lib/saved.js",
+            "content/lib/digest.js",
+            "content/lib/repv2.js",
+            "content/lib/social.js",
+            "content/fbm.js",
+          ],
+        });
+        // Give the listener a tick to register before retrying.
+        await new Promise(r => setTimeout(r, 250));
+        scrapeResp = await sendScrape();
+      } catch (injErr) {
+        scrapeResp = { ok: false, error: `Couldn't load scanner: ${injErr.message}. Try reloading the page.` };
+      }
+    }
   } catch (e) { setStatus("error", `Couldn't read page: ${e.message}`); finish(); return; }
   if (isStale()) { finish(); return; }
   if (!scrapeResp.ok) { setStatus("error", scrapeResp.error || "Couldn't read this page."); finish(); return; }
