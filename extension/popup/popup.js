@@ -672,7 +672,7 @@ async function runShortlist(tab, setStatus) {
 
   // Phase 2 of 3 (spec): now we know N, show the numeric variant + "Asking
   // Claude…" so the user understands the wait is on the model.
-  setStatus("", `Reading ${deck.length} listing${deck.length === 1 ? "" : "s"} · Asking Claude…`);
+  setStatus("", `Reading ${deck.length} listing${deck.length === 1 ? "" : "s"} · Consulting the AI hivemind…`);
   let result;
   try {
     result = await new Promise((resolve) => {
