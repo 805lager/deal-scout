@@ -872,29 +872,6 @@
       pageListingId: currentId,
     };
 
-    // Task #103 fix — direct-load listing pages (e.g. shortlist "Score this"
-    // opens a fresh tab at a /marketplace/item/ URL) render the listing as
-    // the page's main content, NOT inside a [role="dialog"]. The dialog
-    // search below was greedily matching unrelated overlays (chat heads,
-    // notifications dropdowns, the cookie/login banner) which DO contain
-    // an h1+img+100chars but are not the listing, so _getCurrentH1Title
-    // would never find the real title and the retry loop would exhaust.
-    // Try [role="main"] first when the URL is a listing URL and main has
-    // a non-generic h1 — that's the canonical container for direct loads.
-    if (location.pathname.includes('/marketplace/item/')) {
-      const mainCandidate = document.querySelector('[role="main"]') || document.querySelector('main');
-      if (mainCandidate) {
-        const mh1s = Array.from(mainCandidate.querySelectorAll('h1[dir="auto"], h1'));
-        const validH1 = mh1s.find(h => {
-          const t = (h.textContent || '').trim().toLowerCase();
-          return t.length > 3 && !_GENERIC_TITLES.has(t);
-        });
-        if (validH1 && (mainCandidate.innerText || '').length > 200) {
-          return { el: mainCandidate, source: 'main-direct-load', diag };
-        }
-      }
-    }
-
     const roleDialogs = Array.from(document.querySelectorAll('[role="dialog"]'));
     const ariaModals = Array.from(document.querySelectorAll('[aria-modal="true"]'));
     diag.hasRoleDialog = roleDialogs.length > 0;
@@ -918,18 +895,33 @@
         return { el: d, source: 'dialog-link-match', diag };
       }
 
-      // Task #103 fix — only fall back to dialog-h1-content if this dialog
-      // actually looks like a listing dialog: must contain at least one
-      // marketplace item link (the listing's own permalink or a related
-      // sidebar item). Without this guard, chat dialogs / notification
-      // dropdowns with random images and an h1 were misidentified as the
-      // listing container on direct-load pages.
       const h1 = d.querySelector('h1');
       const hasListingContent = h1 && h1.textContent.trim().length > 3 &&
-        d.querySelector('img[src*="scontent"]') && (d.innerText || '').length > 100 &&
-        linkIds.length > 0;
+        d.querySelector('img[src*="scontent"]') && (d.innerText || '').length > 100;
       if (hasListingContent) {
         return { el: d, source: 'dialog-h1-content', diag };
+      }
+    }
+
+    // Task #103 fix — direct-load listing pages (e.g. shortlist "Score this"
+    // opens a fresh tab at a /marketplace/item/ URL) render the listing as
+    // the page's main content, NOT inside a [role="dialog"]. Only consider
+    // this branch when NO dialog/modal is present at all — otherwise on
+    // search pages with an overlay open, [role="main"] would also include
+    // the search grid behind the overlay and corrupt extraction. The earlier
+    // dialog branches handle the overlay case; we only reach here on a true
+    // standalone listing page.
+    if (location.pathname.includes('/marketplace/item/') && allDialogs.length === 0) {
+      const mainCandidate = document.querySelector('[role="main"]') || document.querySelector('main');
+      if (mainCandidate) {
+        const mh1s = Array.from(mainCandidate.querySelectorAll('h1[dir="auto"], h1'));
+        const validH1 = mh1s.find(h => {
+          const t = (h.textContent || '').trim().toLowerCase();
+          return t.length > 3 && !_GENERIC_TITLES.has(t);
+        });
+        if (validH1 && (mainCandidate.innerText || '').length > 200) {
+          return { el: mainCandidate, source: 'main-direct-load', diag };
+        }
       }
     }
 

@@ -228,3 +228,9 @@ id = "O70JK7cfCs0fFdLoC-lID"
 uri = "file://extension/deal-scout-v0.48.8.zip"
 type = "unspecified"
 title = "Deal Scout v0.48.8 (AI hivemind copy)"
+
+[[outputs]]
+id = "vlDfcnirPTv9JKZ7N71QB"
+uri = "file://extension/deal-scout-v0.48.9.zip"
+type = "unspecified"
+title = "Deal Scout v0.48.9 (search-overlay flow restored)"
