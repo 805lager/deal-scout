@@ -186,3 +186,9 @@ id = "8y0kX56X-d6WLugmW7QDm"
 uri = "file://extension/deal-scout-v0.48.1.zip"
 type = "unspecified"
 title = "Deal Scout v0.48.1 (auto-inject fix)"
+
+[[outputs]]
+id = "vLI8_QHyPIdGNphUt1drM"
+uri = "file://extension/deal-scout-v0.48.2.zip"
+type = "unspecified"
+title = "Deal Scout v0.48.2 (resilient FBM card scraper)"

@@ -291,47 +291,77 @@
   // scoring.shortlist.canonicalize_url so the canon is the single source
   // of truth across server + cache + extension.
   function scrapeSearchCards() {
-    const cards = document.querySelectorAll('div[data-testid="marketplace-search-item"]');
+    // Anchor-first strategy: FB rotates `data-testid` values frequently,
+    // but every search card has an <a href="/marketplace/item/<id>">. We
+    // walk up from each anchor to find its card container, then extract
+    // title/price/thumb from that subtree. This is far more resilient
+    // than depending on a single testid.
+    const anchors = document.querySelectorAll('a[href*="/marketplace/item/"]');
     const out = [];
-    const seen = new Set(); // dedupe by raw href within a single scrape
-    cards.forEach(card => {
+    const seenIds = new Set(); // dedupe by marketplace item id, not raw href
+
+    anchors.forEach(a => {
       try {
-        const a = card.querySelector('a[href*="/marketplace/item/"]');
-        if (!a) return;
         let href = a.getAttribute("href") || "";
         if (href.startsWith("/")) href = "https://www.facebook.com" + href;
-        if (!href || seen.has(href)) return;
-        seen.add(href);
+        const idMatch = href.match(/\/marketplace\/(?:[^/]+\/)?item\/(\d+)/);
+        if (!idMatch) return;
+        const itemId = idMatch[1];
+        if (seenIds.has(itemId)) return;
 
-        // Title: FBM renders the listing title as a <span dir="auto"> inside
-        // the card. Fall back to the longest plausible text node if the
-        // selector ever drifts.
-        let title = "";
-        const titleEl = card.querySelector('span[dir="auto"]');
-        if (titleEl) title = (titleEl.textContent || "").trim();
+        // Find the card container: try the testid first (works when FB
+        // hasn't rotated it), otherwise climb a few levels and use the
+        // first ancestor whose textContent looks card-shaped (has a
+        // price OR is reasonably sized).
+        let card = a.closest('div[data-testid="marketplace-search-item"]')
+                || a.closest('[role="listitem"]')
+                || a.closest('[data-pagelet]');
+        if (!card) {
+          let n = a;
+          for (let i = 0; i < 6 && n && n.parentElement; i++) {
+            n = n.parentElement;
+            const txt = (n.textContent || "").trim();
+            if (txt.length > 15 && /\$\d/.test(txt)) { card = n; break; }
+          }
+          if (!card) card = a.parentElement || a;
+        }
+
+        // Skip non-card anchors (e.g. nav links in sidebar that point at
+        // a specific item). Cards almost always contain a price.
+        const cardText = (card.textContent || "").trim();
+        if (cardText.length < 10) return;
+
+        // Title: prefer aria-label on the anchor (FBM sets it to the
+        // listing title on cards), then <span dir="auto">, then the
+        // longest non-price text span.
+        let title = (a.getAttribute("aria-label") || "").trim();
+        if (!title) {
+          const titleEl = card.querySelector('span[dir="auto"]');
+          if (titleEl) title = (titleEl.textContent || "").trim();
+        }
         if (!title) {
           const cands = Array.from(card.querySelectorAll("span"))
             .map(s => (s.textContent || "").trim())
-            .filter(t => t.length > 5 && t.length < 300 && !/^\$/.test(t));
-          if (cands.length) title = cands.sort((a, b) => b.length - a.length)[0];
+            .filter(t => t.length > 5 && t.length < 300 && !/^\$/.test(t) && !/^\d+\s*(mi|km)/i.test(t));
+          if (cands.length) title = cands.sort((x, y) => y.length - x.length)[0];
         }
         if (!title) return;
+        title = title.slice(0, 280);
 
-        // Price: first $-prefixed text node we find. FBM sometimes shows
-        // "$120 · 4 mi" — strip the location tail.
+        // Price: first $-prefixed number in the card subtree.
         let price = 0;
-        const priceMatch = (card.textContent || "").match(/\$([0-9][0-9,]*)(?:\.[0-9]{2})?/);
+        const priceMatch = cardText.match(/\$([0-9][0-9,]*)(?:\.[0-9]{2})?/);
         if (priceMatch) {
           const val = parseFloat(priceMatch[1].replace(/,/g, ""));
           if (isFinite(val) && val > 0) price = val;
         }
 
-        // Thumbnail — first <img> in the card. Optional; the popup falls
-        // back to a placeholder when missing.
+        // Thumbnail — first <img> in the card subtree.
         let thumb = "";
         const img = card.querySelector("img");
         if (img) thumb = img.getAttribute("src") || "";
 
+        seenIds.add(itemId);
         out.push({
           listing_url:   href,
           title,
