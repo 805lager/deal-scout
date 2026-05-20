@@ -276,12 +276,48 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // tagged. tabId is supplied by the popup after chrome.tabs.create
     // resolves.
     if (message.tabId && typeof message.tabId === "number") {
-      _shortlistPickByTabId.set(message.tabId, {
+      const targetTabId = message.tabId;
+      _shortlistPickByTabId.set(targetTabId, {
         url:      _canonicalFbmItem(message.listing_url) || (message.listing_url || ""),
         rank:     message.rank || 0,
         query:    (message.search_query || "").slice(0, 80),
         openedAt: Date.now(),
       });
+
+      // Force-score the opened tab regardless of the user's "Auto-score on
+      // page load" toggle. The user explicitly asked for a score by
+      // clicking "Score this" on a shortlist pick — honoring the toggle
+      // here would make the button silently do nothing and require a
+      // manual refresh, which the user reported as confusing. We wait for
+      // the tab to finish loading, then send RESCORE (which bypasses the
+      // toggle). A small extra delay lets FBM's SPA hydrate before we
+      // poke it; the content script's own retry loop covers the rest.
+      const _scoreOpenedTab = () => {
+        chrome.tabs.sendMessage(targetTabId, { type: "RESCORE" }, () => {
+          if (chrome.runtime.lastError) {
+            // Content script not registered yet (slow hydration / discard
+            // recovery). Retry once after a longer wait — best effort.
+            setTimeout(() => {
+              chrome.tabs.sendMessage(targetTabId, { type: "RESCORE" }, () => { void chrome.runtime.lastError; });
+            }, 1800);
+          }
+        });
+      };
+      const onUpdated = (tabId, info) => {
+        if (tabId !== targetTabId) return;
+        if (info.status !== "complete") return;
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+        setTimeout(_scoreOpenedTab, 900);
+      };
+      try {
+        chrome.tabs.onUpdated.addListener(onUpdated);
+        // Safety: clean up the listener if the tab never completes
+        // (closed, navigated away, etc.) so we don't accumulate
+        // dead listeners across long browsing sessions.
+        setTimeout(() => {
+          try { chrome.tabs.onUpdated.removeListener(onUpdated); } catch (_) {}
+        }, 30000);
+      } catch (_) {}
     }
     sendResponse({ ok: true });
     return true;
