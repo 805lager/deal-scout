@@ -258,3 +258,9 @@ id = "h_qvN3wGFwyAgUKaNATmT"
 uri = "file://extension/deal-scout-v0.48.13.zip"
 type = "unspecified"
 title = "Deal Scout v0.48.13 (readable loading status)"
+
+[[outputs]]
+id = "8PlCKmTbX5LtE7NUlrDjt"
+uri = "file://extension/deal-scout-v0.48.14.zip"
+type = "unspecified"
+title = "Deal Scout v0.48.14 (RESCORE reloads page)"

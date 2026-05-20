@@ -1608,20 +1608,18 @@
     btn.textContent = 'RESCORE';
     btn.style.cssText = 'display:block;width:100%;margin-top:10px;padding:10px;background:#7c8cf8;color:#fff;border:none;border-radius:8px;font-weight:700;font-size:14px;cursor:pointer;letter-spacing:0.5px';
     btn.addEventListener('click', () => {
+      // Task #103 — when scoring fails, the FBM SPA state is usually the
+      // problem (partial hydration, stale React tree, missing H1 long after
+      // load). An in-place RESCORE just hits the same broken state again.
+      // A full page reload gives Claude a clean DOM to read from and
+      // resolves the failure in almost every case the user has reported.
       window.__dealScoutNonce = (window.__dealScoutNonce || 0) + 1;
       window.__dealScoutRunning = false;
-      window.__dealScoutLastScoredId = '';
-      window.__dealScoutLastScoredTitle = '';
-      window.__dealScoutLastRawFingerprint = '';
-      window.__dealScoutPrevTitle = undefined;
       if (window.__dealScoutAbort) {
         try { window.__dealScoutAbort.abort(); } catch (_e) {}
       }
-      _persistState();
       try { chrome.runtime.sendMessage({ type: 'CLEAR_SCORE_CACHE' }).catch(() => {}); } catch (_e) {}
-      renderLoading({});
-      clearTimeout(window.__dealScoutRescanTimer);
-      window.__dealScoutRescanTimer = setTimeout(autoScore, 200);
+      try { location.reload(); } catch (_e) {}
     });
     panel.appendChild(btn);
   }
