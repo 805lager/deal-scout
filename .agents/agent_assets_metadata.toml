@@ -246,3 +246,9 @@ id = "LGBVco4krGJVVtNCqGv3z"
 uri = "file://extension/deal-scout-v0.48.11.zip"
 type = "unspecified"
 title = "Deal Scout v0.48.11 (correct container + diag line)"
+
+[[outputs]]
+id = "n0dTdRPHdUrYXzOXSVXjI"
+uri = "file://extension/deal-scout-v0.48.12.zip"
+type = "unspecified"
+title = "Deal Scout v0.48.12 (panel-body wipe fix)"

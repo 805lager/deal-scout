@@ -3100,6 +3100,16 @@
     }
 
     if (isListingPage() || (newHref && /\/marketplace\/(?:[^/]+\/)?item\/\d+/.test(newHref))) {
+      // Task #103 fix — on a freshly-loaded shortlist tab, FB itself does a
+      // history.replaceState shortly after hydration (URL cleanup, A/B
+      // routing, etc.). If autoScore is already running for THIS listing id,
+      // do not abort it or tear down the loading panel. The retry loop owns
+      // the state; clobbering it here was leaving the panel as just a bar.
+      if (window.__dealScoutRunning && newId && newId === oldId) {
+        _dsNavLog('pushStateSkipDuringScore', { id: newId });
+        return;
+      }
+
       window.__dealScoutPrevTitle = _getCurrentH1Title();
       try { sessionStorage.setItem('ds_prevTitle', window.__dealScoutPrevTitle || ''); } catch (_e) {}
 
