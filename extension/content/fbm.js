@@ -237,8 +237,124 @@
       }
       sendResponse({ ok: true, cleared: !_onListing });
     }
+
+    // ── Task #103 — FBM Search Shortlist ──────────────────────────────────────
+    // Triggered by the popup on FBM search-results pages. We scrape every
+    // visible card on the current viewport, optionally auto-scroll once to
+    // load lazy-rendered cards, then return the deck. The popup forwards
+    // the deck to the background which calls /shortlist.
+    //
+    // This is INTENTIONALLY scoped to FBM search/category pages — the
+    // popup gates the message and only sends it for those URLs. We do
+    // not silently scrape on individual listing pages.
+    if (message.type === "SHORTLIST_PAGE") {
+      (async () => {
+        try {
+          // Detect search-context via URL — defense in depth on top of the
+          // popup's own gate. Aborts the scrape if we somehow get the
+          // message on a non-search page (e.g. SPA nav race).
+          const isSearchCtx = /\/marketplace\/(?:[^/]+\/)?(?:search|category)/.test(location.href);
+          if (!isSearchCtx) {
+            sendResponse({ ok: false, error: "Not on a Facebook Marketplace search page." });
+            return;
+          }
+          let deck = scrapeSearchCards();
+          // Auto-scroll fallback: FBM lazy-loads cards as you scroll. If
+          // the user clicked Shortlist before scrolling we'll only see
+          // the first few. One scroll + 600ms wait usually triples the
+          // visible deck. Capped at one round so we don't spin forever.
+          if (deck.length < 10) {
+            try {
+              window.scrollBy({ top: 1200, behavior: "instant" });
+            } catch (_) { window.scrollBy(0, 1200); }
+            await new Promise(r => setTimeout(r, 700));
+            deck = scrapeSearchCards();
+          }
+          const query = extractSearchQuery();
+          sendResponse({ ok: true, deck, query });
+        } catch (e) {
+          sendResponse({ ok: false, error: (e && e.message) || String(e) });
+        }
+      })();
+      return true; // async response
+    }
+
     return true;
   });
+
+  // ── Task #103 — Search-card scraper ───────────────────────────────────────
+  // Targets `div[data-testid="marketplace-search-item"]` — the same selector
+  // used elsewhere in this script for sidebar-card detection (lines 248,
+  // 460, 617). Each card contains an <a href="/marketplace/item/..."> with
+  // a title and a price; thumbnails live in nested <img>. We do NOT
+  // canonicalize the URL here — that happens server-side in
+  // scoring.shortlist.canonicalize_url so the canon is the single source
+  // of truth across server + cache + extension.
+  function scrapeSearchCards() {
+    const cards = document.querySelectorAll('div[data-testid="marketplace-search-item"]');
+    const out = [];
+    const seen = new Set(); // dedupe by raw href within a single scrape
+    cards.forEach(card => {
+      try {
+        const a = card.querySelector('a[href*="/marketplace/item/"]');
+        if (!a) return;
+        let href = a.getAttribute("href") || "";
+        if (href.startsWith("/")) href = "https://www.facebook.com" + href;
+        if (!href || seen.has(href)) return;
+        seen.add(href);
+
+        // Title: FBM renders the listing title as a <span dir="auto"> inside
+        // the card. Fall back to the longest plausible text node if the
+        // selector ever drifts.
+        let title = "";
+        const titleEl = card.querySelector('span[dir="auto"]');
+        if (titleEl) title = (titleEl.textContent || "").trim();
+        if (!title) {
+          const cands = Array.from(card.querySelectorAll("span"))
+            .map(s => (s.textContent || "").trim())
+            .filter(t => t.length > 5 && t.length < 300 && !/^\$/.test(t));
+          if (cands.length) title = cands.sort((a, b) => b.length - a.length)[0];
+        }
+        if (!title) return;
+
+        // Price: first $-prefixed text node we find. FBM sometimes shows
+        // "$120 · 4 mi" — strip the location tail.
+        let price = 0;
+        const priceMatch = (card.textContent || "").match(/\$([0-9][0-9,]*)(?:\.[0-9]{2})?/);
+        if (priceMatch) {
+          const val = parseFloat(priceMatch[1].replace(/,/g, ""));
+          if (isFinite(val) && val > 0) price = val;
+        }
+
+        // Thumbnail — first <img> in the card. Optional; the popup falls
+        // back to a placeholder when missing.
+        let thumb = "";
+        const img = card.querySelector("img");
+        if (img) thumb = img.getAttribute("src") || "";
+
+        out.push({
+          listing_url:   href,
+          title,
+          price,
+          thumbnail_url: thumb,
+        });
+      } catch (_e) { /* skip card on any extraction error */ }
+    });
+    return out;
+  }
+
+  // Best-effort extract of the user's search query from the URL. Handles
+  // both /marketplace/search/?query=... and /marketplace/category/<slug>.
+  function extractSearchQuery() {
+    try {
+      const u = new URL(location.href);
+      const q = u.searchParams.get("query") || u.searchParams.get("q") || "";
+      if (q) return q;
+      const m = location.pathname.match(/\/marketplace\/(?:[^/]+\/)?category\/([^/?#]+)/);
+      if (m) return decodeURIComponent(m[1]).replace(/[-_]+/g, " ");
+    } catch (_) {}
+    return "";
+  }
 
   // ── Price Extraction ──────────────────────────────────────────────────────────
 

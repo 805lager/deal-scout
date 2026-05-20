@@ -165,6 +165,47 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // ── Task #103 — FBM Search Shortlist request ──────────────────────────────
+  // The popup scraped a deck of visible search cards and forwards them
+  // here so the API key stays in the background script (same pattern as
+  // SEND_REPORT / SCORE_LISTING). We surface 200-with-empty-picks as a
+  // soft error to the popup so it can render a clean empty state.
+  if (message.type === "SHORTLIST_REQUEST") {
+    (async () => {
+      try {
+        const result = await callShortlistAPI(message.listings || [], message.search_query || "");
+        // Telemetry — reuse the existing /event sink. Truncate query to
+        // 80 chars so we don't blow the schema's selection_reason cap.
+        try {
+          queueAnalyticsEvent({
+            event:            "shortlist_requested",
+            category:         (message.search_query || "").slice(0, 80),
+            position:         (message.listings || []).length,
+            deal_score:       (result.picks || []).length,
+            selection_reason: result.cached ? "cache_hit" : "fresh",
+          });
+        } catch (_) {}
+        sendResponse({ ok: true, result });
+      } catch (err) {
+        sendResponse({ ok: false, error: err && err.message ? err.message : String(err) });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === "SHORTLIST_PICK_CLICKED") {
+    try {
+      queueAnalyticsEvent({
+        event:            "shortlist_pick_clicked",
+        category:         (message.search_query || "").slice(0, 80),
+        position:         message.rank || 0,
+        deal_score:       message.score || 0,
+      });
+    } catch (_) {}
+    sendResponse({ ok: true });
+    return true;
+  }
+
   // Bug-report submission proxied through background so the API key never
   // leaves this script. Popup posts the user's text via chrome.runtime
   // .sendMessage; we attach X-DS-Key from this scope and forward to /report.
@@ -291,6 +332,61 @@ async function callScoringAPI(listing, _retryCount = 0) {
 
   if (scoreData) return scoreData;
   throw new Error(lastError || 'No score returned from API');
+}
+
+
+// ── Task #103 — Shortlist API ─────────────────────────────────────────────────
+// Calls POST /shortlist with the deck + user query. Mirrors callScoringAPI's
+// retry shape on transient failures (network blip / 5xx), surfaces 429
+// rate-limit messages verbatim, and returns the parsed JSON body on success.
+async function callShortlistAPI(listings, search_query, _retryCount = 0) {
+  const MAX_RETRIES = 2;
+  const API_BASE   = await getApiBase();
+  const extVersion = chrome.runtime.getManifest().version;
+  const installId  = await getInstallId();
+
+  let response;
+  try {
+    response = await fetch(`${API_BASE}/shortlist`, {
+      method: "POST",
+      headers: {
+        "Content-Type":     "application/json",
+        "X-DS-Key":         DS_API_KEY,
+        "X-DS-Ext-Version": extVersion,
+        "X-DS-Install-Id":  installId,
+      },
+      body:   JSON.stringify({ listings, search_query }),
+      signal: AbortSignal.timeout(30000),
+    });
+  } catch (fetchErr) {
+    if (_retryCount < MAX_RETRIES) {
+      await new Promise(r => setTimeout(r, 800 * Math.pow(2, _retryCount)));
+      return callShortlistAPI(listings, search_query, _retryCount + 1);
+    }
+    throw new Error("Can\u2019t reach Deal Scout servers \u2014 check your connection");
+  }
+
+  if (response.status === 429) {
+    let detail = "";
+    try { detail = (await response.json()).detail || ""; } catch (_) {}
+    throw new Error(detail || "Shortlist rate limit reached \u2014 try again in a few minutes.");
+  }
+
+  if (response.status >= 500 && _retryCount < MAX_RETRIES) {
+    await new Promise(r => setTimeout(r, 1500 * Math.pow(2, _retryCount)));
+    return callShortlistAPI(listings, search_query, _retryCount + 1);
+  }
+
+  if (!response.ok) {
+    if ((response.status === 401 || response.status === 403) && API_BASE !== API_BASE_DEFAULT && _retryCount < MAX_RETRIES) {
+      await clearApiBaseOverride();
+      return callShortlistAPI(listings, search_query, _retryCount + 1);
+    }
+    const bodyText = await response.text().catch(() => "");
+    throw new Error(`Shortlist API ${response.status}: ${bodyText.slice(0, 160) || "(empty)"}`);
+  }
+
+  return await response.json();
 }
 
 

@@ -2658,6 +2658,89 @@ h1{font-size:1.6em}h2{font-size:1.2em;margin-top:1.5em}ul{padding-left:1.4em}</s
 <p>We may update this policy occasionally. Changes will be posted on this page.</p>
 </body></html>"""
 
+# ── /shortlist (Task #103 — FBM Search Shortlist) ────────────────────────────
+# Separate rate-limit bucket from /score so shortlist spam can't starve a
+# user's actual scoring budget. Per-install (X-DS-Install-Id) rather than
+# per-IP because extension users on the same ISP/NAT would otherwise share
+# the bucket. Falls back to IP if the install id header is missing (old
+# extension builds).
+_shortlist_rate_limit_store: dict = defaultdict(list)
+SHORTLIST_RATE_LIMIT_REQUESTS    = 20    # per-install cap
+SHORTLIST_RATE_LIMIT_IP_REQUESTS = 60    # per-IP ceiling (covers ~3 NATed users
+                                         # before saturating, but stops install-id
+                                         # rotation abuse). Code review of #103.
+SHORTLIST_RATE_LIMIT_WINDOW      = 3600  # seconds (1 hour)
+
+
+def _check_shortlist_rate_limit(request: Request, client_ip: str):
+    # SECURITY (Task #103 code review): X-DS-Install-Id is client-supplied
+    # and trivially spoofable. We MUST also enforce a per-IP ceiling so an
+    # attacker can't rotate install ids to drive LLM spend. Both buckets
+    # are checked; either-or 429 wins. Per-install is the tighter "fair
+    # use" limit, per-IP is the abuse ceiling.
+    install_id = request.headers.get("X-DS-Install-Id", "").strip()
+    now = _time.time()
+    window_start = now - SHORTLIST_RATE_LIMIT_WINDOW
+
+    keys_to_check: list[tuple[str, int]] = [(f"ip:{client_ip}", SHORTLIST_RATE_LIMIT_IP_REQUESTS)]
+    if install_id:
+        keys_to_check.append((f"install:{install_id}", SHORTLIST_RATE_LIMIT_REQUESTS))
+
+    for key, cap in keys_to_check:
+        _shortlist_rate_limit_store[key] = [
+            t for t in _shortlist_rate_limit_store[key] if t > window_start
+        ]
+        if len(_shortlist_rate_limit_store[key]) >= cap:
+            retry_after = int(SHORTLIST_RATE_LIMIT_WINDOW - (now - _shortlist_rate_limit_store[key][0])) + 1
+            raise HTTPException(
+                status_code=429,
+                detail=f"Shortlist rate limit: {cap} per hour. Try again shortly.",
+                headers={"Retry-After": str(max(retry_after, 30))},
+            )
+
+    # Only record AFTER both gates pass, so we don't double-charge a request
+    # that gets rejected by the second gate.
+    for key, _cap in keys_to_check:
+        _shortlist_rate_limit_store[key].append(now)
+
+
+class ShortlistCard(BaseModel):
+    """One visible search-result card scraped from a FBM search page."""
+    title:         str   = Field("", max_length=500)
+    price:         float = 0.0
+    thumbnail_url: str   = Field("", max_length=2000)
+    listing_url:   str   = Field("", max_length=2000)
+
+
+class ShortlistRequest(BaseModel):
+    """Deck of visible search cards + the user's search query."""
+    # 80 = MAX_DECK_SIZE (50) plus generous slack — anything beyond is dropped
+    # by normalize_deck() inside scoring.shortlist anyway.
+    listings:     list[ShortlistCard] = Field(default_factory=list, max_length=80)
+    search_query: str                 = Field("", max_length=200)
+
+
+@app.post("/shortlist")
+async def shortlist_endpoint(payload: ShortlistRequest, request: Request):
+    """
+    FBM Search Shortlist (Task #103). Takes a deck of visible search cards,
+    asks Claude Haiku to triage them against the user's query, and returns
+    the top picks. Triage tool — NOT a verdict. Full scoring still happens
+    per-listing via /score/stream.
+
+    Always returns 200 with a structured body — never 5xx for malformed
+    Claude output; the UI gets `reason_if_short` instead.
+    """
+    _check_api_key(request)
+    client_ip = request.client.host if request.client else "unknown"
+    _check_shortlist_rate_limit(request, client_ip)
+
+    from scoring.shortlist import run_shortlist
+    raw_deck = [card.model_dump() for card in payload.listings]
+    result = await run_shortlist(payload.search_query, raw_deck)
+    return result
+
+
 @app.get("/health")
 async def health():
     """Detailed health check — confirms API keys are configured."""

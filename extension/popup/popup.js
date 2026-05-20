@@ -17,6 +17,14 @@ function detectPlatform(url) {
   return null;
 }
 
+// Task #103 — FBM search/category pages: triggers Shortlist mode instead
+// of single-listing scoring. Mirrors the server-side URL gate so the button
+// label and message routing stay consistent across both sides.
+function isFbmSearch(url) {
+  if (!url) return false;
+  return /facebook\.com\/marketplace\/(?:[^/]+\/)?(?:search|category)/.test(url);
+}
+
 // v0.47.2 — the idle health-check status bar (green dot above
 // "Supported Platforms") was removed. The popup only surfaces a
 // connection error inline when the user actively tries to score and
@@ -188,7 +196,6 @@ function renderDealPanel(r, panelId, apiBase, extVersion) {
 // ── Score Current Listing button ──────────────────────────────────────────────
 document.getElementById("score-current").addEventListener("click", async () => {
   const [tab]     = await chrome.tabs.query({ active: true, currentWindow: true });
-  const platform  = detectPlatform(tab?.url);
 
   const setStatus = (state, msg) => {
     // v0.47.2 — uses the inline error/progress strip beneath the platform
@@ -196,6 +203,14 @@ document.getElementById("score-current").addEventListener("click", async () => {
     showInlineStatus(state === "error" ? "error" : "progress", msg);
   };
 
+  // Task #103 — FBM search/category pages take the Shortlist path instead
+  // of the single-listing scoring path. We branch as early as possible so
+  // the rest of the handler doesn't need to know the difference.
+  if (isFbmSearch(tab?.url)) {
+    return runShortlist(tab, setStatus);
+  }
+
+  const platform = detectPlatform(tab?.url);
   if (!platform) {
     setStatus("error", "Navigate to a Craigslist, OfferUp, eBay, or FBM listing first.");
     return;
@@ -341,6 +356,262 @@ async function loadAutoScoreToggle() {
 loadAutoScoreToggle();
 checkAPIHealth();
 document.getElementById("version-label").textContent = "v" + EXT_VERSION;
+
+// Task #103 — relabel the primary button on FBM search/category pages so
+// users see "Shortlist Top 10" instead of "Score Current Listing" before
+// they click. Runs alongside checkAPIHealth so it doesn't block the
+// health check. Failures are silent — the button still works with its
+// default label, the click handler still branches on isFbmSearch().
+(async () => {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (isFbmSearch(tab?.url)) {
+      const btn = document.getElementById("score-current");
+      if (btn) {
+        // Replace icon + label without touching the click handler.
+        btn.innerHTML = "";
+        const ic = document.createElement("span");
+        ic.className = "btn-score-icon";
+        ic.textContent = "⚡";
+        const lbl = document.createTextNode(" Shortlist Top 10");
+        btn.appendChild(ic);
+        btn.appendChild(lbl);
+      }
+      // One-time tip — fades out of view after first acknowledgement,
+      // never spams returning users.
+      try {
+        const seen = await chrome.storage.local.get("ds_shortlist_tip_seen");
+        if (!seen.ds_shortlist_tip_seen) {
+          const tip = document.getElementById("shortlist-tip");
+          if (tip) tip.style.display = "block";
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+})();
+
+// ── Task #103 — Shortlist runner & renderer ─────────────────────────────────
+// In-popup state. Re-rendered on sort change without re-hitting the API.
+let _shortlistPicks = [];
+let _shortlistQuery = "";
+let _shortlistScoredUrls = new Set();   // listing_urls the user clicked in this popup
+let _shortlistInFlight = false;         // re-entrancy guard (code review of #103)
+let _shortlistRunNonce = 0;             // bumps each runShortlist; stale responses
+                                        // are discarded if a newer run started.
+
+function renderShortlist(reasonText) {
+  const section = document.getElementById("shortlist-section");
+  const list    = document.getElementById("shortlist-list");
+  const reason  = document.getElementById("shortlist-reason");
+  if (!section || !list) return;
+
+  section.style.display = "block";
+  list.textContent = "";
+
+  if (reasonText) {
+    reason.textContent = reasonText;
+    reason.classList.add("show");
+  } else {
+    reason.classList.remove("show");
+  }
+
+  if (!_shortlistPicks.length) {
+    const empty = document.createElement("div");
+    empty.style.cssText = "font-size:11.5px;color:#6b7280;padding:10px 0;line-height:1.5";
+    empty.textContent = reasonText || "No picks met the quality bar on this page.";
+    list.appendChild(empty);
+    return;
+  }
+
+  // Sort according to the dropdown. Default is "score" (already server-sorted).
+  const sortMode = (document.getElementById("shortlist-sort")?.value) || "score";
+  const sorted = _shortlistPicks.slice();
+  if (sortMode === "price_asc") {
+    sorted.sort((a, b) => priceFor(a) - priceFor(b));
+  } else if (sortMode === "price_desc") {
+    sorted.sort((a, b) => priceFor(b) - priceFor(a));
+  } else {
+    sorted.sort((a, b) => (b.score || 0) - (a.score || 0));
+  }
+
+  // Look up title/thumb/price from the original deck on the content script
+  // side — we don't get them back from /shortlist, so we cache them per
+  // popup session keyed by listing_url. The content script's `listing_url`
+  // is the *raw* href; the server returns the canonical form, so we
+  // compare on the trailing item id.
+  sorted.forEach((pick, idx) => {
+    const row = document.createElement("div");
+    row.className = "pick-row";
+    if (_shortlistScoredUrls.has(pick.listing_url)) row.classList.add("scored");
+
+    const thumb = document.createElement("div");
+    thumb.className = "pick-thumb";
+    const meta = lookupDeckMeta(pick.listing_url);
+    if (meta && meta.thumbnail_url) {
+      thumb.style.backgroundImage = `url("${meta.thumbnail_url.replace(/"/g, '%22')}")`;
+    }
+    row.appendChild(thumb);
+
+    const info = document.createElement("div");
+    info.className = "pick-info";
+
+    const titleEl = document.createElement("div");
+    titleEl.className = "pick-title";
+    titleEl.textContent = meta?.title || "Listing";
+    info.appendChild(titleEl);
+
+    const metaRow = document.createElement("div");
+    metaRow.className = "pick-meta";
+    const scoreEl = document.createElement("span");
+    scoreEl.className = "pick-score";
+    scoreEl.textContent = String(pick.score || 0);
+    metaRow.appendChild(scoreEl);
+    if (meta && meta.price > 0) {
+      const priceEl = document.createElement("span");
+      priceEl.textContent = `$${Math.round(meta.price)}`;
+      metaRow.appendChild(priceEl);
+    }
+    info.appendChild(metaRow);
+
+    if (pick.why) {
+      const why = document.createElement("div");
+      why.className = "pick-why";
+      why.textContent = pick.why;
+      why.title = pick.why;
+      info.appendChild(why);
+    }
+    row.appendChild(info);
+
+    const btn = document.createElement("button");
+    btn.className = "pick-action";
+    const alreadyScored = _shortlistScoredUrls.has(pick.listing_url);
+    btn.textContent = alreadyScored ? "✓ Opened" : "Score this";
+    if (alreadyScored) btn.classList.add("scored");
+    btn.disabled = alreadyScored;
+    btn.addEventListener("click", () => {
+      if (_shortlistScoredUrls.has(pick.listing_url)) return;
+      _shortlistScoredUrls.add(pick.listing_url);
+      try { chrome.tabs.create({ url: pick.listing_url, active: true }); } catch (_) {}
+      try {
+        chrome.runtime.sendMessage({
+          type:         "SHORTLIST_PICK_CLICKED",
+          rank:         idx + 1,
+          score:        pick.score || 0,
+          search_query: _shortlistQuery,
+        }).catch(() => {});
+      } catch (_) {}
+      btn.textContent = "✓ Opened";
+      btn.classList.add("scored");
+      btn.disabled = true;
+      row.classList.add("scored");
+    });
+    row.appendChild(btn);
+
+    list.appendChild(row);
+  });
+}
+
+// Per-popup-session map keyed by *canonical* listing item id so the raw
+// href from the scrape and the canonical form from the server both resolve.
+// We populate it from the most-recent scrape result via _shortlistDeckMeta.
+let _shortlistDeckMeta = new Map();  // item_id -> {title, price, thumbnail_url}
+
+function _itemIdOf(url) {
+  if (!url) return "";
+  const m = String(url).match(/\/item\/(\d+)/);
+  return m ? m[1] : url;
+}
+
+function lookupDeckMeta(canonicalUrl) {
+  const id = _itemIdOf(canonicalUrl);
+  return _shortlistDeckMeta.get(id) || null;
+}
+
+function priceFor(pick) {
+  const m = lookupDeckMeta(pick.listing_url);
+  return m && m.price > 0 ? m.price : Number.POSITIVE_INFINITY;
+}
+
+// Hook the sort dropdown to re-render without re-fetching.
+document.getElementById("shortlist-sort")?.addEventListener("change", () => renderShortlist(""));
+
+// Driver: scrape → cache meta by canonical item id → call background → render.
+// The meta cache (title/price/thumb) lets the renderer look up the original
+// deck row by either the raw href OR the canonicalized /marketplace/item/<id>
+// URL the server returns, so price-sort and thumbs work regardless of which
+// form the server echoes back.
+async function runShortlist(tab, setStatus) {
+  // Re-entrancy guard: ignore additional clicks while a shortlist is
+  // already in flight. Without this, two rapid clicks would race on the
+  // shared _shortlistDeckMeta / _shortlistPicks globals and render an
+  // inconsistent mix of the two responses.
+  if (_shortlistInFlight) {
+    setStatus("", "Shortlist already running…");
+    return;
+  }
+  _shortlistInFlight = true;
+  const myNonce = ++_shortlistRunNonce;
+  const isStale = () => myNonce !== _shortlistRunNonce;
+
+  const btn = document.getElementById("score-current");
+  if (btn) btn.disabled = true;
+
+  const finish = () => {
+    _shortlistInFlight = false;
+    if (btn) btn.disabled = false;
+  };
+
+  _shortlistDeckMeta = new Map();
+  _shortlistScoredUrls = new Set();
+  if (!tab || !tab.id) { setStatus("error", "Couldn't read the current tab."); finish(); return; }
+  setStatus("", "Reading visible listings…");
+
+  let scrapeResp;
+  try {
+    scrapeResp = await new Promise((resolve) => {
+      chrome.tabs.sendMessage(tab.id, { type: "SHORTLIST_PAGE" }, (r) => {
+        if (chrome.runtime.lastError) resolve({ ok: false, error: chrome.runtime.lastError.message });
+        else                          resolve(r || { ok: false, error: "No response from page" });
+      });
+    });
+  } catch (e) { setStatus("error", `Couldn't read page: ${e.message}`); finish(); return; }
+  if (isStale()) { finish(); return; }
+  if (!scrapeResp.ok) { setStatus("error", scrapeResp.error || "Couldn't read this page."); finish(); return; }
+
+  const deck  = scrapeResp.deck || [];
+  const query = scrapeResp.query || "";
+  if (!deck.length) { setStatus("error", "No listings found on this page — try scrolling first."); finish(); return; }
+
+  deck.forEach(c => _shortlistDeckMeta.set(_itemIdOf(c.listing_url), {
+    title: c.title || "",
+    price: Number(c.price) || 0,
+    thumbnail_url: c.thumbnail_url || "",
+  }));
+
+  setStatus("", `Triaging ${deck.length} listing${deck.length === 1 ? "" : "s"}…`);
+  let result;
+  try {
+    result = await new Promise((resolve) => {
+      chrome.runtime.sendMessage(
+        { type: "SHORTLIST_REQUEST", listings: deck, search_query: query },
+        (r) => {
+          if (chrome.runtime.lastError) resolve({ ok: false, error: chrome.runtime.lastError.message });
+          else                          resolve(r || { ok: false, error: "Empty response" });
+        }
+      );
+    });
+  } catch (e) { setStatus("error", `Shortlist failed: ${e.message}`); finish(); return; }
+  if (isStale()) { finish(); return; }
+  if (!result.ok) { setStatus("error", result.error || "Shortlist failed."); finish(); return; }
+
+  _shortlistPicks = (result.result && result.result.picks) || [];
+  _shortlistQuery = query;
+  const reason = (result.result && result.result.reason_if_short) || "";
+  showInlineStatus("", "");
+  renderShortlist(reason);
+  try { await chrome.storage.local.set({ ds_shortlist_tip_seen: true }); } catch (_) {}
+  finish();
+}
 
 // ── Saved listings (Task #69 — popup recall) ─────────────────────────
 // Renders the user's saved listings (max 10) at the bottom of the

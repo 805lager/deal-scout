@@ -23,6 +23,38 @@
 - **Fonts**: Outfit (display) + Inter (body) from Google Fonts
 - **Colors**: Emerald green (#10B981) primary, blue (#3B82F6) accent, slate dark theme
 
+# Deal Scout — Changelog
+
+## v0.48.0 (Task #103) — FBM Search Shortlist
+- **New**: on Facebook Marketplace search/category pages the popup's primary
+  button becomes **"Shortlist Top 10"**. Click → the content script scrapes
+  the visible cards (auto-scrolls once if fewer than 10 are loaded), the
+  background calls a new `/shortlist` endpoint, and Claude Haiku triages the
+  deck against the user's search query using a 45/25/20/10 rubric
+  (retail-vs-asking / model tier / capacity / signal words). Returns the
+  top 10 picks with a one-line `why` per row.
+- **Server**: `POST /shortlist` lives in `artifacts/deal-scout-api/main.py`
+  and dispatches to `scoring/shortlist.py`. Triage-only — the per-listing
+  verdict still comes from `/score/stream` when the user clicks **Score
+  this** on a pick. Has its own rate-limit bucket (20/hour per
+  `X-DS-Install-Id`, falls back to IP) so shortlist usage cannot starve the
+  scoring budget. In-process response cache, 5-minute TTL, keyed by
+  `hash(query + sorted_canonical_urls)`.
+- **Security**: every untrusted field (titles, query) flows through
+  `_prompt_safety.wrap()` + `UNTRUSTED_SYSTEM_MESSAGE`; URLs are
+  canonicalized to bare `/marketplace/item/<id>` BEFORE dedupe/cache;
+  Claude responses are parsed defensively (markdown fences, json_repair
+  fallback, hallucinated-URL filter) and the endpoint always returns 200
+  with structured `{picks, reason_if_short, ...}` — never 5xx for
+  malformed model output.
+- **Telemetry**: reuses the existing `/event` sink (`shortlist_requested`,
+  `shortlist_pick_clicked`). No new schema.
+- **Tests**: `artifacts/deal-scout-api/tests/test_shortlist.py` —
+  9 self-running tests covering URL canonicalization, dedupe, prompt
+  injection escape, markdown-fenced parse, hallucinated-URL filter,
+  Claude-failure path, cache hit, and end-to-end auth + per-install
+  rate limit. No new permissions required.
+
 # Deal Scout API — Replit Backend
 
 ## Security model (as of #54 partial — May 2026)
