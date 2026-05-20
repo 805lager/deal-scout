@@ -264,3 +264,9 @@ id = "8PlCKmTbX5LtE7NUlrDjt"
 uri = "file://extension/deal-scout-v0.48.14.zip"
 type = "unspecified"
 title = "Deal Scout v0.48.14 (RESCORE reloads page)"
+
+[[outputs]]
+id = "VoTGBRHygzevAsYaKMCOE"
+uri = "file://extension/deal-scout-v0.48.15.zip"
+type = "unspecified"
+title = "Deal Scout v0.48.15 (correct container on direct loads)"

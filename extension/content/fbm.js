@@ -913,32 +913,26 @@
       }
     }
 
-    // Pass 2 — direct-load / full-page listing. URL is a /marketplace/item/
-    // URL and main[role="main"] contains a non-generic h1. We accept this
-    // EVEN when other dialogs (chat heads, notifications) are open, as long
-    // as main isn't itself acting as a search results grid. Detect that by
-    // counting OTHER listing links inside main: a real search results page
-    // has dozens, a real listing page has only the "related items" rail
-    // (typically <12).
+    // Pass 2 — direct-load / full-page listing. URL is /marketplace/item/X
+    // and pass 1 did not match → we are NOT on a search-page-with-overlay
+    // (because pass 1 would have caught that dialog by its link-to-self).
+    // So main[role="main"] is the listing. Accept it whenever it contains
+    // a non-generic h1 and enough text. We deliberately do NOT count
+    // related-items rail links to decide between main and dialog: on full
+    // direct-load pages the right rail routinely has 15-20 item links, and
+    // rejecting main on that basis sent us into pass 3 (dialog-h1-content)
+    // which picked FB's photo-viewer dialog (h1+photo but no description)
+    // → title-content mismatch → "Listing still loading — tap RESCORE".
     if (location.pathname.includes('/marketplace/item/')) {
       const mainCandidate = document.querySelector('[role="main"]') || document.querySelector('main');
       if (mainCandidate) {
-        const itemLinks = Array.from(mainCandidate.querySelectorAll('a[href*="/marketplace/item/"]'));
-        const otherItemLinkCount = itemLinks.filter(a => {
-          const id = _listingIdFromUrl(a.href);
-          return id && id !== currentId;
-        }).length;
-        const isSearchContext = otherItemLinkCount >= 12;
-
-        if (!isSearchContext) {
-          const mh1s = Array.from(mainCandidate.querySelectorAll('h1[dir="auto"], h1'));
-          const validH1 = mh1s.find(h => {
-            const t = (h.textContent || '').trim().toLowerCase();
-            return t.length > 3 && !_GENERIC_TITLES.has(t);
-          });
-          if (validH1 && (mainCandidate.innerText || '').length > 200) {
-            return { el: mainCandidate, source: 'main-direct-load', diag };
-          }
+        const mh1s = Array.from(mainCandidate.querySelectorAll('h1[dir="auto"], h1'));
+        const validH1 = mh1s.find(h => {
+          const t = (h.textContent || '').trim().toLowerCase();
+          return t.length > 3 && !_GENERIC_TITLES.has(t);
+        });
+        if (validH1 && (mainCandidate.innerText || '').length > 200) {
+          return { el: mainCandidate, source: 'main-direct-load', diag };
         }
       }
     }
