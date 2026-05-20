@@ -172,9 +172,17 @@ Run through this on a fresh Chrome profile before uploading:
 
 ## 8. Version + release notes (paste into "What's new" box)
 
-**v0.48.2**
+**v0.48.15**
 - NEW: Shortlist Top 10 on Facebook Marketplace search pages
 - NEW: "Already scored" badges link back to your scored tabs
+- NEW: human-readable loading status ("Reading: <title>") while
+  Claude is working
+- Fixed: "Score this" on a shortlist pick now scores reliably on
+  Facebook's direct-load full-page listing layout
+- Fixed: RESCORE on an error now reloads the page to recover from
+  partial Facebook hydration
+- Fixed: scoring panel no longer collapses to a thin bar when
+  Facebook updates the URL mid-scoring
 - Improved: resilient card scraper survives Facebook layout changes
 - Improved: auto-injects scanner into tabs opened before install
 
@@ -210,4 +218,4 @@ node -e "console.log(JSON.parse(require('fs').readFileSync('extension/manifest.j
 # Confirm version matches the zip filename you upload.
 ```
 
-Upload zip: `extension/deal-scout-v0.48.2.zip` (or whatever version is current).
+Upload zip: `extension/deal-scout-v0.48.15.zip` (or whatever version is current).
