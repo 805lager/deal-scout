@@ -893,11 +893,12 @@
     diag.hasAriaModal = ariaModals.length > 0;
 
     const allDialogs = [...new Set([...roleDialogs, ...ariaModals])];
+
+    // Pass 1 — strongest match: a dialog containing a link to the URL we're
+    // currently on. This is the search-page→click-overlay flow where FB
+    // pushes the listing URL while showing the listing inside a modal.
     for (let i = allDialogs.length - 1; i >= 0; i--) {
       const d = allDialogs[i];
-      const dText = (d.innerText || '').slice(0, 200);
-      diag.overlayTextSnippet = dText;
-
       const links = d.querySelectorAll('a[href*="/marketplace/item/"]');
       const linkIds = [];
       for (const link of links) {
@@ -905,38 +906,55 @@
         if (linkId) linkIds.push(linkId);
       }
       diag.overlayListingIds = linkIds.slice(0, 5);
+      diag.overlayTextSnippet = (d.innerText || '').slice(0, 200);
 
       if (currentId && linkIds.includes(currentId)) {
         return { el: d, source: 'dialog-link-match', diag };
       }
+    }
 
+    // Pass 2 — direct-load / full-page listing. URL is a /marketplace/item/
+    // URL and main[role="main"] contains a non-generic h1. We accept this
+    // EVEN when other dialogs (chat heads, notifications) are open, as long
+    // as main isn't itself acting as a search results grid. Detect that by
+    // counting OTHER listing links inside main: a real search results page
+    // has dozens, a real listing page has only the "related items" rail
+    // (typically <12).
+    if (location.pathname.includes('/marketplace/item/')) {
+      const mainCandidate = document.querySelector('[role="main"]') || document.querySelector('main');
+      if (mainCandidate) {
+        const itemLinks = Array.from(mainCandidate.querySelectorAll('a[href*="/marketplace/item/"]'));
+        const otherItemLinkCount = itemLinks.filter(a => {
+          const id = _listingIdFromUrl(a.href);
+          return id && id !== currentId;
+        }).length;
+        const isSearchContext = otherItemLinkCount >= 12;
+
+        if (!isSearchContext) {
+          const mh1s = Array.from(mainCandidate.querySelectorAll('h1[dir="auto"], h1'));
+          const validH1 = mh1s.find(h => {
+            const t = (h.textContent || '').trim().toLowerCase();
+            return t.length > 3 && !_GENERIC_TITLES.has(t);
+          });
+          if (validH1 && (mainCandidate.innerText || '').length > 200) {
+            return { el: mainCandidate, source: 'main-direct-load', diag };
+          }
+        }
+      }
+    }
+
+    // Pass 3 — fallback: any dialog that looks listing-shaped (h1 + photo
+    // + 100+ chars). Only used when the URL-link match and main-direct-load
+    // passes both fail. Without this guard, chat/notification dialogs were
+    // being misidentified as listings on direct-load tabs.
+    for (let i = allDialogs.length - 1; i >= 0; i--) {
+      const d = allDialogs[i];
       const h1 = d.querySelector('h1');
       const hasListingContent = h1 && h1.textContent.trim().length > 3 &&
         d.querySelector('img[src*="scontent"]') && (d.innerText || '').length > 100;
       if (hasListingContent) {
+        diag.overlayTextSnippet = (d.innerText || '').slice(0, 200);
         return { el: d, source: 'dialog-h1-content', diag };
-      }
-    }
-
-    // Task #103 fix — direct-load listing pages (e.g. shortlist "Score this"
-    // opens a fresh tab at a /marketplace/item/ URL) render the listing as
-    // the page's main content, NOT inside a [role="dialog"]. Only consider
-    // this branch when NO dialog/modal is present at all — otherwise on
-    // search pages with an overlay open, [role="main"] would also include
-    // the search grid behind the overlay and corrupt extraction. The earlier
-    // dialog branches handle the overlay case; we only reach here on a true
-    // standalone listing page.
-    if (location.pathname.includes('/marketplace/item/') && allDialogs.length === 0) {
-      const mainCandidate = document.querySelector('[role="main"]') || document.querySelector('main');
-      if (mainCandidate) {
-        const mh1s = Array.from(mainCandidate.querySelectorAll('h1[dir="auto"], h1'));
-        const validH1 = mh1s.find(h => {
-          const t = (h.textContent || '').trim().toLowerCase();
-          return t.length > 3 && !_GENERIC_TITLES.has(t);
-        });
-        if (validH1 && (mainCandidate.innerText || '').length > 200) {
-          return { el: mainCandidate, source: 'main-direct-load', diag };
-        }
       }
     }
 
@@ -1184,6 +1202,7 @@
       const h1Now = _getCurrentH1Title();
       const h1Ok = !!(h1Now && h1Now.length > 3 && !_GENERIC_TITLES.has(h1Now.toLowerCase()));
       if (h1Ok) _h1Ever = true;
+      try { _updateDiagLine(); } catch (_e) {}
 
       // Task #103 fix: when opening a listing fresh from a shortlist pick,
       // FBM's SSR shell can deliver 100+ chars of raw_text (nav, footer)
@@ -1506,6 +1525,17 @@
 
   // ── Loading State ─────────────────────────────────────────────────────────────
 
+  function _updateDiagLine() {
+    const el = document.getElementById('ds-diag-line');
+    if (!el) return;
+    try {
+      const { source, diag } = _getListingContainer();
+      const h1 = _getCurrentH1Title();
+      const h1Short = h1 ? (h1.length > 28 ? h1.slice(0, 28) + '…' : h1) : '(no h1)';
+      el.textContent = `src:${source} · h1:${h1Short} · dlg:${diag.hasRoleDialog ? 'y' : 'n'}`;
+    } catch (_e) { el.textContent = 'diag err'; }
+  }
+
   function renderLoading(listing) {
     const panel = getPanel();
     panel.textContent = "";
@@ -1531,6 +1561,17 @@
     lBody.innerHTML = DOMPurify.sanitize('<span style="animation:ds-spin 1s linear infinite;display:inline-block;font-size:16px">\u27f3</span>'
       + '<span id="ds-progress-label">Scoring deal\u2026</span>');
     panel.appendChild(lBody);
+
+    // Task #103 — small diagnostic line so we can tell at a glance whether
+    // the container detector picked the right element. Updates on each
+    // retry via _updateDiagLine(); harmless on success (replaced by the
+    // score panel) and invaluable when debugging direct-load failures.
+    const diagLine = document.createElement('div');
+    diagLine.id = 'ds-diag-line';
+    diagLine.style.cssText = 'padding:0 10px 8px;color:#4b5563;font-size:10px;font-family:ui-monospace,Menlo,monospace;line-height:1.4';
+    diagLine.textContent = 'detecting…';
+    panel.appendChild(diagLine);
+    try { _updateDiagLine(); } catch (_e) {}
 
     if (!document.getElementById('ds-spin-style')) {
       const style = document.createElement('style');

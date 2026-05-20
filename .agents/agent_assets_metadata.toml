@@ -240,3 +240,9 @@ id = "rG64-siWL4mwJV3I1Gsk3"
 uri = "file://extension/deal-scout-v0.48.10.zip"
 type = "unspecified"
 title = "Deal Scout v0.48.10 (no more thin-line panel)"
+
+[[outputs]]
+id = "LGBVco4krGJVVtNCqGv3z"
+uri = "file://extension/deal-scout-v0.48.11.zip"
+type = "unspecified"
+title = "Deal Scout v0.48.11 (correct container + diag line)"
