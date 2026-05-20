@@ -234,3 +234,9 @@ id = "vlDfcnirPTv9JKZ7N71QB"
 uri = "file://extension/deal-scout-v0.48.9.zip"
 type = "unspecified"
 title = "Deal Scout v0.48.9 (search-overlay flow restored)"
+
+[[outputs]]
+id = "rG64-siWL4mwJV3I1Gsk3"
+uri = "file://extension/deal-scout-v0.48.10.zip"
+type = "unspecified"
+title = "Deal Scout v0.48.10 (no more thin-line panel)"

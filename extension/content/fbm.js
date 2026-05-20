@@ -135,6 +135,18 @@
         _dsDebugPost('inject-bg-skip', { reason: 'already-scored', id: _currListingId });
         return;
       }
+      // Task #103 fix — when the popup opens a shortlist tab, the background
+      // script's executeScript fallback (for "Receiving end does not exist")
+      // can re-run this IIFE while the fresh-injection autoScore is still
+      // running. Without this guard, renderNavigating() below would clear
+      // the loading panel body, leaving only a thin bar visible until the
+      // in-flight autoScore eventually finishes. Detect the in-flight
+      // scoring and bail — there's nothing to reset.
+      if (window.__dealScoutRunning) {
+        _dsNavLog('bgReinjectionSkip', { reason: 'already-running', id: _currListingId });
+        _dsDebugPost('inject-bg-skip', { reason: 'already-running', id: _currListingId });
+        return;
+      }
       window.__dealScoutNonce = (window.__dealScoutNonce || 0) + 1;
       window.__dealScoutRunning = false;
       window.__dealScoutBgReinjected = true;
@@ -142,7 +154,10 @@
       _dsDebugPost('inject-bg', { currListingId: _currListingId });
       clearTimeout(window.__dealScoutRescanTimer);
       window.__dealScoutRescanTimer = setTimeout(() => _dsAutoIfEnabled(() => {
-        renderNavigating();
+        // Use renderLoading (bar + body) instead of renderNavigating
+        // (bar only) so the user sees a spinner during the retry loop,
+        // never an unexplained sliver of UI.
+        renderLoading({});
         autoScore();
       }), 100);
     }
