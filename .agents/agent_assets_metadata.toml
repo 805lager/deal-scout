@@ -174,3 +174,9 @@ id = "jRhpumXlX3pd2U8jYvGNz"
 uri = "file://extension/deal-scout-v0.47.7.zip"
 type = "unspecified"
 title = "Deal Scout v0.47.7 — Chrome Web Store ready"
+
+[[outputs]]
+id = "DMCZm-fw_a6JNc2NNmyoL"
+uri = "file://extension/deal-scout-v0.48.0.zip"
+type = "unspecified"
+title = "Deal Scout v0.48.0 (FBM Shortlist)"
