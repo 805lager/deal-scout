@@ -66,11 +66,58 @@ const scoreCache = new Map();
 
 const pendingScores = new Map();
 
+// ── Task #103 — Shortlist attribution & session score map ─────────────────
+// Map<canonical_fbm_item_url, {score, tabId, scoredAt}> — populated whenever
+// /score/stream resolves for an FBM listing tab. The popup's shortlist UI
+// queries this via GET_SHORTLIST_SCORES so picks the user already scored
+// in this session render as "Already scored: X/10 ↗" with a tap-to-focus
+// link back to that tab. Cleared per-tab on tab close; map itself has a
+// soft ceiling so a long browsing session can't grow it unbounded.
+const _shortlistScoreMap = new Map();
+const _SHORTLIST_SCORE_MAP_MAX = 200;
+// Map<tabId, {url:canonical, rank, query, openedAt}> — popped on score
+// completion so we can tag analytics with shortlist attribution
+// (shortlist_score_completed) and tag downstream affiliate clicks from
+// that tab with selection_reason="from_shortlist".
+const _shortlistPickByTabId = new Map();
+
+function _canonicalFbmItem(url) {
+  if (!url || typeof url !== "string") return "";
+  const m = url.match(/\/marketplace\/(?:[^/]+\/)?item\/(\d+)/);
+  return m ? `https://www.facebook.com/marketplace/item/${m[1]}` : "";
+}
+
+function _recordShortlistScore(tabId, listing, score) {
+  try {
+    const canon = _canonicalFbmItem(listing && listing.listing_url);
+    if (!canon) return;
+    if (_shortlistScoreMap.size >= _SHORTLIST_SCORE_MAP_MAX) {
+      // Evict the oldest entry — Map iterates in insertion order.
+      const oldest = _shortlistScoreMap.keys().next().value;
+      if (oldest) _shortlistScoreMap.delete(oldest);
+    }
+    _shortlistScoreMap.set(canon, {
+      score:    (score && typeof score.score === "number") ? score.score : 0,
+      tabId,
+      scoredAt: Date.now(),
+    });
+  } catch (_) {}
+}
+
 chrome.tabs.onRemoved.addListener((tabId) => {
   scoreCache.delete(tabId);
   pendingScores.delete(tabId);
   spaDebounceTimers.delete(tabId);
   spaLastListingId.delete(tabId);
+  _shortlistPickByTabId.delete(tabId);
+  // Mark map entries owned by this tab as stale by dropping the tabId;
+  // we keep the score so the popup can still show "Already scored: 8"
+  // but without a focus link.
+  for (const [url, entry] of _shortlistScoreMap) {
+    if (entry.tabId === tabId) {
+      _shortlistScoreMap.set(url, { ...entry, tabId: null });
+    }
+  }
 });
 
 
@@ -153,15 +200,37 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "AFFILIATE_CLICK") {
+    // Task #103 attribution: if this click originates from a tab that was
+    // opened via a shortlist pick, tag the event so we can join shortlist →
+    // score → affiliate-click funnels in analytics.
+    const fromTab = sender && sender.tab && sender.tab.id;
+    const pickInfo = fromTab ? _shortlistPickByTabId.get(fromTab) : null;
     queueAnalyticsEvent({
-      event:        "affiliate_click",
-      program:      message.program      || "",
-      category:     message.category     || "",
-      price_bucket: message.price_bucket || "",
-      card_type:    message.card_type    || "",
-      deal_score:   message.deal_score   || 0,
+      event:            "affiliate_click",
+      program:          message.program      || "",
+      category:         message.category     || "",
+      price_bucket:     message.price_bucket || "",
+      card_type:        message.card_type    || "",
+      deal_score:       message.deal_score   || 0,
+      selection_reason: pickInfo ? "from_shortlist" : "",
+      position:         pickInfo ? pickInfo.rank : 0,
     });
     sendResponse({ ok: true });
+    return true;
+  }
+
+  // Task #103 — popup asks for any session scores tied to its current picks
+  // so it can render "Already scored: X/10 ↗" badges + a tap-to-focus link.
+  if (message.type === "GET_SHORTLIST_SCORES") {
+    const out = {};
+    const urls = Array.isArray(message.urls) ? message.urls : [];
+    for (const u of urls) {
+      const canon = _canonicalFbmItem(u);
+      if (canon && _shortlistScoreMap.has(canon)) {
+        out[u] = _shortlistScoreMap.get(canon);
+      }
+    }
+    sendResponse({ ok: true, scores: out });
     return true;
   }
 
@@ -202,6 +271,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         deal_score:       message.score || 0,
       });
     } catch (_) {}
+    // Attribution: remember which tab was opened from a shortlist pick so
+    // the eventual score completion + affiliate click in that tab can be
+    // tagged. tabId is supplied by the popup after chrome.tabs.create
+    // resolves.
+    if (message.tabId && typeof message.tabId === "number") {
+      _shortlistPickByTabId.set(message.tabId, {
+        url:      _canonicalFbmItem(message.listing_url) || (message.listing_url || ""),
+        rank:     message.rank || 0,
+        query:    (message.search_query || "").slice(0, 80),
+        openedAt: Date.now(),
+      });
+    }
     sendResponse({ ok: true });
     return true;
   }
@@ -252,6 +333,27 @@ async function handleScoreListing(listing, tabId, listingId) {
 
     if (listingId) {
       scoreCache.set(tabId, { listingId, result: score });
+    }
+
+    // Task #103: record canonical FBM URL → score so the popup shortlist
+    // can show "Already scored: X/10" on subsequent runs in the same
+    // session. Cheap; no-op when listing isn't an FBM item.
+    _recordShortlistScore(tabId, listing, score);
+
+    // Attribution: if this tab was opened via a shortlist pick, emit a
+    // joined event so the funnel (shortlist_requested → pick_clicked →
+    // score_completed → affiliate_click) is reconstructable.
+    const pickInfo = _shortlistPickByTabId.get(tabId);
+    if (pickInfo) {
+      try {
+        queueAnalyticsEvent({
+          event:            "shortlist_score_completed",
+          category:         pickInfo.query,
+          position:         pickInfo.rank,
+          deal_score:       (score && typeof score.score === "number") ? score.score : 0,
+          selection_reason: "from_shortlist",
+        });
+      } catch (_) {}
     }
 
     return score;

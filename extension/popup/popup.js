@@ -377,15 +377,24 @@ document.getElementById("version-label").textContent = "v" + EXT_VERSION;
         btn.appendChild(ic);
         btn.appendChild(lbl);
       }
-      // One-time tip — fades out of view after first acknowledgement,
-      // never spams returning users.
+      // One-time tip — shown until the user clicks ✕ (or runs a shortlist,
+      // which also marks it seen). Dismiss is persisted to chrome.storage
+      // so it never returns.
       try {
         const seen = await chrome.storage.local.get("ds_shortlist_tip_seen");
         if (!seen.ds_shortlist_tip_seen) {
           const tip = document.getElementById("shortlist-tip");
-          if (tip) tip.style.display = "block";
+          if (tip) tip.style.display = "flex";
         }
       } catch (_) {}
+      const closeBtn = document.getElementById("shortlist-tip-close");
+      if (closeBtn) {
+        closeBtn.addEventListener("click", async () => {
+          const tip = document.getElementById("shortlist-tip");
+          if (tip) tip.style.display = "none";
+          try { await chrome.storage.local.set({ ds_shortlist_tip_seen: true }); } catch (_) {}
+        });
+      }
     }
   } catch (_) {}
 })();
@@ -398,6 +407,11 @@ let _shortlistScoredUrls = new Set();   // listing_urls the user clicked in this
 let _shortlistInFlight = false;         // re-entrancy guard (code review of #103)
 let _shortlistRunNonce = 0;             // bumps each runShortlist; stale responses
                                         // are discarded if a newer run started.
+let _shortlistLastRunAt = 0;            // wall-clock of the previous run's start;
+                                        // enforces a ~5s debounce on the trigger.
+let _shortlistSessionScores = {};       // canonical_url -> {score, tabId, scoredAt}
+                                        // returned by background's GET_SHORTLIST_SCORES.
+const SHORTLIST_DEBOUNCE_MS = 5000;
 
 function renderShortlist(reasonText) {
   const section = document.getElementById("shortlist-section");
@@ -482,22 +496,50 @@ function renderShortlist(reasonText) {
     }
     row.appendChild(info);
 
+    // "Already scored: X/10 ↗" — if we have a session score for this
+    // canonical URL, surface it inline and let the user tap to refocus
+    // the tab where they scored it (when that tab still exists).
+    const sessionScore = _shortlistSessionScores[pick.listing_url];
+    if (sessionScore && typeof sessionScore.score === "number") {
+      const link = document.createElement("a");
+      link.className = "pick-scored-link";
+      link.textContent = `Already scored: ${sessionScore.score}/10 ↗`;
+      link.href = "#";
+      link.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        if (sessionScore.tabId) {
+          // Focus the existing scored tab rather than opening a duplicate.
+          try { chrome.tabs.update(sessionScore.tabId, { active: true }); } catch (_) {
+            try { chrome.tabs.create({ url: pick.listing_url, active: true }); } catch (_) {}
+          }
+        } else {
+          try { chrome.tabs.create({ url: pick.listing_url, active: true }); } catch (_) {}
+        }
+      });
+      info.appendChild(link);
+    }
+
     const btn = document.createElement("button");
     btn.className = "pick-action";
-    const alreadyScored = _shortlistScoredUrls.has(pick.listing_url);
+    const alreadyScored = _shortlistScoredUrls.has(pick.listing_url) || !!sessionScore;
     btn.textContent = alreadyScored ? "✓ Opened" : "Score this";
     if (alreadyScored) btn.classList.add("scored");
     btn.disabled = alreadyScored;
-    btn.addEventListener("click", () => {
+    btn.addEventListener("click", async () => {
       if (_shortlistScoredUrls.has(pick.listing_url)) return;
       _shortlistScoredUrls.add(pick.listing_url);
-      try { chrome.tabs.create({ url: pick.listing_url, active: true }); } catch (_) {}
+      // Capture the new tab id so background can attribute the eventual
+      // score completion + downstream affiliate clicks back to this pick.
+      let newTab = null;
+      try { newTab = await chrome.tabs.create({ url: pick.listing_url, active: true }); } catch (_) {}
       try {
         chrome.runtime.sendMessage({
           type:         "SHORTLIST_PICK_CLICKED",
           rank:         idx + 1,
           score:        pick.score || 0,
           search_query: _shortlistQuery,
+          listing_url:  pick.listing_url,
+          tabId:        newTab && newTab.id,
         }).catch(() => {});
       } catch (_) {}
       btn.textContent = "✓ Opened";
@@ -541,14 +583,22 @@ document.getElementById("shortlist-sort")?.addEventListener("change", () => rend
 // URL the server returns, so price-sort and thumbs work regardless of which
 // form the server echoes back.
 async function runShortlist(tab, setStatus) {
-  // Re-entrancy guard: ignore additional clicks while a shortlist is
-  // already in flight. Without this, two rapid clicks would race on the
-  // shared _shortlistDeckMeta / _shortlistPicks globals and render an
-  // inconsistent mix of the two responses.
+  // Re-entrancy guard + 5s debounce (spec). Re-entrancy stops two clicks
+  // from interleaving on the shared shortlist globals; the debounce stops
+  // a rage-clicker from burning the per-install rate-limit budget on
+  // back-to-back identical triages.
+  const now = Date.now();
   if (_shortlistInFlight) {
     setStatus("", "Shortlist already running…");
     return;
   }
+  const sinceLast = now - _shortlistLastRunAt;
+  if (_shortlistLastRunAt && sinceLast < SHORTLIST_DEBOUNCE_MS) {
+    const wait = Math.ceil((SHORTLIST_DEBOUNCE_MS - sinceLast) / 1000);
+    setStatus("error", `Just shortlisted — wait ${wait}s before re-running.`);
+    return;
+  }
+  _shortlistLastRunAt = now;
   _shortlistInFlight = true;
   const myNonce = ++_shortlistRunNonce;
   const isStale = () => myNonce !== _shortlistRunNonce;
@@ -564,6 +614,9 @@ async function runShortlist(tab, setStatus) {
   _shortlistDeckMeta = new Map();
   _shortlistScoredUrls = new Set();
   if (!tab || !tab.id) { setStatus("error", "Couldn't read the current tab."); finish(); return; }
+  // Phase 1 of 3 (spec): "Reading N listings…" — N is unknown until the
+  // scrape returns, so we use a non-numeric variant here and switch to
+  // numeric in the next phase.
   setStatus("", "Reading visible listings…");
 
   let scrapeResp;
@@ -588,7 +641,9 @@ async function runShortlist(tab, setStatus) {
     thumbnail_url: c.thumbnail_url || "",
   }));
 
-  setStatus("", `Triaging ${deck.length} listing${deck.length === 1 ? "" : "s"}…`);
+  // Phase 2 of 3 (spec): now we know N, show the numeric variant + "Asking
+  // Claude…" so the user understands the wait is on the model.
+  setStatus("", `Reading ${deck.length} listing${deck.length === 1 ? "" : "s"} · Asking Claude…`);
   let result;
   try {
     result = await new Promise((resolve) => {
@@ -607,6 +662,22 @@ async function runShortlist(tab, setStatus) {
   _shortlistPicks = (result.result && result.result.picks) || [];
   _shortlistQuery = query;
   const reason = (result.result && result.result.reason_if_short) || "";
+
+  // Phase 3 of 3 (spec): "Ranking…" — between API resolve and DOM render
+  // we look up any already-scored URLs so the badges land in the first
+  // paint. Best-effort: a failure here just means no badges.
+  setStatus("", "Ranking…");
+  try {
+    const lookupUrls = _shortlistPicks.map(p => p.listing_url);
+    const resp = await new Promise((resolve) => {
+      chrome.runtime.sendMessage({ type: "GET_SHORTLIST_SCORES", urls: lookupUrls }, (r) => {
+        if (chrome.runtime.lastError) resolve({ ok: false });
+        else                          resolve(r || { ok: false });
+      });
+    });
+    _shortlistSessionScores = (resp && resp.ok && resp.scores) ? resp.scores : {};
+  } catch (_) { _shortlistSessionScores = {}; }
+
   showInlineStatus("", "");
   renderShortlist(reason);
   try { await chrome.storage.local.set({ ds_shortlist_tip_seen: true }); } catch (_) {}

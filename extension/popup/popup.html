@@ -335,7 +335,24 @@
     }
     #shortlist-reason.show { display: block; }
     #shortlist-tip {
+      display: none; align-items: flex-start; gap: 6px;
       font-size: 10.5px; color: #6b7280; margin-bottom: 8px; line-height: 1.4;
+    }
+    #shortlist-tip[style*="display:flex"], #shortlist-tip[style*="display: flex"] { display: flex !important; }
+    .shortlist-tip-close {
+      background: none; border: none; color: #6b7280; font-size: 14px;
+      cursor: pointer; padding: 0 2px; margin-left: auto; line-height: 1;
+    }
+    .shortlist-tip-close:hover { color: #e2e8f0; }
+    .pick-scored-link {
+      font-size: 10.5px; color: #6ee7b7; margin-top: 3px; cursor: pointer;
+      text-decoration: none; display: inline-block;
+    }
+    .pick-scored-link:hover { text-decoration: underline; }
+    .pick-scored-badge {
+      display: inline-block; font-size: 10px; font-weight: 700;
+      padding: 1px 5px; border-radius: 4px; margin-left: 6px;
+      background: rgba(34,197,94,0.15); color: #6ee7b7;
     }
     .pick-row {
       display: flex; gap: 9px; align-items: center;
@@ -538,7 +555,10 @@
       </select>
     </div>
     <div id="shortlist-reason"></div>
-    <div id="shortlist-tip" style="display:none">Click any pick to open it; Deal Scout auto-scores listing pages.</div>
+    <div id="shortlist-tip" style="display:none">
+      <span>Click any pick to open it; Deal Scout auto-scores listing pages.</span>
+      <button id="shortlist-tip-close" class="shortlist-tip-close" aria-label="Dismiss tip" title="Dismiss">×</button>
+    </div>
     <div id="shortlist-list"></div>
   </div>
 
