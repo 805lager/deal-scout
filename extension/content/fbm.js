@@ -303,6 +303,11 @@
             await new Promise(r => setTimeout(r, 700));
             deck = scrapeSearchCards();
           }
+          // Server caps /shortlist at 80 listings (HTTP 422 over the cap),
+          // and the original task scoped the client to 50 for Claude token
+          // cost. Cap here so a scrolled-down search page can't send 100+
+          // cards and 422 the whole flow.
+          if (deck.length > 50) deck = deck.slice(0, 50);
           const query = extractSearchQuery();
           sendResponse({ ok: true, deck, query });
         } catch (e) {

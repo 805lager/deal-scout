@@ -270,3 +270,9 @@ id = "VoTGBRHygzevAsYaKMCOE"
 uri = "file://extension/deal-scout-v0.48.15.zip"
 type = "unspecified"
 title = "Deal Scout v0.48.15 (correct container on direct loads)"
+
+[[outputs]]
+id = "cyD5MM7n7ZnVIFXumBCmj"
+uri = "file://extension/deal-scout-v0.48.16.zip"
+type = "unspecified"
+title = "Deal Scout v0.48.16 (cap shortlist deck at 50)"
