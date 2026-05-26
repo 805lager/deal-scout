@@ -1,0 +1,119 @@
+Title from package
+
+Deal Scout — AI Buying Assistant for FB, eBay, Craigslist & OfferUp
+
+Summary from package
+
+Scores listings 1–10 with sold-price comps, product reputation checks, cross-site price compare, and scam detection.
+
+Description
+Deal Scout scores secondhand listings using AI — so you know if a deal is worth it before you message the seller.
+
+HOW IT WORKS
+Open any Facebook Marketplace, Craigslist, eBay, or OfferUp listing and Deal Scout automatically:
+
+• Scores the deal 1–10 using real eBay sold prices as the market benchmark
+• Analyzes listing photos with AI vision to catch condition mismatches
+• Checks product reputation (model reliability, common issues, owner reviews)
+• Compares prices across multiple marketplaces and retailers
+• Flags scam signals and seller trust issues
+• Shows where to buy new if the used price isn't worth the risk
+• Recommends a fair counter-offer price
+• Generates ready-to-send negotiation messages in three tones
+
+WHAT YOU SEE
+✅ BUY / ⚠️ CAUTION / ❌ AVOID verdict with score
+📊 Market comparison — sold avg, active listings, new retail price
+⭐ Product reputation — model reliability and common issues
+🔍 AI summary — green flags, red flags, condition notes
+🛡️ Security score — scam risk assessment
+🛒 Where to buy — ranked cards across Amazon, eBay, and more
+💬 Negotiation messages — polite, direct, or lowball, copy in one click
+🔖 Save listings — revisit later from the toolbar with price-drop tracking
+
+COMPLETELY FREE
+No subscription. No account required. No ads. Just install and browse.
+
+PRIVACY
+Deal Scout doesn't track your browsing, doesn't sell your data, and doesn't require a login. Listing data is sent only to score the deal and is not retained.
+
+SUPPORTED PLATFORMS
+• Facebook Marketplace
+• Craigslist
+• OfferUp
+• eBay
+
+GET STARTED
+Install Deal Scout, open the next used listing you're considering, and the score panel appears automatically. That's it.
+1,679/16,0001679 of 16000 characters entered
+Focus on explaining what the item does and why users should install it
+Category
+Shopping
+Language
+English
+Specifying your item’s language will help users find it. If you support multiple languages, then you should internationalize your item. Learn more
+Graphic assets
+Store icon
+
+128x128 pixels
+
+Please ensure icon follows image guidelines
+
+Store icon
+Global assets
+Global promo video
+https://www.youtube.com/watch?v=moaBvlPhMWU
+Enter a YouTube video URL. Example: https://www.youtube.com/watch?v=1234567890A
+
+Screenshots
+
+Up to a maximum of 5
+
+1280x800 or 640x400
+
+JPEG or 24-bit PNG (no alpha)
+
+At least one is required 
+
+Screenshot 2
+Screenshot 3
+Drop image here
+
+Small promo tile
+
+440x280 Canvas
+
+JPEG or 24-bit PNG (no alpha)
+
+Small promo tile
+Marquee promo tile
+
+1400x560 Canvas
+
+JPEG or 24-bit PNG (no alpha)
+
+Marquee promo tile
+Additional fields
+Official URL
+None
+Or Add a new site
+If your item is associated with a website that you own, select that website from the list. You can register as the owner for a site using Google Search Console.
+Homepage URL
+https://github.com/805lager/deal-scout
+Link to website for your item
+
+38/2,04838 of 2048 characters entered
+Support URL
+https://github.com/805lager/deal-scout/issues
+45/2,04845 of 2048 characters entered
+Providing the URLs for description and support pages can improve your users’ experience and help make this item’s ratings and comments more meaningful.
+Mature content
+
+Examples of mature content include sexual and suggestive content, strong language, violence, or a focus on the consumption or sale of alcohol, tobacco, or drugs. Learn more
+Additional metrics
+Google Analytics 4 (GA4)
+Once opted in, all developers who have access to this item will be able to view additional metrics in Google Analytics. Learn more
+Item support
+Visibility. 
+Change visibility here
+Turn your item support on or off on your store listing. Learn more
