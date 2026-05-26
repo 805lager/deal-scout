@@ -393,14 +393,13 @@ Return ONLY the JSON, no explanation."""
         )
 
         raw = response.content[0].text.strip()
-        raw = re.sub(r"^```(?:json)?\s*", "", raw)
-        raw = re.sub(r"\s*```$", "", raw)
 
-        json_match = re.search(r"\{[^{}]*\}", raw)
-        if json_match:
-            raw = json_match.group(0)
-
-        data = json.loads(raw)
+        # Robust extraction — fences, prose, trailing commentary, json_repair
+        from scoring import extract_claude_json
+        data = extract_claude_json(raw, label="ClaudePricer")
+        if data is None:
+            log.warning(f"[ClaudePricer] JSON extraction failed. Raw: {raw[:200]}")
+            return None
         result = _validate_and_normalize(data, listing_price, data_source)
 
         if result:

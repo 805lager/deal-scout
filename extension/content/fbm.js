@@ -1621,6 +1621,52 @@
       try { location.reload(); } catch (_e) {}
     });
     panel.appendChild(btn);
+
+    // v0.48.17 — "Report this" link. One-click sends the error message,
+    // the current listing URL/title, and the extension version to our
+    // Discord channel via background → /report. Previously the user had
+    // to open the popup, click ⚠ Report, and re-describe the failure
+    // from memory; almost no one did. With auto-attached context every
+    // RESCORE-worthy bug becomes an actionable report.
+    const reportRow = document.createElement('div');
+    reportRow.style.cssText = 'margin-top:8px;text-align:center;font-size:11px;color:#9ca3af';
+    const reportLink = document.createElement('a');
+    reportLink.href = '#';
+    reportLink.textContent = '📋 Report this issue';
+    reportLink.style.cssText = 'color:#9ca3af;text-decoration:underline;cursor:pointer';
+    reportRow.appendChild(reportLink);
+    panel.appendChild(reportRow);
+
+    reportLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      // Best-effort title pull from the listing DOM (h1 inside <main>).
+      // If we can't find one we still send url + errMsg + version, which
+      // is enough for triage.
+      let title = '';
+      try {
+        const h1 = document.querySelector('main h1, [role="main"] h1');
+        title = (h1 && h1.textContent ? h1.textContent : '').trim().slice(0, 200);
+      } catch (_e) {}
+
+      try {
+        chrome.runtime.sendMessage({
+          type: 'SEND_REPORT',
+          text: 'Auto-report from in-page error panel.',
+          ts:   new Date().toISOString(),
+          context: {
+            errMsg:       msg,
+            url:          location.href,
+            listingTitle: title,
+            source:       'fbm-error-panel',
+          },
+        }).catch(() => {});
+      } catch (_e) {}
+
+      reportLink.textContent = '✓ Report sent — thanks!';
+      reportLink.style.color = '#22c55e';
+      reportLink.style.textDecoration = 'none';
+      reportLink.style.pointerEvents = 'none';
+    });
   }
 
   // ── Main Score Renderer ───────────────────────────────────────────────────────

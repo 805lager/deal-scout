@@ -207,12 +207,12 @@ Respond ONLY with valid JSON, no preamble, no fences:
 
         raw = response.content[0].text.strip()
 
-        # Claude occasionally wraps JSON in fences despite instructions
-        if "```" in raw:
-            match = re.search(r'\{.*\}', raw, re.DOTALL)
-            raw = match.group() if match else raw
-
-        data = json.loads(raw)
+        # Robust extraction — fences, prose, trailing commentary, json_repair
+        from scoring import extract_claude_json
+        data = extract_claude_json(raw, label="ProductExtractor")
+        if data is None:
+            log.warning(f"[ProductExtractor] JSON extraction failed — using fallback. Raw: {raw[:200]}")
+            return _fallback_extraction(title)
 
         # Defensive defaults — never let a missing key crash the pipeline
         search_query = (data.get("search_query") or "").strip() or _clean_title(title)

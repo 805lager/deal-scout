@@ -318,6 +318,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       try {
         const API_BASE   = await getApiBase();
         const extVersion = chrome.runtime.getManifest().version;
+
+        // v0.48.17: assemble a richer report body so reports landing in
+        // Discord are actionable instead of a one-line "scoring failed".
+        // The server-side IssueReport schema still takes a single `report`
+        // string, so we serialize the context block as a markdown-ish
+        // preamble. Order: user text first (most important), then auto-
+        // collected diagnostic context.
+        const userText = (message.text || "").trim();
+        const ctx      = message.context || {};
+        const ua       = (typeof navigator !== "undefined" && navigator.userAgent) || "";
+
+        const lines = [userText, ""];
+        if (ctx.errMsg)       lines.push(`Error: ${ctx.errMsg}`);
+        if (ctx.listingTitle) lines.push(`Listing: ${ctx.listingTitle}`);
+        if (ctx.url)          lines.push(`URL: ${ctx.url}`);
+        if (ctx.source)       lines.push(`Source: ${ctx.source}`);
+        lines.push(`Version: v${extVersion}`);
+        if (ua) lines.push(`UA: ${ua.slice(0, 200)}`);
+
+        const body = lines.join("\n").trim();
+
         const resp = await fetch(`${API_BASE}/report`, {
           method:  "POST",
           headers: {
@@ -325,7 +346,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             "X-DS-Key":         DS_API_KEY,
             "X-DS-Ext-Version": extVersion,
           },
-          body:   JSON.stringify({ report: message.text || "", ts: message.ts || new Date().toISOString() }),
+          body:   JSON.stringify({ report: body, ts: message.ts || new Date().toISOString() }),
           signal: AbortSignal.timeout(5000),
         });
         sendResponse({ ok: resp.ok, status: resp.status });

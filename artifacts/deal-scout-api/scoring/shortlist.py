@@ -250,27 +250,13 @@ def parse_response(raw_text: str, valid_urls: set[str]) -> tuple[list[dict], str
     if not raw_text or not isinstance(raw_text, str):
         return [], "Empty response from Claude."
 
-    text = raw_text.strip()
-    # Strip markdown fences if present. Mirrors deal_scorer.py:1289-1300.
-    if "```" in text:
-        m = re.search(r"\{.*\}", text, re.DOTALL)
-        if m:
-            text = m.group()
-        else:
-            log.warning("[Shortlist] Claude returned markdown but no JSON object found")
-            return [], "Could not read Claude's response — try again."
-
-    data = None
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as e:
-        try:
-            import json_repair
-            data = json_repair.loads(text)
-            log.warning(f"[Shortlist] JSON repaired after initial parse failure: {e}")
-        except Exception as e2:
-            log.error(f"[Shortlist] JSON parse failed: {e}; repair failed: {e2}")
-            return [], "Could not read Claude's response — try again."
+    # Robust extraction — fences, prose, trailing commentary, json_repair.
+    # See scoring/__init__.py extract_claude_json for the full strategy.
+    from scoring import extract_claude_json
+    data = extract_claude_json(raw_text, label="Shortlist")
+    if data is None:
+        log.error(f"[Shortlist] JSON extraction failed after all fallbacks. Raw: {raw_text[:300]}")
+        return [], "Could not read Claude's response — try again."
 
     if not isinstance(data, dict):
         return [], "Could not read Claude's response — try again."

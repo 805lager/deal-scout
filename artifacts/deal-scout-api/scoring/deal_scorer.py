@@ -1286,31 +1286,14 @@ async def score_deal(
         raw_text = response.content[0].text.strip()
         log.debug(f"Claude raw response:\n{raw_text}")
 
-        # Strip markdown fences — Claude often wraps JSON in ```json ... ```
-        # even when told not to. This is the most common silent failure point.
-        clean_text = raw_text
-        if "```" in clean_text:
-            # Extract content between first { and last }
-            import re
-            json_match = re.search(r'\{.*\}', clean_text, re.DOTALL)
-            if json_match:
-                clean_text = json_match.group()
-            else:
-                log.error(f"Claude returned markdown but no JSON object found:\n{raw_text}")
-                return None
-
-        try:
-            data = json.loads(clean_text)
-        except json.JSONDecodeError as e:
-            # Claude sometimes puts unescaped double quotes inside string values
-            # (e.g. the word "Unknown" in a summary). json_repair handles this.
-            try:
-                import json_repair
-                data = json_repair.loads(clean_text)
-                log.warning(f"JSON repaired after initial parse failure: {e}")
-            except Exception as e2:
-                log.error(f"JSON parse failed: {e}\nRepair also failed: {e2}\nRaw text was:\n{raw_text}")
-                return None
+        # Robust extraction — handles fences, leading prose, trailing
+        # commentary, missing outer envelope, and malformed JSON via
+        # json_repair fallback. See scoring/__init__.py for the full strategy.
+        from scoring import extract_claude_json
+        data = extract_claude_json(raw_text, label="DealScorer")
+        if data is None:
+            log.error(f"DealScorer: failed to extract JSON after all fallbacks. Raw text was:\n{raw_text}")
+            return None
 
         # Thin-comp guard: when confidence=low AND sold_count<=2, Haiku tends to
         # anchor red_flags / summary / recommended_offer to a single weak comp.

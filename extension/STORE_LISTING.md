@@ -172,6 +172,17 @@ Run through this on a fresh Chrome profile before uploading:
 
 ## 8. Version + release notes (paste into "What's new" box)
 
+**v0.48.17**
+- NEW: "📋 Report this issue" link on the error panel — one click
+  sends the error, listing URL, and version straight to support
+  with no typing required
+- Fixed: scoring errors caused by Claude wrapping its response in
+  markdown or trailing commentary (auto-recovery via JSON repair
+  across all four AI parse points — DealScorer, ProductExtractor,
+  Shortlist, ClaudePricer)
+- Fixed: shortlist deck cap at 50 cards to prevent server 422
+  rejection on scrolled search pages
+
 **v0.48.15**
 - NEW: Shortlist Top 10 on Facebook Marketplace search pages
 - NEW: "Already scored" badges link back to your scored tabs
@@ -218,4 +229,4 @@ node -e "console.log(JSON.parse(require('fs').readFileSync('extension/manifest.j
 # Confirm version matches the zip filename you upload.
 ```
 
-Upload zip: `extension/deal-scout-v0.48.15.zip` (or whatever version is current).
+Upload zip: `extension/deal-scout-v0.48.17.zip` (or whatever version is current).
