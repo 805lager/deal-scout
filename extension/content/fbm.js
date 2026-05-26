@@ -3172,10 +3172,14 @@
       _dsNavLog('pushStateNav', { from: oldId, to: newId, prevTitle: snapTitle.slice(0, 50) });
       _dsDebugPost('pushstate-nav', { from: oldId, to: newId, prevTitle: snapTitle.slice(0, 50) });
 
-      const panel = document.getElementById(PANEL_ID);
-      if (panel) {
-        _dsAutoIfEnabled(() => renderNavigating());
-      }
+      // v0.48.18 — when navigating from one listing to a DIFFERENT listing,
+      // remove the previous listing's panel immediately. The earlier code
+      // converted it to a thin "renderNavigating" bar for continuity, but
+      // the background re-injection that rebuilds it via renderLoading
+      // takes ~800ms (chrome.webNavigation debounce) and a panel showing
+      // listing A's score over listing B's page reads as a stuck popup.
+      // A clean teardown + fresh rebuild matches what users expect.
+      try { removePanel(); } catch (_e) {}
     }
   }
 

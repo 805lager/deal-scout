@@ -172,6 +172,11 @@ Run through this on a fresh Chrome profile before uploading:
 
 ## 8. Version + release notes (paste into "What's new" box)
 
+**v0.48.18**
+- Fixed: scoring popup now clears immediately when you click from
+  one listing to another (previously the old score lingered as a
+  thin loading bar for ~1s while the next listing was scored)
+
 **v0.48.17**
 - NEW: "📋 Report this issue" link on the error panel — one click
   sends the error, listing URL, and version straight to support
@@ -229,4 +234,4 @@ node -e "console.log(JSON.parse(require('fs').readFileSync('extension/manifest.j
 # Confirm version matches the zip filename you upload.
 ```
 
-Upload zip: `extension/deal-scout-v0.48.17.zip` (or whatever version is current).
+Upload zip: `extension/deal-scout-v0.48.18.zip` (or whatever version is current).
