@@ -276,3 +276,9 @@ id = "cyD5MM7n7ZnVIFXumBCmj"
 uri = "file://extension/deal-scout-v0.48.16.zip"
 type = "unspecified"
 title = "Deal Scout v0.48.16 (cap shortlist deck at 50)"
+
+[[outputs]]
+id = "YrbBmUgvMEO--9HpmLKc7"
+uri = "file://extension/deal-scout-v0.48.18.zip"
+type = "unspecified"
+title = "Deal Scout v0.48.18 (Chrome Web Store upload)"
