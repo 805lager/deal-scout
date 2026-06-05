@@ -282,3 +282,9 @@ id = "YrbBmUgvMEO--9HpmLKc7"
 uri = "file://extension/deal-scout-v0.48.18.zip"
 type = "unspecified"
 title = "Deal Scout v0.48.18 (Chrome Web Store upload)"
+
+[[outputs]]
+id = "zVEjMaUFPmPzm_1WFettS"
+uri = "file://extension/deal-scout-v0.48.19.zip"
+type = "unspecified"
+title = "Deal Scout v0.48.19 (test build)"
