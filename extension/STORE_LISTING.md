@@ -172,6 +172,17 @@ Run through this on a fresh Chrome profile before uploading:
 
 ## 8. Version + release notes (paste into "What's new" box)
 
+**v0.48.19**
+- Improved: negotiation messages now read like a real, skilled
+  negotiator wrote them — rapport-led openers, a reason behind
+  every offer, and three genuinely different tones instead of
+  templated one-liners
+- Improved: Shortlist Top 10 now treats too-good-to-be-true prices
+  as a red flag (likely bait/scam) instead of ranking them highest
+- More resilient morning scoring: the extension now retries longer
+  and smarter while the server wakes up, so a cold start no longer
+  shows an error
+
 **v0.48.18**
 - Fixed: scoring popup now clears immediately when you click from
   one listing to another (previously the old score lingered as a
@@ -234,4 +245,4 @@ node -e "console.log(JSON.parse(require('fs').readFileSync('extension/manifest.j
 # Confirm version matches the zip filename you upload.
 ```
 
-Upload zip: `extension/deal-scout-v0.48.18.zip` (or whatever version is current).
+Upload zip: `extension/deal-scout-v0.48.19.zip` (or whatever version is current).

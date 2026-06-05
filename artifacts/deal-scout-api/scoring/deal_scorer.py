@@ -643,17 +643,38 @@ This tells our affiliate engine which stores to recommend — pick the most spec
 
 ## NEGOTIATION MESSAGE
 Write a 1–2 sentence negotiation_message the buyer can copy and send to the seller.
-Rules:
-- Sound like a real person, not a bot. Casual but respectful.
-- Reference a specific dollar figure from the market data (eBay sold avg or recommended_offer).
-- Never mention "Deal Scout", AI, or apps — the buyer is sending this themselves.
-- If the deal is already excellent (score ≥ 8) or the listing asks below market, say so briefly
-  and suggest paying asking or close to it.
-- If is_vehicle=True, reference mileage context or "similar listed at $X" instead of eBay comps.
-Examples:
-  Good: "Hey, I'm interested — I've been seeing similar ones sell for around $180 on eBay. Any chance you'd take $160?"
-  Good: "Love the listing! I saw a couple others in the same condition go for about $95. Would you do $90?"
+You are an expert, experienced negotiator writing on the BUYER's behalf — think like
+someone who closes deals for a living, not a script. The goal is to get a yes without
+the seller feeling lowballed or judged.
+
+Craft, not formula — apply these like a pro:
+- LEAD WITH A REAL HUMAN BEAT. Reference something specific about THIS item or listing
+  (the model, a feature, the condition, that it's local) — not a generic "I'm interested."
+  Skip robotic openers like "Hey, I'm interested" or "Love the listing!" every time; vary it.
+- ANCHOR WITH A REASON, NEVER A BARE NUMBER. Give the seller a face-saving justification
+  for the lower price — a comp range, the item's age on the market, a missing accessory,
+  condition. People accept a number far more easily when there's a "because" attached.
+- MAKE YES EASY. Phrase the ask so agreeing feels low-risk, and give them a graceful out
+  ("totally understand if you can't budge"). Soft, confident, never pushy or pleading.
+- BE SPECIFIC AND HONEST. Cite a real figure from the market data (eBay sold avg or
+  recommended_offer). Never invent comps or facts. Round to a clean, human number.
+- SOUND LIKE A TEXT A REAL PERSON SENDS. Contractions, natural rhythm, no corporate or
+  "per my analysis" phrasing. No emoji unless it genuinely fits. Never mention "Deal Scout",
+  AI, apps, or that anything was analyzed — the buyer is sending this themselves.
+- READ THE ROOM. If the deal is already strong (score ≥ 8) or it's listed below market,
+  don't haggle — show genuine interest and move to lock it in fast at or near asking.
+- If is_vehicle=True, anchor on mileage/condition or "saw a similar one listed at $X"
+  instead of eBay comps.
+
+Examples (notice the rapport → reason → easy ask shape, and the variety):
+  Good: "Is the XM5 still available? These are great — I've seen the same model in this
+         condition going around $180, so I could do $165 cash today if that works for you."
+  Good: "Been looking for exactly this drill set. It's been up a couple weeks so I figured
+         I'd ask — would $90 work? Totally get it if not, just thought I'd check."
+  Good (strong deal): "This looks like a solid price already — I'm local and can grab it
+         today at your asking if it's still around."
   Bad: "According to market data analysis, the recommended offer price is $160.00."
+  Bad: "Hey, I'm interested. Would you take $160?"  (no reason, no warmth, templated)
 """ + """
 ## BUNDLE BREAKDOWN
 bundle_items: If this is a multi-item bundle (Bundle/Set: Yes above), you MUST list every
@@ -701,17 +722,24 @@ renders. Follow these rules to keep advice honest:
 - leverage_points: 1–4 short factual bullets the buyer can cite — e.g. "sold_avg over 14
   comps is $180", "missing original charger", "listing has been up 30+ days". NEVER fabricate
   numbers or facts not in the listing/market data. If you have nothing concrete, return [].
-- variants:
-    polite  — friendly, low-friction opener. Always present.
-    direct  — plain, slightly firmer. Always present.
-    lowball — ONLY when (data confidence is high or medium) AND (sold_count >= 3) AND
-              (strategy != verify_first AND strategy != question_first). Otherwise BOTH the
-              "message" and "target_offer" must be null — the UI will hide the variant.
+- variants — three genuinely different negotiating personalities, not the same sentence
+  reworded. Each opens with a real human beat and anchors its number with a reason:
+    polite  — warm, rapport-first. Builds a little goodwill, frames the ask as a friendly
+              check-in, gives the seller an easy out. Always present.
+    direct  — confident and efficient. Skips the small talk, states the comp and the offer
+              plainly, signals a ready buyer (cash, can pick up today). Respectful, not curt.
+              Always present.
+    lowball — a bold-but-justified opening anchor. Still pleasant and reasoned (never rude or
+              insulting), it just opens lower to leave room to meet in the middle. ONLY when
+              (data confidence is high or medium) AND (sold_count >= 3) AND (strategy !=
+              verify_first AND strategy != question_first). Otherwise BOTH the "message" and
+              "target_offer" must be null — the UI will hide the variant.
 - counter_response: write the most likely seller pushback ("I can do $X but no lower") and a
-  short reply for the buyer. Set BOTH "if_seller_says" and "you_respond" to null when
-  strategy=pay_asking (no counter expected).
-- All variant messages: 1–2 sentences, sound like a real person, no AI/app references, never
-  say "Deal Scout".
+  short, savvy reply that holds the buyer's position while keeping the deal warm — e.g. meet
+  partway, restate the reason, or accept gracefully if the counter is already fair. Set BOTH
+  "if_seller_says" and "you_respond" to null when strategy=pay_asking (no counter expected).
+- All variant messages: 1–2 sentences, sound like a text a real person actually sends
+  (contractions, natural rhythm), never templated, no AI/app references, never say "Deal Scout".
 """
 
 

@@ -1,0 +1,1 @@
+- [Prod cold starts](deal-scout-cold-start.md) — Deal Scout prod is an Autoscale deploy that scales to zero; first morning request cold-starts and errored. Extension retry absorbs it; real fix is Reserved VM.

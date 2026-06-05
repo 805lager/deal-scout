@@ -408,7 +408,10 @@ async function handleScoreListing(listing, tabId, listingId) {
 
 
 async function callScoringAPI(listing, _retryCount = 0) {
-  const MAX_RETRIES = 2;
+  // MAX_RETRIES bumped to 3 (was 2) so a cold-start — the server scales to
+  // zero when idle and the first morning request must wait for it to boot —
+  // is absorbed silently instead of surfacing an API error to the user.
+  const MAX_RETRIES = 3;
   const API_BASE = await getApiBase();
   const extVersion = chrome.runtime.getManifest().version;
   const installId = await getInstallId();
@@ -418,10 +421,16 @@ async function callScoringAPI(listing, _retryCount = 0) {
       method:  "POST",
       headers: { "Content-Type": "application/json", "X-DS-Key": DS_API_KEY, "X-DS-Ext-Version": extVersion, "X-DS-Install-Id": installId },
       body:    JSON.stringify(listing),
+      // Without a timeout a cold-start connection can hang indefinitely behind
+      // the proxy. Fail fast at 35s so the retry loop can re-issue the request
+      // against the now-booting server.
+      signal:  AbortSignal.timeout(35000),
     });
   } catch (fetchErr) {
     if (_retryCount < MAX_RETRIES) {
-      await new Promise(r => setTimeout(r, 1000 * Math.pow(2, _retryCount)));
+      // Longer backoff than before (1.5s → 3s → 6s) to give a waking server
+      // time to finish booting between attempts.
+      await new Promise(r => setTimeout(r, 1500 * Math.pow(2, _retryCount)));
       return callScoringAPI(listing, _retryCount + 1);
     }
     throw new Error("Can\u2019t reach Deal Scout servers \u2014 check your connection");
