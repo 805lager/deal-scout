@@ -288,3 +288,9 @@ id = "zVEjMaUFPmPzm_1WFettS"
 uri = "file://extension/deal-scout-v0.48.19.zip"
 type = "unspecified"
 title = "Deal Scout v0.48.19 (test build)"
+
+[[outputs]]
+id = "-MAwEd77dsip_P98mb73M"
+uri = "file://extension/deal-scout-v0.48.20.zip"
+type = "unspecified"
+title = "Deal Scout v0.48.20 — Chrome extension (ready to publish)"
