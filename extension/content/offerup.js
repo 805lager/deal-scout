@@ -27,6 +27,12 @@
   if (window.__dsOUInjected) return;
   window.__dsOUInjected = true;
 
+  // FBM-style nonce/running guards. The nonce is bumped on every SPA
+  // navigation and on RESCORE so any in-flight hydration loop bails out
+  // (isAlive → false) before it can render a stale listing's score.
+  if (typeof window.__dsOUNonce !== "number") window.__dsOUNonce = 0;
+  window.__dsOURunning = false;
+
   let API_BASE = "https://deal-scout-805lager.replit.app/api/ds";
   const DS_API_KEY = atob("MDVlZmZjMGQ2NTg2MTJiYzc5N2QwNDM0NWVhYWM4OTBfZXZpbF9zZA==").split('').reverse().join('');
   try {
@@ -310,11 +316,43 @@
       '<span id="ds-progress-label">Analyzing deal\u2026</span>');
     panel.appendChild(body);
 
+    // Diagnostic line — mirrors FBM's loading panel. Reflects hydration
+    // progress (important on this React SPA), updated each retry.
+    const diagLine = document.createElement("div");
+    diagLine.id = "ds-diag-line";
+    diagLine.style.cssText = "padding:0 10px 8px;color:#4b5563;font-size:10px;font-family:ui-monospace,Menlo,monospace;line-height:1.4";
+    diagLine.textContent = "detecting\u2026";
+    panel.appendChild(diagLine);
+    try { _updateDiagLine(); } catch (_e) {}
+
     if (!document.getElementById("ds-spin-style")) {
       const s = document.createElement("style"); s.id = "ds-spin-style";
       s.textContent = "@keyframes ds-spin{to{transform:rotate(360deg)}}";
       document.head.appendChild(s);
     }
+  }
+
+  // Current listing title from the OfferUp DOM — used for hydration gating,
+  // content-title verification, and the loading diagnostic line.
+  function _dsTitle() {
+    return (
+      document.querySelector("h1")?.textContent?.trim() ||
+      (document.title.split(" | ")[0] || "").trim()
+    );
+  }
+
+  function _updateDiagLine(info) {
+    const el = document.getElementById("ds-diag-line");
+    if (!el) return;
+    try {
+      const title = (info && info.title) || _dsTitle();
+      if (title && title.length > 3) {
+        const short = title.length > 42 ? title.slice(0, 42) + "\u2026" : title;
+        el.textContent = "Reading: " + short;
+      } else {
+        el.textContent = "Waiting for listing to load\u2026";
+      }
+    } catch (_e) { el.textContent = ""; }
   }
 
   function renderError(msg) {
@@ -1267,24 +1305,51 @@
     container.appendChild(footer);
   }
 
-  // ── Auto-Score (with SPA retry logic) ─────────────────────────────────────
-  let _scored = false;
-  let _observer = null;
-
+  // ── Auto-Score (shared hydration + SPA staleness handling) ────────────────
   async function autoScore() {
-    if (_scored) return;
-    _scored = true;
-    if (_observer) { _observer.disconnect(); _observer = null; }
+    if (!isListingPage()) return;
+    if (window.__dsOURunning) return;
+    window.__dsOURunning = true;
 
-    const rawData = extractRaw();
-    if (!rawData.raw_text || rawData.raw_text.length < 100) {
-      console.debug("[DealScout/OfferUp] No page content — skipping");
-      _scored = false;
-      return;
-    }
+    const myNonce = window.__dsOUNonce;
+    const snapUrl = location.href;
+    // Old listing's title, snapshotted in onUrlChange before the SPA swap.
+    const prevTitle = window.__dsOUPrevTitle;
+    const isAlive = () => window.__dsOUNonce === myNonce && location.href === snapUrl;
+    const _finish = () => { if (window.__dsOUNonce === myNonce) window.__dsOURunning = false; };
 
     showPanel();
     renderLoading({});
+
+    // Shared hydration-wait + retry/backoff + content-title verification.
+    // Treat the title as "not ready" while it still equals the previous
+    // listing's title — the React tree hasn't swapped in the new content yet.
+    const res = await window.DealScoutHydrate.waitForListing({
+      getTitle: () => {
+        const t = _dsTitle();
+        if (typeof prevTitle === "string" && t && t === prevTitle) return "";
+        return t;
+      },
+      extract: extractRaw,
+      isAlive,
+      onProgress: (info) => { try { _updateDiagLine(info); } catch (_e) {} },
+    });
+
+    window.__dsOUPrevTitle = undefined;
+
+    if (!isAlive()) { _finish(); return; }
+    if (!res.ok) {
+      showPanel();
+      renderError(
+        res.reason === "insufficient-content"
+          ? "Could not read this listing — tap RESCORE."
+          : "Listing still loading — tap RESCORE."
+      );
+      _finish();
+      return;
+    }
+
+    const rawData = res.rawData;
 
     try {
       const response = await new Promise((resolve, reject) => {
@@ -1302,11 +1367,15 @@
         );
       });
 
+      if (!isAlive()) { _finish(); return; }
       chrome.runtime.sendMessage({ type: "BADGE_UPDATE", score: response.score });
       renderScore(response);
     } catch (err) {
+      if (!isAlive()) { _finish(); return; }
       showPanel();
       renderError(err.message || "Scoring failed");
+    } finally {
+      _finish();
     }
   }
 
@@ -1327,35 +1396,15 @@
     }
   }
 
-  function waitForContent(force = false) {
-    // OfferUp React SPA — wait for a NEW title to appear (different from the old listing).
-    // window.__dsOUPrevTitle holds the old listing's title (set in onUrlChange).
-    // No longer waiting for price — Claude extracts it server-side.
-    // `force=true` bypasses the auto-score preference (used by manual RESCORE).
-    const prevTitle = window.__dsOUPrevTitle; // undefined on fresh page load
-    let attempts = 0;
-    const check = () => {
-      attempts++;
-      const currentTitle = document.querySelector("h1")?.textContent?.trim() || "";
-      const titleChanged  = typeof prevTitle !== "string" || (currentTitle && currentTitle !== prevTitle);
-      const hasContent    = (document.body.innerText || "").length > 300;
-      if (currentTitle && titleChanged && hasContent) {
-        window.__dsOUPrevTitle = undefined;
-        _dsMaybeScore(force);
-        return;
-      }
-      if (attempts < 30) setTimeout(check, 400);
-      else _dsMaybeScore(force); // fallback after 12s
-    };
-    check();
-  }
-
   // ── Message Listener ───────────────────────────────────────────────────────
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === "RESCORE") {
-      _scored = false;
+      // Invalidate any in-flight hydration loop and reset the running flag so
+      // the retry budget starts fresh — a real fresh attempt, not a no-op.
+      window.__dsOUNonce++;
+      window.__dsOURunning = false;
       removePanel();
-      setTimeout(() => waitForContent(true), 400);
+      setTimeout(() => _dsMaybeScore(true), 400);
       sendResponse({ ok: true });
     }
     return true;
@@ -1366,17 +1415,18 @@
   function onUrlChange() {
     const cur = location.href;
     if (cur === _lastUrl) return;
-    // Snapshot the current listing title BEFORE the SPA swaps the DOM.
-    // waitForContent will poll until this title changes → guaranteed fresh data.
+    // Snapshot the current listing title BEFORE the SPA swaps the DOM, then
+    // bump the nonce so any in-flight loop for the old listing bails.
     window.__dsOUPrevTitle = document.querySelector('h1')?.textContent?.trim() ?? '';
+    window.__dsOUNonce++;
+    window.__dsOURunning = false;
     _lastUrl = cur;
-    _scored = false;
     if (isListingPage()) {
       _dsAutoScoreEnabled().then(enabled => {
         if (!enabled) { removePanel(); return; }
         // Show spinner immediately — clears stale score before new listing loads.
         renderNavigating();
-        setTimeout(() => waitForContent(false), 200);
+        setTimeout(() => _dsMaybeScore(false), 200);
       });
     } else {
       removePanel();
@@ -1397,7 +1447,7 @@
 
   // ── Init ───────────────────────────────────────────────────────────────────
   if (isListingPage()) {
-    setTimeout(waitForContent, 1500);
+    setTimeout(() => _dsMaybeScore(false), 1500);
   }
 
 })();

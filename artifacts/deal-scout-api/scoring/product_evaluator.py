@@ -152,15 +152,76 @@ async def evaluate_product(
     log.info(f"[Evaluator] Evaluating: '{display_name}'")
 
     _search_term = f"{brand} {model}".strip() if (brand or model) else display_name
-    reddit_data, google_rating, gemini_rep, ddg_rep, amazon_rep, recall_data = await asyncio.gather(
-        _fetch_reddit_signals(brand, model, category),
-        _fetch_google_rating(display_name),
-        _fetch_gemini_reputation(brand or "", model or "", category, fallback_name=display_name),
-        _fetch_ddg_reviews(_search_term),
-        _fetch_amazon_rating(_search_term),
-        _fetch_recall_check(_search_term),
-        return_exceptions=True,
-    )
+
+    # Task #111 — reputation early-exit. The recall check is awaited
+    # independently and ALWAYS to completion so its (active-vs-historical)
+    # flags stay deterministic — it is deliberately EXCLUDED from the early-exit.
+    _recall_task = asyncio.ensure_future(_fetch_recall_check(_search_term))
+
+    # The reputation scrapers run concurrently with an early-exit: the moment
+    # the AI source returns a HIGH-confidence reputation we stop waiting on the
+    # slower web scrapers (a hung CDN/DDG straggler shouldn't stretch the
+    # stream). The merge logic below already degrades gracefully when a source
+    # is missing, so a cancelled straggler simply contributes nothing.
+    _rep = {
+        "reddit": asyncio.ensure_future(_fetch_reddit_signals(brand, model, category)),
+        "google": asyncio.ensure_future(_fetch_google_rating(display_name)),
+        "gemini": asyncio.ensure_future(
+            _fetch_gemini_reputation(brand or "", model or "", category, fallback_name=display_name)
+        ),
+        "ddg":    asyncio.ensure_future(_fetch_ddg_reviews(_search_term)),
+        "amazon": asyncio.ensure_future(_fetch_amazon_rating(_search_term)),
+    }
+    _name_of = {t: n for n, t in _rep.items()}
+    _out: dict = {n: None for n in _rep}
+    _pending = set(_rep.values())
+    _REP_BUDGET = 12.0  # hard ceiling so the loop can never outlast the stream
+    _t0 = time.monotonic()
+    while _pending:
+        _remaining = _REP_BUDGET - (time.monotonic() - _t0)
+        if _remaining <= 0:
+            break
+        _done, _pending = await asyncio.wait(
+            _pending, timeout=_remaining, return_when=asyncio.FIRST_COMPLETED
+        )
+        if not _done:
+            break  # budget elapsed with nothing new
+        for _t in _done:
+            try:
+                _out[_name_of[_t]] = _t.result()
+            except Exception as _e:
+                _out[_name_of[_t]] = _e
+        _g = _out.get("gemini")
+        if (isinstance(_g, dict)
+                and _g.get("reliability_tier") not in (None, "unknown", "")
+                and _g.get("confidence") == "high"):
+            log.info("[Evaluator] High-confidence AI reputation in hand — early-exit, cancelling stragglers")
+            break
+
+    # Cancel any still-pending scrapers (early-exit or budget) and let them
+    # unwind quietly; the guards below treat them as empty.
+    for _t in _pending:
+        _t.cancel()
+    if _pending:
+        await asyncio.gather(*_pending, return_exceptions=True)
+
+    def _grab(_task):
+        if _task.cancelled():
+            return TimeoutError("reputation scraper cancelled by early-exit")
+        try:
+            return _task.result()
+        except Exception as _e:
+            return _e
+
+    reddit_data   = _grab(_rep["reddit"])
+    google_rating = _grab(_rep["google"])
+    gemini_rep    = _grab(_rep["gemini"])
+    ddg_rep       = _grab(_rep["ddg"])
+    amazon_rep    = _grab(_rep["amazon"])
+    try:
+        recall_data = await _recall_task
+    except Exception as _e:
+        recall_data = _e
 
     if isinstance(reddit_data, Exception):
         log.warning(f"[Evaluator] Reddit failed: {reddit_data}")
@@ -381,7 +442,7 @@ If you lack model-specific data but know the brand's general reliability, use th
                 ),
                 label="ProductEvaluator",
             ),
-            timeout=10.0,
+            timeout=7.0,  # Task #111 — trim the reputation LLM hang tail
         )
         text = response.content[0].text.strip()
         text = _re.sub(r"```(?:json)?\s*", "", text)
@@ -526,7 +587,7 @@ async def _fetch_reddit_signals(brand: str, model: str, category: str) -> dict:
     all_snippets = []
 
     async with httpx.AsyncClient(
-        timeout=8.0,
+        timeout=6.0,  # Task #111 — fail fast on a slow review-snippet fetch
         follow_redirects=True,
         headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -866,11 +927,42 @@ async def _fetch_amazon_rating(product_term: str) -> dict:
         return {}
 
 
+# Task #110 — distinguish ACTIVE recalls from HISTORICAL/RESOLVED mentions.
+# A search for "<product> recall" frequently returns results saying the issue
+# was fixed, or that an OLDER version (not this one) was recalled — e.g. "the
+# 2019 model was recalled; the current version corrected the defect". Flagging
+# those as active safety alerts is a false positive that scares buyers off good
+# deals. This pattern catches the resolved/historical framings WITHOUT matching
+# a genuine active CPSC notice (which reads "X is recalled due to fire hazard"
+# and carries none of these resolution cues).
+_RECALL_RESOLVED_RE = re.compile(
+    r"(?:previous|prior|old(?:er)?|earlier|original|first[-\s]?gen(?:eration)?|"
+    r"gen\s*1|generation\s*1|version\s*1|v1|\d{4})\b[^.]{0,40}\brecall"
+    r"|recall(?:ed|s)?\b[^.]{0,45}\b(?:fixed|resolved|corrected|addressed|"
+    r"remedied|repaired|lifted|closed|completed|no\s+longer)\b"
+    r"|\b(?:fixed|resolved|corrected|addressed|remedied|repaired)\b[^.]{0,45}\brecall"
+    r"|\bno\s+longer\b[^.]{0,25}\brecall"
+    r"|this\s+(?:version|model|unit|one)\b[^.]{0,30}\b(?:not\s+affected|"
+    r"unaffected|fixed|safe|no\s+recall)",
+    re.IGNORECASE,
+)
+
+
+def _recall_is_resolved(text: str) -> bool:
+    """True when the text frames a recall as historical/resolved rather than an
+    active safety alert (older version recalled, recall since fixed, etc.)."""
+    return bool(_RECALL_RESOLVED_RE.search(text or ""))
+
+
 async def _fetch_recall_check(product_term: str) -> dict:
     """
     Search DuckDuckGo for product recalls and safety warnings.
     Checks CPSC (Consumer Product Safety Commission), FDA, and general recall notices.
     Returns {issues: [...]} if recalls found, {} otherwise.
+
+    Task #110 — only ACTIVE recalls count; results that describe a recall as
+    resolved/historical (or pertaining to an older version) are skipped so the
+    UI stops surfacing false safety alerts.
     """
     if not product_term or len(product_term) < 3:
         return {}
@@ -917,6 +1009,12 @@ async def _fetch_recall_check(product_term: str) -> dict:
 
                 matched_words = sum(1 for w in product_words if w in combined)
                 if matched_words < max(2, len(product_words) // 2):
+                    continue
+
+                # Task #110 — skip results that frame the recall as resolved or
+                # pertaining to an older version, so only ACTIVE recalls flag.
+                if _recall_is_resolved(combined):
+                    log.info(f"[RecallCheck] '{product_term}' — skipped historical/resolved recall mention")
                     continue
 
                 if re.search(r'cpsc\.gov|consumer product safety', url.lower() + " " + combined):

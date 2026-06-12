@@ -48,7 +48,7 @@ from scoring.deal_scorer import score_deal
 from scoring.product_extractor import extract_product, ProductInfo
 from scoring.product_evaluator import evaluate_product
 from scoring.affiliate_router import get_affiliate_recommendations, should_trigger_buy_new, get_program_status, build_affiliate_event, filter_affiliate_cards
-from scoring.security_scorer import score_security, SecurityScore
+from scoring.security_scorer import score_security, SecurityScore, reconcile_stock_photo
 from scoring.confidence import (
     derive_confidence,
     cant_price_message,
@@ -248,9 +248,19 @@ def _listing_content_hash(title: str, description: str, image_urls: list) -> str
     info and should reprice; URL-string equality is a cheap proxy that catches
     that case without paying to fetch images.
     """
+    # Task #111 — normalize BEFORE hashing so trivial DOM differences (HTML
+    # tags, collapsed/expanded whitespace, casing) on an otherwise-identical
+    # relisting stop causing cache misses and needless re-scores.
+    import re as _re
+    def _norm(t: str) -> str:
+        if not t:
+            return ""
+        t = _re.sub(r"<[^>]+>", " ", t)   # strip HTML tags (volatile DOM noise)
+        t = _re.sub(r"\s+", " ", t)        # collapse whitespace / newlines / tabs
+        return t.strip().lower()
     parts = [
-        (title or "").strip().lower(),
-        (description or "").strip()[:1000],   # cap so 8k descriptions don't dominate hashing time
+        _norm(title),
+        _norm(description)[:1000],   # cap so 8k descriptions don't dominate hashing time
         "|".join((image_urls or [])[:5]),
     ]
     return _hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
@@ -262,6 +272,18 @@ def _persistent_cache_key(url: str, listing_hash: str, asking_price: float) -> s
     """
     raw = f"{(url or '').strip()}|{listing_hash}|{float(asking_price or 0):.2f}"
     return _hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+def _scrub_url_for_log(url: str) -> str:
+    """Task #113 — never log a full listing URL (it identifies the seller/listing
+    and is PII-adjacent). Reduce it to host + a short id-ish tail for debugging."""
+    try:
+        from urllib.parse import urlparse as _up
+        p = _up(url or "")
+        host = p.netloc or "?"
+        tail = (p.path or "").rstrip("/").rsplit("/", 1)[-1][:24]
+        return f"{host}/…/{tail}" if tail else host
+    except Exception:
+        return "?"
 
 async def _ensure_score_cache_table():
     """Lazy-create the score_cache table on first use (same pattern as
@@ -1243,6 +1265,20 @@ async def score_listing(listing: ListingRequest, request: Request):
         from scoring.security_scorer import SecurityScore as _SS, _score_to_risk, _score_to_recommendation
         security = _SS(score=5, risk_level=_score_to_risk(5), flags=[], recommendation=_score_to_recommendation(5))
 
+    # ── Step 4b.1: Reconcile vision-derived stock-photo signal into security ──
+    # The Security Check's Claude call only sees a photo COUNT, never the
+    # images, so it can't tell stock/catalog renders from real photos. The
+    # deal scorer's Claude Vision pass can (deal_score.is_stock_photo). Both
+    # results are in scope here (security ran concurrently with score_deal and
+    # is now awaited), so fold the signal into the security card: drop the
+    # photo-count positive, add a warning, apply a moderate deduction. Done
+    # BEFORE the security cap below so the reduced score participates in capping.
+    reconcile_stock_photo(
+        security,
+        is_stock_photo     = getattr(deal_score, "is_stock_photo", False),
+        stock_photo_reason = getattr(deal_score, "stock_photo_reason", ""),
+    )
+
     # ── Step 4c: Security-based score cap ────────────────────────────────────
     _sec_score = getattr(security, 'score', 5)
     if _sec_score <= 3:
@@ -2082,6 +2118,18 @@ async def score_listing_stream(raw: RawListingRequest, request: Request):
             except Exception:
                 from scoring.security_scorer import SecurityScore as _SS, _score_to_risk, _score_to_recommendation
                 security = _SS(score=5, risk_level=_score_to_risk(5), flags=[], recommendation=_score_to_recommendation(5))
+
+            # ── Step 4a.1: Reconcile vision-derived stock-photo signal ───────
+            # Mirror of the /score wire-up. The Security Check sees only a photo
+            # COUNT; the deal scorer's Claude Vision pass detects stock/catalog
+            # imagery. Both are in scope here, so fold the signal into the
+            # security card (drop photo-count positive, add warning, moderate
+            # deduction) before the security cap below.
+            reconcile_stock_photo(
+                security,
+                is_stock_photo     = getattr(deal_score, "is_stock_photo", False),
+                stock_photo_reason = getattr(deal_score, "stock_photo_reason", ""),
+            )
 
             # ── Step 4b: Security-based score cap ────────────────────────────
             _sec_score = getattr(security, 'score', 5)
@@ -3072,7 +3120,7 @@ async def flag_affiliate_card(body: AffiliateFlagRequest, request: Request):
             body.listing_url, body.program_key, body.brand, body.model,
             body.retailer, body.url, install_id, body.reason,
         )
-        log.info(f"[AffiliateFlag] {body.program_key} for {body.listing_url[:60]} (install={install_id[:8]})")
+        log.info(f"[AffiliateFlag] {body.program_key} for {_scrub_url_for_log(body.listing_url)} (install={install_id[:8]})")
         return {"ok": True}
     except HTTPException:
         raise
@@ -3852,7 +3900,8 @@ async def collect_nav_debug(request: Request):
 
 
 @app.get("/nav-debug")
-async def get_nav_debug():
+async def get_nav_debug(request: Request):
+    _check_admin_auth(request)   # Task #113 — was unauthenticated; dumps raw extension nav payloads (URLs)
     try:
         import json as _json
         from scoring.data_pipeline import _get_pool
@@ -3874,7 +3923,8 @@ async def get_nav_debug():
 
 
 @app.delete("/nav-debug")
-async def clear_nav_debug():
+async def clear_nav_debug(request: Request):
+    _check_admin_auth(request)   # Task #113 — was unauthenticated; allowed anyone to wipe nav-debug events
     try:
         from scoring.data_pipeline import _get_pool
         await _ensure_nav_debug_table()
@@ -3905,7 +3955,8 @@ async def collect_diag(request: Request):
 
 
 @app.get("/diag")
-async def get_diag():
+async def get_diag(request: Request):
+    _check_admin_auth(request)   # Task #113 — was unauthenticated; dumps full diagnostic reports (listing data)
     try:
         import json as _json
         from scoring.data_pipeline import _get_pool
@@ -3921,7 +3972,8 @@ async def get_diag():
 
 
 @app.delete("/diag")
-async def clear_diag():
+async def clear_diag(request: Request):
+    _check_admin_auth(request)   # Task #113 — was unauthenticated; allowed anyone to wipe diagnostic reports
     try:
         from scoring.data_pipeline import _get_pool
         pool = await _get_pool()
@@ -4137,7 +4189,8 @@ def _score_log_summary(r: dict) -> dict:
 
 
 @app.get("/score-log")
-async def get_score_log():
+async def get_score_log(request: Request):
+    _check_admin_auth(request)   # Task #113 — was unauthenticated; exposes full scorecards (listing URLs / seller data)
     try:
         import json as _json
         from scoring.data_pipeline import _get_pool
@@ -4178,7 +4231,8 @@ async def get_score_log():
 
 
 @app.delete("/score-log")
-async def clear_score_log():
+async def clear_score_log(request: Request):
+    _check_admin_auth(request)   # Task #113 — was unauthenticated; allowed anyone to wipe the audit log
     try:
         from scoring.data_pipeline import _get_pool
         await _ensure_score_log_table()
@@ -4195,7 +4249,9 @@ async def audit_dashboard(request: Request):
     _check_admin_auth(request)
     from pathlib import Path as _P
     html = (_P(__file__).parent / "templates" / "audit_dashboard.html").read_text()
-    html = html.replace("{{API_KEY}}", _DS_API_KEY or "")
+    # Task #113 — do NOT inject the shared client key into admin HTML. The
+    # dashboard collects the admin token client-side (sessionStorage/prompt) and
+    # sends it as X-Admin-Token, so no secret is ever embedded in the page.
     html = html.replace("{{CURRENT_VERSION}}", BACKEND_VERSION)
     return HTMLResponse(html)
 

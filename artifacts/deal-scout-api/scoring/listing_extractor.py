@@ -29,6 +29,7 @@ WHY HAIKU (not Sonnet):
 import json
 import logging
 import os
+import re
 from typing import Optional
 
 import anthropic
@@ -40,6 +41,42 @@ _extract_client: Optional[anthropic.Anthropic] = None
 
 # Task #80: delegate to the shared Anthropic client (one TLS pool per process).
 from scoring._anthropic_client import get_anthropic_client as _get_client
+
+
+# ── Category Sanity Routing (Task #110) ───────────────────────────────────────
+#
+# Electric micromobility (e-bikes, e-scooters, Surron/Talaria, hoverboards,
+# OneWheel, electric unicycles) has real eBay/Google comps and must NOT route
+# into the gas-vehicle pricing pipeline (VIN/odometer/blue-book heuristics that
+# produce garbage for these items). The prompt already tells Haiku this, but a
+# missed flag silently misprices the item — so we enforce it deterministically.
+# Match requires the specific compound term, so an unrelated "electric start"
+# or "electric windows" on a real motorcycle/car will NOT trip it.
+_ETRANSPORT_RE = re.compile(
+    r"\b("
+    r"e[-\s]?bikes?|electric\s+bicycles?|electric\s+bikes?|"
+    r"e[-\s]?trikes?|electric\s+tricycles?|"
+    r"e[-\s]?scooters?|electric\s+scooters?|electric\s+mopeds?|"
+    r"sur[-\s]?ron|talaria|electric\s+dirt\s*bikes?|"
+    r"hover\s?boards?|one[-\s]?wheels?|electric\s+unicycles?|"
+    r"electric\s+skateboards?"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _enforce_vehicle_routing(listing_dict: dict) -> None:
+    """
+    Correct one specific misclassification: e-transport wrongly flagged as a
+    titled vehicle. Only ever flips is_vehicle True→False (it never promotes an
+    item to a vehicle), so it can't create new gas-pipeline routing.
+    """
+    if not listing_dict.get("is_vehicle"):
+        return
+    blob = f"{listing_dict.get('title', '') or ''} {listing_dict.get('description', '') or ''}"
+    if _ETRANSPORT_RE.search(blob):
+        listing_dict["is_vehicle"] = False
+        log.info("[CategoryRouting] e-transport detected → forced is_vehicle=False (uses eBay/Google comps)")
 
 
 _EXTRACT_PROMPT = """\
@@ -368,6 +405,7 @@ async def extract_listing_and_product(
         _fallback_extraction,
         _normalize_terminology,
         _inject_clothing_size,
+        _retain_value_brands,
     )
 
     truncated = raw_text.strip()[:3500]
@@ -462,6 +500,13 @@ async def extract_listing_and_product(
     listing_dict.setdefault("seller_rating", None)
     listing_dict.setdefault("seller_rating_count", 0)
 
+    # Task #110 — enforce category routing. The prompt instructs Haiku to mark
+    # e-transport (e-bikes, e-scooters, Surron/Talaria, hoverboards, OneWheel)
+    # as is_vehicle=False so they price off eBay/Google comps instead of the
+    # gas-vehicle pipeline, but prompt instructions aren't guaranteed. This
+    # rule-based check corrects that one misclassification deterministically.
+    _enforce_vehicle_routing(listing_dict)
+
     raw_title = (data.get("title") or "").strip()
     search_query = (data.get("search_query") or "").strip()
     amazon_query = (data.get("amazon_query") or "").strip() or search_query
@@ -493,8 +538,9 @@ async def extract_listing_and_product(
         extraction_method = "claude_merged",
     )
 
-    # Same clothing-size safety net as extract_product.
+    # Same clothing-size + value-brand safety nets as extract_product.
     info = _inject_clothing_size(info, listing_dict.get("description", "") or "")
+    info = _retain_value_brands(info, raw_title)
 
     log.info(
         f"[MergedExtract] '{listing_dict.get('title', '?')}' @ "

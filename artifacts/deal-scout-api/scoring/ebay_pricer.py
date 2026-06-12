@@ -351,7 +351,7 @@ async def search_ebay(
         )
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=12.0) as client:  # Task #111 — fail fast on a hung eBay endpoint
             resp = await client.get(EBAY_FINDING_API, params=params)
 
         # Parse body BEFORE raise_for_status — eBay returns error 10001 (rate
@@ -451,6 +451,24 @@ _BROWSE_USED_CONDS = {"used", "very good", "good", "acceptable",
 _BROWSE_PARTS_CONDS = {"for parts or not working", "for parts", "not working",
                        "parts only", "parts/not working"}
 
+# Task #109 — accessory-noise floor. Cheap accessories (a lens cap in a
+# camera-body search, floor mats in a car search) can flood a comp set and
+# drag the anchor down. We drop comps below a price-proportionate floor
+# anchored to the LISTING price, which — unlike the comp median — cannot be
+# deflated by the very accessories we're trying to remove. Kept conservative
+# (15%) and always backed by a never-empty fallback so a wildly overpriced
+# listing can't wipe its own real comps.
+_ACCESSORY_FLOOR_FRAC = 0.15
+
+# Task #109 — used-quality sub-tiers. eBay's top-level condition is coarse
+# (mostly "Used"), but when finer granularity exists we anchor a premium /
+# like-new listing against premium comps rather than the whole used range
+# (which includes acceptable/fair listings that drag a like-new item down).
+_USED_PREMIUM_TOKENS = ("like new", "mint", "excellent", "very good",
+                        "open box", "certified", "manufacturer refurb",
+                        "seller refurb", "refurbished")
+_USED_STANDARD_TOKENS = ("acceptable", "fair", "good", "used", "pre-own")
+
 
 def _condition_class(label: str) -> str:
     """Bucket an eBay condition label into 'new' | 'used' | 'parts' | 'unknown'."""
@@ -479,6 +497,27 @@ def _listing_condition_class(label: str) -> str:
                                 "pre-owned", "refurb", "very good")):
         return "used"
     return "unknown"
+
+
+def _used_tier(label: str) -> str:
+    """
+    Sub-classify a 'used'-bucket condition label into 'premium' | 'standard' | ''.
+
+    premium  = like-new / mint / excellent / very-good / open-box / refurbished
+    standard = good / acceptable / fair / plain "used"
+    ''       = unknown / unrecognised
+
+    Premium is checked first so "very good" does not fall through to the
+    "good" standard token.
+    """
+    if not label:
+        return ""
+    n = label.strip().lower()
+    if any(t in n for t in _USED_PREMIUM_TOKENS):
+        return "premium"
+    if any(t in n for t in _USED_STANDARD_TOKENS):
+        return "standard"
+    return ""
 
 
 def _parse_sold_date(value: str) -> Optional[float]:
@@ -525,6 +564,7 @@ def _recency_weight(days_old: Optional[float]) -> Optional[float]:
 def clean_browse_comps(
     items: list[dict],
     listing_condition: str = "",
+    listing_price: float = 0.0,
 ) -> tuple[list[dict], dict]:
     """
     Apply per-comp outlier rejection + condition matching + recency weighting
@@ -560,9 +600,23 @@ def clean_browse_comps(
         return items, _empty_comp_summary(count=len(items))
 
     median = statistics.median(prices)
-    floor = median * 0.25
+    base_floor = median * 0.25
+    # Task #109 — accessory-noise floor: also require comps to clear a
+    # price-proportionate floor anchored to the LISTING price. Unlike the
+    # median, this anchor can't be deflated by a flood of cheap accessories
+    # (a $15 lens cap in a $400 camera-body search), so it removes that noise
+    # before it can drag the anchor down.
+    acc_floor = (listing_price * _ACCESSORY_FLOOR_FRAC
+                 if listing_price and listing_price > 0 else 0.0)
+    floor = max(base_floor, acc_floor)
     ceil  = median * 4.0
     trimmed = [it for it in items if floor <= float(it.get("price", 0)) <= ceil]
+    # Safety: the accessory floor can be aggressive on a wildly overpriced
+    # listing (asking far above real value). If it wiped the whole set, fall
+    # back to the median-only floor so we never lose a real comp set to it.
+    if not trimmed and acc_floor > base_floor:
+        trimmed = [it for it in items if base_floor <= float(it.get("price", 0)) <= ceil]
+        log.info("[CompClean] Accessory floor wiped all comps — fell back to median-only floor")
 
     # Step 2: stddev outlier rejection (only when we have ≥5 items left)
     outliers_removed = len(items) - len(trimmed)
@@ -605,6 +659,26 @@ def clean_browse_comps(
         )
         cleaned = trimmed
         condition_dropped = 0
+
+    # Step 3b (Task #109): condition-aware used split. When the LISTING is a
+    # premium / like-new used item AND enough premium-tier comps exist, anchor
+    # against those rather than the whole used range (which includes
+    # acceptable/fair listings that would drag a like-new item's value down).
+    # Guarded by a >=3 minimum so this can only ever tighten a still-usable
+    # set, never create a thin anchor.
+    if cond_target == "used" and _used_tier(listing_condition) == "premium":
+        premium = [
+            it for it in cleaned
+            if _used_tier(it.get("condition", "")) == "premium"
+            or _condition_class(it.get("condition", "")) == "new"
+        ]
+        if len(premium) >= 3 and len(premium) < len(cleaned):
+            condition_dropped += len(cleaned) - len(premium)
+            log.info(
+                f"[CompClean] Premium listing — narrowed {len(cleaned)} → "
+                f"{len(premium)} premium/new comps"
+            )
+            cleaned = premium
 
     # Step 4: recency weighting + drop >180d
     # We compute days_old once per item, drop the >180d items, then build
@@ -1405,10 +1479,10 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         try:
             _verified_items = await asyncio.wait_for(
                 _verify_comps_with_llm(_raw_browse_items, listing_title, query),
-                timeout=8.0,
+                timeout=6.0,
             )
         except asyncio.TimeoutError:
-            log.warning("[CompVerifier] Timed out after 8s — using unverified comps")
+            log.warning("[CompVerifier] Timed out after 6s — using unverified comps")
             _verified_items = _raw_browse_items
         if len(_verified_items) < len(_raw_browse_items):
             _verified_prices = [it["price"] for it in _verified_items if it.get("price", 0) >= 5]
@@ -1429,6 +1503,7 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         _cleaned_items, _comp_summary = clean_browse_comps(
             _browse_result.get("items", []) or [],
             listing_condition=listing_condition,
+            listing_price=listing_price,
         )
         _cleaned_prices = [float(it["price"]) for it in _cleaned_items if it.get("price")]
         if _cleaned_prices:
@@ -1468,7 +1543,7 @@ async def get_market_value(listing_title: str, listing_condition: str = "Used", 
         try:
             _verified_active = await asyncio.wait_for(
                 _verify_comps_with_llm(_raw_active_items, listing_title, query),
-                timeout=8.0,
+                timeout=6.0,
             )
         except asyncio.TimeoutError:
             log.warning("[CompVerifier] Active comps timed out — using unverified")

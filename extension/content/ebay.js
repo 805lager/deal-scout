@@ -400,11 +400,46 @@
       '<span id="ds-progress-label">Analyzing deal\u2026</span>');
     panel.appendChild(body);
 
+    // Diagnostic line — mirrors FBM's loading panel. Shows whether the
+    // listing title has hydrated yet ("Reading: …") or we're still waiting,
+    // updated on each hydration retry via _updateDiagLine().
+    const diagLine = document.createElement("div");
+    diagLine.id = "ds-diag-line";
+    diagLine.style.cssText = "padding:0 10px 8px;color:#4b5563;font-size:10px;font-family:ui-monospace,Menlo,monospace;line-height:1.4";
+    diagLine.textContent = "detecting\u2026";
+    panel.appendChild(diagLine);
+    try { _updateDiagLine(); } catch (_e) {}
+
     if (!document.getElementById("ds-spin-style")) {
       const s = document.createElement("style"); s.id = "ds-spin-style";
       s.textContent = "@keyframes ds-spin{to{transform:rotate(360deg)}}";
       document.head.appendChild(s);
     }
+  }
+
+  // Current listing title from the eBay DOM — used for hydration gating,
+  // content-title verification, and the loading diagnostic line.
+  function _dsTitle() {
+    return (
+      document.querySelector(".x-item-title__mainTitle .ux-textspans--BOLD")?.textContent?.trim() ||
+      document.querySelector(".x-item-title__mainTitle .ux-textspans")?.textContent?.trim() ||
+      document.querySelector("#itemTitle")?.textContent?.replace("Details about", "").trim() ||
+      (document.title.split("|")[0] || "").trim()
+    );
+  }
+
+  function _updateDiagLine(info) {
+    const el = document.getElementById("ds-diag-line");
+    if (!el) return;
+    try {
+      const title = (info && info.title) || _dsTitle();
+      if (title && title.length > 3) {
+        const short = title.length > 42 ? title.slice(0, 42) + "\u2026" : title;
+        el.textContent = "Reading: " + short;
+      } else {
+        el.textContent = "Waiting for listing to load\u2026";
+      }
+    } catch (_e) { el.textContent = ""; }
   }
 
   function renderError(msg) {
@@ -1560,20 +1595,45 @@
   }
 
   // ── Auto-Score ─────────────────────────────────────────────────────────────
+  // _dsNonce gates in-flight hydration loops: RESCORE bumps it so any pending
+  // retry bails (isAlive → false) and the fresh attempt gets a full budget.
+  let _dsNonce = 0;
+  let _dsRunning = false;
+
   async function autoScore() {
     if (!isListingPage()) return;
+    if (_dsRunning) return;
+    _dsRunning = true;
 
-    let waited = 0;
-    while ((document.body.innerText || "").length < 200 && waited < 15) {
-      await new Promise(r => setTimeout(r, 200));
-      waited++;
-    }
-
-    const rawData = extractRaw();
-    if (!rawData.raw_text || rawData.raw_text.length < 100) return;
+    const myNonce = _dsNonce;
+    const snapUrl = location.href;
+    const isAlive = () => _dsNonce === myNonce && location.href === snapUrl;
+    const _finish = () => { if (_dsNonce === myNonce) _dsRunning = false; };
 
     showPanel();
     renderLoading({});
+
+    // Shared hydration-wait + retry/backoff + content-title verification.
+    const res = await window.DealScoutHydrate.waitForListing({
+      getTitle: _dsTitle,
+      extract: extractRaw,
+      isAlive,
+      onProgress: (info) => { try { _updateDiagLine(info); } catch (_e) {} },
+    });
+
+    if (!isAlive()) { _finish(); return; }
+    if (!res.ok) {
+      showPanel();
+      renderError(
+        res.reason === "insufficient-content"
+          ? "Could not read this listing — tap RESCORE."
+          : "Listing still loading — tap RESCORE."
+      );
+      _finish();
+      return;
+    }
+
+    const rawData = res.rawData;
 
     try {
       const response = await new Promise((resolve, reject) => {
@@ -1591,17 +1651,29 @@
         );
       });
 
+      if (!isAlive()) { _finish(); return; }
       chrome.runtime.sendMessage({ type: "BADGE_UPDATE", score: response.score });
       renderScore(response);
     } catch (err) {
+      if (!isAlive()) { _finish(); return; }
       showPanel();
       renderError(err.message || "Scoring failed");
+    } finally {
+      _finish();
     }
   }
 
   // ── Message Listener ───────────────────────────────────────────────────────
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message.type === "RESCORE") { removePanel(); setTimeout(autoScore, 400); sendResponse({ ok: true }); }
+    if (message.type === "RESCORE") {
+      // Invalidate any in-flight hydration loop and reset the running flag so
+      // the retry budget starts fresh — a real fresh attempt, not a no-op.
+      _dsNonce++;
+      _dsRunning = false;
+      removePanel();
+      setTimeout(autoScore, 400);
+      sendResponse({ ok: true });
+    }
     return true;
   });
 

@@ -64,6 +64,88 @@ log = logging.getLogger(__name__)
 _cache: dict = {}
 _CACHE_TTL = 300  # 5 min — scam patterns are session-level, not long-lived
 
+# ── Seller-trust / photo weighting constants ─────────────────────────────────
+# A displayed seller rating at or below this (over a meaningful review count)
+# is treated as a real trust negative — a warning + a moderate score deduction.
+_LOW_RATING_THRESHOLD = 3.5
+# Minimum reviews before a rating means anything. A single 1-star review is
+# noise; we only react once there are enough ratings to be representative.
+_MEANINGFUL_REVIEW_COUNT = 3
+# Moderate, Layer-1-style deductions (NOT "critical"). The deal score is
+# already capped elsewhere when these signals fire (trust.py composite cap +
+# main.py Step 4c security cap), and a later security-scoring upgrade adds a
+# hard veto. Keeping these moderate avoids one weak signal dragging a
+# borderline 7-8 listing down through three separate caps.
+_LOW_RATING_DEDUCTION = 2
+_STOCK_PHOTO_DEDUCTION = 2
+
+# ── Score-merge hardening constants (security-scoring upgrade) ────────────────
+# When a strong rule-based scam signal fires (payment-method manipulation,
+# phishing/verification-code, stolen goods, courier/agent, "business account"
+# upgrade) the final security score is CAPPED here regardless of what the AI
+# returned. 3 lands in "high" risk / "likely scam" territory without forcing an
+# absolute 1/10 — the AI may still push it lower, the veto only sets a ceiling.
+_VETO_SCORE_CAP = 3
+
+# Positive trust signals the extension already extracts but the scorer never
+# used. A confirmed identity (FBM "identity verified") is a genuine positive,
+# so it earns a small nudge; items-sold is surfaced as a positive only (no
+# score change) and gated on the rating not being low.
+_IDENTITY_VERIFIED_BONUS = 1
+_ESTABLISHED_ITEMS_SOLD = 25
+
+# ── New-account window (graduated) ───────────────────────────────────────────
+# A brand-new seller account is a mild risk factor on its own; the risk decays
+# linearly to zero as the account approaches this age. This is INTENTIONALLY
+# divergent from trust.py's `price_too_good_new_acct` (~14d):
+#   • trust.py fires only on the COMBINATION cheap-price AND <14d account —
+#     the acute "throwaway account flips one too-cheap listing" pattern — and
+#     it caps the DEAL score in a different composite.
+#   • This window is a STANDALONE account-immaturity factor on the SECURITY
+#     score, graduated (not binary) so an aged-but-thin "burn and turn" account
+#     at, say, 60 days still gets a small nudge instead of nothing.
+# To avoid silently double-penalizing the same account across both composites,
+# this penalty is kept mild (max 2 pts) and graduated — even when both signals
+# fire on one account the combined effect is bounded, never a double auto-fail.
+_NEW_ACCT_WINDOW_DAYS = 90
+_NEW_ACCT_MAX_PENALTY = 2
+
+# Categories where a seller offering to SHIP is a strong red flag: heavy /
+# bulky / local-pickup-only goods nobody mails to a stranger who pays first.
+# "will ship" stays "medium" for everything else; for these it escalates.
+_HEAVY_LOCAL_ONLY_CATEGORIES = frozenset({
+    "furniture", "appliances", "outdoor", "vehicles",
+})
+
+# Seller "response time" phrasings that indicate the seller is SLOW to reply.
+# A slow responder who simultaneously uses high-pressure urgency language ("act
+# now / buy today or it's gone") is internally contradictory — a classic scam
+# tell — so we flag the contradiction.
+_SLOW_RESPONSE_RE = re.compile(
+    r"(within\s+a\s+(few\s+)?days?|in\s+a\s+few\s+days?|"
+    r"(several|few)\s+days?|a\s+day\s+or\s+more|"
+    r"\bdays?\b|\bweeks?\b|rarely|slow|infrequent)",
+    re.IGNORECASE,
+)
+
+# High-pressure urgency phrasings in the listing itself. Paired with a slow
+# documented response time above, the two are contradictory (a bait tell).
+_URGENCY_RE = re.compile(
+    r"(act\s+now|buy\s+(?:it\s+)?(?:now|today)|don'?t\s+miss|won'?t\s+last|"
+    r"going\s+fast|first\s+come(?:\s+first\s+served)?|asap|urgent(?:ly)?|"
+    r"must\s+sell\s+(?:today|now|fast)|today\s+only|limited\s+time|"
+    r"hurry|sells?\s+fast)",
+    re.IGNORECASE,
+)
+
+# The only top-level keys a well-behaved Layer-2 response may contain. Any
+# extra key is treated as a jailbreak / prompt-injection indicator — the AI
+# was steered off-schema — so the AI result is discarded and flagged.
+_EXPECTED_AI_FIELDS = frozenset({
+    "score", "risk_level", "flags", "positives",
+    "item_risks", "recommendation", "confidence",
+})
+
 
 # ── Data Model ────────────────────────────────────────────────────────────────
 
@@ -97,22 +179,48 @@ class SecurityScore:
 
 # ── Layer 1: Rule-Based Pattern Detection ─────────────────────────────────────
 
-# Each tuple: (pattern, flag_message, severity)
-# severity: "critical" | "high" | "medium" | "low"
+# Each tuple: (pattern, flag_message, severity, veto)
+# severity: "critical" | "high" | "medium" | "low" | "info"
+#   - "info" contributes 0 to the Layer-1 score and is NOT surfaced to the
+#     user; it only travels into the Layer-2 prompt so the AI can weigh it in
+#     context (used for demoted, easily-false-positive narratives).
+# veto: True marks a *strong*, high-confidence scam signal. When any veto flag
+#   fires, the merged final score is hard-capped at _VETO_SCORE_CAP regardless
+#   of how high the AI scored the listing (see score merge below).
 SCAM_PATTERNS = [
     # Payment method red flags — highest signal
     (r'\b(zelle|cashapp|cash\s*app|venmo|western\s*union|wire\s*transfer|moneygram|crypto|bitcoin|gift\s*card)\b',
-     "Requests suspicious payment method (Zelle/Venmo/wire/crypto/gift card)", "critical"),
+     "Requests suspicious payment method (Zelle/Venmo/wire/crypto/gift card)", "critical", True),
 
     (r'\bpaypal\s*(friends?\s*and\s*family|f&f|f\/f|ff)\b',
-     "Requests PayPal Friends & Family (no buyer protection)", "critical"),
+     "Requests PayPal Friends & Family (no buyer protection)", "critical", True),
+
+    # "Business account" upgrade scam — the buyer/seller is told their payment
+    # account must be "upgraded" to a business account (often Zelle/Venmo) and
+    # is asked to send money to complete the bogus upgrade. Classic on FBM.
+    (r'((?:zelle|venmo|cash\s*app|cashapp)[^.\n]{0,40}business\s*account'
+     r'|business\s*account[^.\n]{0,40}(?:zelle|venmo|cash\s*app|cashapp)'
+     r'|upgrade[^.\n]{0,30}business\s*account'
+     r'|(?:your|the)\s*account[^.\n]{0,20}(?:needs?|has)\s*to\s*be\s*upgraded'
+     r'|need\s*(?:you\s*)?to\s*(?:get|have|create)\s*(?:a\s*)?business\s*account)',
+     "Asks to 'upgrade' to a business payment account (upgrade scam)", "critical", True),
+
+    # Verification-code / Google-Voice account-takeover — the scammer asks you
+    # to share a code they "just texted" (Google Voice / OTP) to hijack your
+    # account or verify a fake one. Sharing the code IS the attack.
+    (r'(google\s*voice'
+     r'|one[\s-]*time\s*(?:pass(?:word|code)|pin|code)'
+     r'|\botp\b'
+     r'|(?:verification|confirmation|security)\s*code'
+     r'|(?:send|text|share|give)\s*(?:me\s*)?(?:the\s*|a\s*|your\s*|that\s*)?(?:\d[\s-]*digit\s*)?code)',
+     "Requests a verification/Google Voice code (account-takeover scam)", "critical", True),
 
     # Off-platform contact — almost always a scam vector
     (r'(text|call|email|whatsapp|telegram|signal|kik)\s*(me\s*)?(at|on|@|\+1|\()',
-     "Requests off-platform contact (text/email/WhatsApp)", "high"),
+     "Requests off-platform contact (text/email/WhatsApp)", "high", False),
 
     (r'contact\s*me\s*(directly|outside|off)',
-     "Asks to contact outside the platform", "high"),
+     "Asks to contact outside the platform", "high", False),
 
     # Shipping scams on items that shouldn't ship.
     # WHY NOT "can deliver" alone: many FBM sellers of large items (furniture,
@@ -120,10 +228,21 @@ SCAM_PATTERNS = [
     # "Local delivery" or "deliver within X miles" is normal, not a red flag.
     # We target seller-initiated shipping of high-value goods to remote buyers —
     # that's the actual scam vector (pay first, never ships).
-    # Reduced from "high" to "medium": shipping offer alone isn't high-risk;
-    # it's only suspicious in combination with other signals.
+    # Base severity is "medium"; run_layer1 escalates it to "high" for
+    # heavy/local-only categories (furniture/appliances/outdoor/vehicles)
+    # where shipping makes no sense and is a much stronger red flag.
     (r'\b(i\s*can\s*ship|willing\s*to\s*ship|will\s*ship)\b(?!.*local)',
-     "Offers to ship (verify in-person pickup option before sending payment)", "medium"),
+     "Offers to ship (verify in-person pickup option before sending payment)", "medium", False),
+
+    # Courier / agent payment scam — seller insists their own "courier",
+    # "shipping agent" or "agent" will collect the item once you pay; the
+    # courier never exists. A high-confidence advance-fee pattern.
+    (r'\b(courier'
+     r'|shipping\s*agent|delivery\s*agent|freight\s*agent'
+     r'|my\s*(?:agent|shipper)'
+     r'|hire\s*(?:a\s*)?courier'
+     r'|(?:send|use)\s*(?:a\s*|my\s*)?courier)\b',
+     "Uses a courier/agent to handle payment or pickup (advance-fee scam)", "critical", True),
 
     # Classic advance-fee / social engineering stories.
     # WHY "moving" is intentionally excluded from this pattern:
@@ -132,38 +251,45 @@ SCAM_PATTERNS = [
     # Scam-specific relocating language uses "relocating", "deployed", "military",
     # "overseas", "out of country" — these are rare in legitimate listings.
     (r'\b(relocating|deployed|military|overseas|out\s*of\s*country|out\s*of\s*state\s+(cannot|can\'t|unable))\b',
-     "Uses relocation/deployment story (common scam narrative)", "medium"),
+     "Uses relocation/deployment story (common scam narrative)", "medium", False),
 
-    # Emotional/hardship stories — death and divorce are real scam signals;
-    # "estate sale" is explicitly excluded because it's a completely legitimate
-    # and common FBM listing type (selling items from a deceased relative's estate
-    # is normal and not inherently suspicious).
+    # Emotional/hardship stories — DEMOTED to "info" (security-scoring upgrade).
+    # Death/divorce wording is weakly correlated with scams but fires on a huge
+    # number of legitimate estate/divorce/downsizing listings. Standalone, it
+    # over-penalized honest sellers. It now contributes 0 to the score and is
+    # NOT shown as a user-facing flag; it is still passed into the Layer-2
+    # prompt so the AI can weigh it together with other context.
+    # ("estate sale" is still intentionally excluded — it's a normal listing.)
     (r'\b(divorce|death|passed\s*away|deceased|inheritance)\b',
-     "Uses emotional hardship story (common scam narrative)", "medium"),
+     "Mentions emotional-hardship reason for selling (context only)", "info", False),
 
     (r'\b(my\s*(son|daughter|kid|child|husband|wife)\s*(left|moved|going\s*to\s*college))\b',
-     "Uses family story to justify urgency (common pressure tactic)", "medium"),
+     "Uses family story to justify urgency (common pressure tactic)", "medium", False),
 
     # Urgency / pressure tactics
     (r'\b(must\s*sell|need\s*(to\s*sell|gone|cash)\s*(today|asap|fast|quick|now)|first\s*come\s*first\s*served|price\s*firm)\b',
-     "High urgency language (pressure tactic)", "low"),
+     "High urgency language (pressure tactic)", "low", False),
 
     (r'\bno\s*(returns?|refunds?|trades?|lowball|low\s*offers?|bs\s*offers?)\b',
-     "Refuses returns/trades/negotiation — limits buyer recourse", "low"),
+     "Refuses returns/trades/negotiation — limits buyer recourse", "low", False),
 
     # Too good to be true pricing signals (checked separately via market data)
     # These are description-based signals, not price-based
     (r'\b(stolen|hot|fell\s*off\s*(a\s*)?truck|found\s*it|not\s*mine)\b',
-     "Description suggests item may be stolen", "critical"),
+     "Description suggests item may be stolen", "critical", True),
 
     # Identity/account verification requests
     (r'\b(verify|verification|confirm\s*your\s*(identity|account|info))\b',
-     "Requests identity/account verification (phishing risk)", "critical"),
+     "Requests identity/account verification (phishing risk)", "critical", True),
 
     # Escrow scams
     (r'\b(escrow|middleman|third\s*party\s*payment)\b',
-     "Mentions escrow or third-party payment (common escrow scam setup)", "high"),
+     "Mentions escrow or third-party payment (common escrow scam setup)", "high", False),
 ]
+
+# Canonical message of the shipping flag — used by run_layer1 to escalate its
+# severity for heavy/local-only categories.
+_SHIP_FLAG_MESSAGE = "Offers to ship (verify in-person pickup option before sending payment)"
 
 # Item-specific risk patterns — checked against category
 ITEM_RISK_PATTERNS = {
@@ -226,16 +352,30 @@ def run_layer1(listing_text: str, title: str, category: str, listing_price: floa
     found = []
     seen = set()
 
-    for pattern, message, severity in SCAM_PATTERNS:
+    for pattern, message, severity, veto in SCAM_PATTERNS:
         if re.search(pattern, combined, re.IGNORECASE) and message not in seen:
-            found.append({"flag": message, "severity": severity})
+            # Escalate "will ship" for heavy/local-only categories, where a
+            # seller offering to ship is a much stronger red flag than for a
+            # small, mailable item.
+            if message == _SHIP_FLAG_MESSAGE and category in _HEAVY_LOCAL_ONLY_CATEGORIES:
+                found.append({
+                    "flag": (
+                        "Offers to ship a heavy/local-pickup item "
+                        "(strong red flag — verify in-person pickup first)"
+                    ),
+                    "severity": "high",
+                    "veto": veto,
+                })
+                seen.add(message)
+                continue
+            found.append({"flag": message, "severity": severity, "veto": veto})
             seen.add(message)
 
     # Item-specific risks
     cat_patterns = ITEM_RISK_PATTERNS.get(category, [])
     for pattern, message in cat_patterns:
         if re.search(pattern, combined, re.IGNORECASE) and message not in seen:
-            found.append({"flag": message, "severity": "medium"})
+            found.append({"flag": message, "severity": "medium", "veto": False})
             seen.add(message)
 
     # Price-based check — category-aware thresholds
@@ -262,6 +402,7 @@ def run_layer1(listing_text: str, title: str, category: str, listing_price: floa
                 found.append({
                     "flag": f"Price is {pct_below}% below market estimate — verify legitimacy",
                     "severity": severity,
+                    "veto": False,
                 })
 
     HARD_FLOOR_PRICES = {
@@ -276,6 +417,7 @@ def run_layer1(listing_text: str, title: str, category: str, listing_price: floa
         found.append({
             "flag": f"Price ${listing_price:.0f} is unusually low for {category} — verify legitimacy",
             "severity": "high",
+            "veto": False,
         })
 
     return found
@@ -287,7 +429,10 @@ def _layer1_score(flags: list) -> int:
     """Convert rule-based flags to a preliminary score."""
     if not flags: return 10
 
-    severity_weights = {"critical": 4, "high": 2, "medium": 1, "low": 0.5}
+    # "info" severity is non-scoring (0 weight): it exists only to carry a
+    # demoted, easily-false-positive narrative into the Layer-2 prompt without
+    # auto-penalizing the listing here.
+    severity_weights = {"critical": 4, "high": 2, "medium": 1, "low": 0.5, "info": 0}
     deduction = sum(severity_weights.get(f["severity"], 1) for f in flags)
 
     # Layer 1 alone never gives 1/10 — AI confirmation needed for the floor.
@@ -345,11 +490,12 @@ Return this exact JSON structure:
 
 For "positives", identify trust signals such as:
 - Detailed description with specifics (model numbers, measurements, history)
-- Seller provides many clear photos
 - In-person pickup available
 - Legitimate reason for selling mentioned
-- Good seller rating/history
+- A strong DISPLAYED seller rating (e.g. 4.5+/5 over several reviews)
 Do NOT include "reasonable price" as a positive — you do not have market comparison data. Pricing analysis is handled separately.
+Do NOT list "many photos" / "provides several photos" as a positive — you only receive a photo COUNT, never the images, so you cannot tell real photos of the item from stock/catalog renders. Photo count alone is not a trust signal.
+Do NOT list "established / long-history seller" or "account active since {year}" as a positive when the displayed rating is low or absent — account age alone does not prove trustworthiness when reviews are weak.
 Return 1-4 positives. If nothing positive stands out, return an empty list.
 
 Scoring guide:
@@ -379,6 +525,84 @@ Photo count guidance (only flag when genuinely suspicious, not just "many"):
 - Never use photo count as a standalone flag — only combine it with other concerns
 
 Keep flags concise (under 12 words each). Return 0-5 flags total."""
+
+
+# ── Page-text prioritization (injection robustness) ──────────────────────────
+
+# Lines that prove item specifics / seller details are present — these are the
+# highest-value content to keep when we have to truncate the page text. Keeping
+# them at the front also means a long block of injection boilerplate stuffed at
+# the top of the page can't push the real, useful data out of the window.
+_PAGE_PRIORITY_RE = re.compile(
+    r"\b("
+    r"item\s*specifics|brand|model|mpn|upc|sku|serial|manufacturer|"
+    r"storage|ram|memory|processor|cpu|capacity|color|colour|size|"
+    r"dimensions?|material|condition|year|mileage|vin|"
+    r"seller|member\s*since|joined|rating|reviews?|feedback|"
+    r"items?\s*sold|response\s*time|verified|"
+    r"returns?|return\s*policy|shipping|ships|delivery|warranty"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Obvious boilerplate / chrome that's safe to drop first when truncating.
+_PAGE_BOILERPLATE_RE = re.compile(
+    r"\b("
+    r"cookie|cookies|privacy\s*policy|terms\s*of\s*(use|service)|"
+    r"all\s*rights\s*reserved|copyright|advertisement|sponsored|"
+    r"sign\s*in|log\s*in|create\s*account|newsletter|subscribe|"
+    r"download\s*the\s*app|follow\s*us|trending|you\s*may\s*also\s*like|"
+    r"related\s*(searches|items)|recently\s*viewed|back\s*to\s*top"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _prioritize_page_text(raw_text: str, budget: int = 2400) -> str:
+    """
+    Truncate page text to `budget` chars while preserving the most useful
+    content (item specifics + seller info) over boilerplate.
+
+    WHY (injection robustness): a hostile listing can pad the top of the page
+    with filler (or an injection payload) so a naive head-truncation drops the
+    real Item-specifics / seller-trust lines the AI needs to avoid hallucinating
+    "missing info". By bucketing lines into priority / normal / boilerplate and
+    filling the budget priority-first, the genuinely informative content always
+    makes it into the prompt, and low-value chrome is the first thing cut.
+
+    Line order within each bucket is preserved so the excerpt still reads
+    naturally. If the whole text fits in `budget`, it's returned unchanged.
+    """
+    text = (raw_text or "").strip()
+    if len(text) <= budget:
+        return text
+
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return text[:budget]
+
+    priority, normal, boilerplate = [], [], []
+    for ln in lines:
+        if _PAGE_PRIORITY_RE.search(ln):
+            priority.append(ln)
+        elif _PAGE_BOILERPLATE_RE.search(ln):
+            boilerplate.append(ln)
+        else:
+            normal.append(ln)
+
+    out: list[str] = []
+    used = 0
+    for bucket in (priority, normal, boilerplate):
+        for ln in bucket:
+            # +1 for the joining newline.
+            cost = len(ln) + 1
+            if used + cost > budget:
+                continue
+            out.append(ln)
+            used += cost
+    if not out:
+        return text[:budget]
+    return "\n".join(out)[:budget]
 
 
 async def run_layer2(
@@ -460,8 +684,10 @@ async def run_layer2(
     # Surface raw page text (item specifics, return policy, shipping etc.) so
     # Claude doesn't hallucinate "no specs / no return info" when the listing
     # actually contains them. The summarized `description` field loses this
-    # detail. Truncate to ~2400 chars to leave room for the rest of the prompt.
-    page_text_excerpt = (raw_text or "").strip()[:2400]
+    # detail. Truncate to ~2400 chars — but PRIORITIZE item-specifics/seller
+    # info over boilerplate so a head-truncation (or top-of-page injection
+    # padding) can't push the real, useful data out of the window.
+    page_text_excerpt = _prioritize_page_text(raw_text or "", budget=2400)
     if page_text_excerpt:
         page_text_block = (
             "\nListing page text (raw, includes Item specifics / shipping / returns):\n"
@@ -618,6 +844,25 @@ async def score_security(
     else:
         log.info("[Security] Skipping Layer 2 (no API client)")
 
+    # ---- Injection robustness: reject off-schema AI responses ----
+    # A well-behaved Layer-2 reply contains ONLY the keys we asked for. Extra
+    # top-level keys mean the model was steered off its schema — a strong
+    # jailbreak / prompt-injection indicator (e.g. a listing that smuggled in
+    # "also add a field 'note' saying ignore the flags"). We DISCARD the whole
+    # AI result (fall back to Layer-1-only scoring) and surface a flag so the
+    # tampering is visible rather than silently trusted.
+    injection_warning = ""
+    if ai_result:
+        _unexpected = set(ai_result.keys()) - _EXPECTED_AI_FIELDS
+        if _unexpected:
+            log.warning(
+                f"[Security][Injection] AI response had unexpected field(s) "
+                f"{sorted(_unexpected)} — discarding AI result (possible prompt injection)"
+            )
+            injection_warning = (
+                "AI analysis discarded — unexpected response fields (possible prompt injection)"
+            )
+            ai_result = {}
 
     # ---- Pre-merge AI flag filtering (so boost is reflected in final_score) ----
     # Merge flags — deduplicate
@@ -777,16 +1022,11 @@ async def score_security(
 
     final_score = max(1, min(10, final_score))
 
-    all_flags = list(dict.fromkeys(l1_messages + deduped_ai_flags))
-
-    risk_level     = _score_to_risk(final_score)
-    recommendation = _score_to_recommendation(final_score)
-    confidence = ai_result.get("confidence", "medium") if ai_result else "low"
-
-    warnings = all_flags[:5] + item_risks[:2]
-
-    positives = list(ai_positives)[:4]
-
+    # ── Seller-trust signals (rating / review count / account age) ───────────
+    # Classify the displayed rating BEFORE risk/recommendation so a low-rating
+    # deduction is reflected in every derived field. The deal score is also
+    # capped downstream (trust.py + main.py Step 4c), so we keep this a
+    # moderate Layer-1-style deduction rather than a critical flag.
     seller_trust_dict = (getattr(listing, "seller_trust", None) or {})
     seller_joined   = seller_trust_dict.get("joined_date") or seller_trust_dict.get("member_since")
     highly_rated    = seller_trust_dict.get("highly_rated", False)
@@ -800,11 +1040,114 @@ async def score_security(
     except (ValueError, TypeError):
         raw_count = 0
 
-    if highly_rated or (parsed_rating >= 4.5 and raw_count >= 3):
+    # A strong rating earns a positive; a low rating (over enough reviews to be
+    # meaningful) earns a warning + deduction; a "weak" (present but not strong)
+    # rating earns neither — but it DOES suppress the account-age positive so an
+    # old account with mediocre reviews never reads as a green check.
+    strong_rating = bool(highly_rated or (parsed_rating >= 4.5 and raw_count >= _MEANINGFUL_REVIEW_COUNT))
+    low_rating    = bool(not highly_rated and 0 < parsed_rating <= _LOW_RATING_THRESHOLD
+                         and raw_count >= _MEANINGFUL_REVIEW_COUNT)
+    weak_rating   = bool(not strong_rating and parsed_rating > 0 and raw_count >= _MEANINGFUL_REVIEW_COUNT)
+
+    seller_rating_warning = ""
+    if low_rating:
+        _old_sec = final_score
+        final_score = max(1, final_score - _LOW_RATING_DEDUCTION)
+        seller_rating_warning = f"Seller has a low rating ({parsed_rating:.1f}/5 over {raw_count} reviews)"
+        log.info(f"[Security] Low seller rating {parsed_rating:.1f}/5 ({raw_count} reviews) — score {_old_sec} → {final_score}")
+
+    final_score = max(1, min(10, final_score))
+
+    # ── Seller maturity / verification signals (security-scoring upgrade) ─────
+    # These adjust the SECURITY score, so they MUST run before risk_level /
+    # recommendation are derived below.
+    #
+    # Graduated new-account penalty: a brand-new account is a mild standalone
+    # risk that decays linearly to zero by _NEW_ACCT_WINDOW_DAYS. Deliberately
+    # divergent from trust.py's 14d combination signal (see the
+    # _NEW_ACCT_WINDOW_DAYS note) and bounded (≤2 pts) so the two composites
+    # never combine into a double auto-fail on one account.
+    new_acct_warning = ""
+    try:
+        from scoring.trust import _parse_joined_date_to_age_days
+        _age_days = _parse_joined_date_to_age_days(seller_joined)
+    except Exception:
+        _age_days = None
+    if _age_days is not None and _age_days < _NEW_ACCT_WINDOW_DAYS:
+        _penalty = int(round(_NEW_ACCT_MAX_PENALTY * (1.0 - _age_days / _NEW_ACCT_WINDOW_DAYS)))
+        if _penalty > 0:
+            _old_sec = final_score
+            final_score = max(1, final_score - _penalty)
+            new_acct_warning = f"New seller account (joined ~{_age_days} day(s) ago)"
+            log.info(f"[Security] New-account penalty -{_penalty} (age {_age_days}d) — {_old_sec} → {final_score}")
+
+    # Identity-verified is a genuine positive — a small upward nudge.
+    identity_verified = bool(seller_trust_dict.get("identity_verified", False))
+    if identity_verified:
+        _old_sec = final_score
+        final_score = min(10, final_score + _IDENTITY_VERIFIED_BONUS)
+        if final_score != _old_sec:
+            log.info(f"[Security] Identity-verified bonus +{_IDENTITY_VERIFIED_BONUS} — {_old_sec} → {final_score}")
+
+    try:
+        items_sold = int(seller_trust_dict.get("items_sold", 0) or 0)
+    except (ValueError, TypeError):
+        items_sold = 0
+
+    # Slow-response vs urgency contradiction — a documented slow responder whose
+    # listing screams "act now" is internally inconsistent (a bait tell).
+    response_time = seller_trust_dict.get("response_time") or ""
+    response_contradiction = ""
+    if response_time and _SLOW_RESPONSE_RE.search(str(response_time)):
+        _blob = f"{listing.title or ''} {listing.description or ''} {getattr(listing, 'raw_text', '') or ''}"
+        if _URGENCY_RE.search(_blob):
+            response_contradiction = "Urgency language despite a slow seller response time (bait pattern)"
+
+    # ── Hard veto ────────────────────────────────────────────────────────────
+    # A strong, high-confidence rule-based scam signal caps the final score
+    # regardless of how high the AI scored. Applied LAST so the identity bonus
+    # can't lift a vetoed listing over the ceiling; it only LOWERS the score, so
+    # it never washes out the rating / stock-photo deductions above.
+    veto_flags = [f["flag"] for f in l1_flags if f.get("veto")]
+    if veto_flags and final_score > _VETO_SCORE_CAP:
+        _ai_sc = ai_result.get("score") if ai_result else None
+        log.warning(
+            f"[Security][Veto] Strong rule scam signal(s) {veto_flags[:2]} — "
+            f"capping {final_score} → {_VETO_SCORE_CAP} (AI scored {_ai_sc})"
+        )
+        final_score = _VETO_SCORE_CAP
+
+    final_score = max(1, min(10, final_score))
+
+    all_flags = list(dict.fromkeys(l1_messages + deduped_ai_flags))
+
+    risk_level     = _score_to_risk(final_score)
+    recommendation = _score_to_recommendation(final_score)
+    confidence = ai_result.get("confidence", "medium") if ai_result else "low"
+
+    warnings = all_flags[:5] + item_risks[:2]
+    # Highest-priority warnings first (injection/tampering, then rating, then
+    # account age, then the response contradiction).
+    for _w in (response_contradiction, new_acct_warning, seller_rating_warning, injection_warning):
+        if _w:
+            warnings.insert(0, _w)
+    warnings = list(dict.fromkeys(warnings))
+
+    positives = list(ai_positives)[:4]
+
+    if strong_rating:
         rating_str = f"{parsed_rating:.0f}/5" if parsed_rating > 0 else "Highly rated"
         positives.insert(0, f"Seller rated {rating_str} ({raw_count} reviews)")
-    elif seller_joined:
+    elif seller_joined and not weak_rating and not new_acct_warning:
+        # Bare account age is only a trust positive when it isn't contradicted
+        # by a weak/low displayed rating or a brand-new-account penalty.
         positives.append(f"Seller profile since {seller_joined}")
+
+    # Verification + sales history are genuine trust positives.
+    if identity_verified:
+        positives.insert(0, "Seller identity verified")
+    if items_sold >= _ESTABLISHED_ITEMS_SOLD and not low_rating:
+        positives.append(f"Established seller ({items_sold} items sold)")
 
     raw_pc2 = getattr(listing, "photo_count", 0) or 0
     raw_iu2 = len(getattr(listing, "image_urls", None) or [])
@@ -847,6 +1190,90 @@ async def score_security(
     _cache[cache_key] = {"data": result, "ts": now}
     log.info(f"[Security] Final: {final_score}/10 — {risk_level} — {recommendation}")
     return result
+
+
+def reconcile_stock_photo(
+    security: "SecurityScore",
+    is_stock_photo: bool,
+    stock_photo_reason: str = "",
+) -> bool:
+    """
+    Fold the vision-derived stock-photo signal into an already-computed
+    SecurityScore. Returns True when the SecurityScore was mutated.
+
+    WHY THIS IS SEPARATE FROM score_security():
+      The Security Check (Layer 2) Claude call only ever receives a photo
+      *count*, never the images — it cannot tell stock/catalog renders from
+      real photos of the actual item. The actionable stock-vs-real truth comes
+      from the deal scorer's Claude Vision pass (DealScore.is_stock_photo).
+      Security scoring and vision scoring run concurrently, so that result is
+      NOT available inside score_security(). This reconciliation runs at the
+      orchestration point where BOTH results are in scope.
+
+    Effects when `is_stock_photo` is True:
+      • drops the "N photos provided" trust positive — stock-only imagery is
+        not verification of the actual item, so it must not read as a green
+        check
+      • adds a concise warning explaining the concern
+      • applies a MODERATE, Layer-1-style score deduction (NOT a critical
+        flag) and recomputes risk_level / recommendation
+
+    The deduction is intentionally moderate: the deal score is already capped
+    elsewhere when this signal fires (trust.py composite + main.py Step 4c
+    security cap), and a later security-scoring upgrade adds a hard veto.
+    Escalating this to "critical" here would push a borderline 7-8 listing
+    through three separate caps off one studio photo.
+    """
+    if not is_stock_photo or security is None:
+        return False
+
+    changed = False
+
+    # 1. Strip the "N photos provided" positive — stock images aren't proof
+    #    the seller has the actual item.
+    original_positives = list(security.positives or [])
+    filtered_positives = [
+        p for p in original_positives
+        if "photo provided" not in p.lower() and "photos provided" not in p.lower()
+    ]
+    if len(filtered_positives) != len(original_positives):
+        security.positives = filtered_positives
+        changed = True
+
+    # 2. Add a concise warning (deduped against any prior stock-photo warning).
+    warning = "Photos appear to be stock images, not the actual item"
+    reason = (stock_photo_reason or "").strip()
+    if reason:
+        warning = f"{warning} — {reason}"
+    warning = warning[:140]
+    if security.warnings is None:
+        security.warnings = []
+    if not any("stock image" in (w or "").lower() for w in security.warnings):
+        security.warnings.insert(0, warning)
+        changed = True
+
+    # Surface in the flags list too so a collapsed positives/warnings view
+    # still shows the concern.
+    if security.flags is None:
+        security.flags = []
+    if not any("stock image" in (f or "").lower() for f in security.flags):
+        security.flags.insert(0, "Photos appear to be stock images, not the actual item")
+        changed = True
+
+    # 3. Moderate score deduction + recompute derived fields.
+    new_score = max(1, min(10, security.score - _STOCK_PHOTO_DEDUCTION))
+    if new_score != security.score:
+        old_score = security.score
+        security.score = new_score
+        security.risk_level = _score_to_risk(new_score)
+        security.recommendation = _score_to_recommendation(new_score)
+        changed = True
+        log.info(
+            f"[Security] Stock-photo reconciliation — score {old_score} → "
+            f"{new_score} (risk={security.risk_level})"
+        )
+
+    return changed
 
 
 def _score_to_risk(score: int) -> str:

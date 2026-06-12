@@ -236,6 +236,8 @@ Respond ONLY with valid JSON, no preamble, no fences:
         # titles like "Kids pants" because the title has no size. Regex is
         # more reliable than prompt engineering for this narrow task.
         info = _inject_clothing_size(info, desc_snippet)
+        # Task #110 — restore any value-defining brand Haiku dropped from the query.
+        info = _retain_value_brands(info, title)
 
         log.info(f"[ProductExtractor] '{info.display_name}' (confidence={info.confidence})")
         log.info(f"  eBay:   '{info.search_query}'")
@@ -422,6 +424,58 @@ def _inject_clothing_size(info: ProductInfo, description: str) -> ProductInfo:
             raw_title=info.raw_title, extraction_method=info.extraction_method,
         )
 
+    return info
+
+
+# ── Value-Defining Brand Whitelist (Task #110) ────────────────────────────────
+#
+# For most products the manufacturer brand is reliably kept and a franchise /
+# license worn as decoration is correctly dropped (see the BRAND vs LICENSE
+# rules in the prompt). But a small set of hype / luxury / collectible brands
+# ARE the value of the item — strip the name and the product collapses into a
+# generic good worth a fraction of the price ("Rolex watch" → "watch",
+# "Supreme hoodie" → "hoodie", "Lego Millennium Falcon" → "building blocks").
+# Haiku occasionally mistakes one of these for a droppable license and removes
+# it from search_query, which then pulls generic (cheap) comps and tanks value.
+#
+# This deterministic safety net re-injects a whitelisted brand into the query
+# when it is present in the listing TITLE but missing from the extracted query.
+# Keep the list SMALL and well-justified — manufacturer brands (Canon, Sony,
+# Milwaukee…) are already kept by the prompt and must NOT be added here.
+_VALUE_DEFINING_BRANDS: tuple[str, ...] = (
+    # Streetwear / hype apparel
+    "supreme", "off-white", "bape", "yeezy",
+    # Luxury watches
+    "rolex", "omega", "patek philippe", "audemars piguet", "cartier",
+    # Luxury fashion houses
+    "louis vuitton", "gucci", "chanel", "hermes", "hermès", "prada",
+    "burberry", "moncler",
+    # Collectibles / toys
+    "lego", "funko", "pokemon", "pokémon",
+)
+
+
+def _retain_value_brands(info: ProductInfo, title: str) -> ProductInfo:
+    """
+    Re-inject a value-defining brand that Haiku dropped from the search query.
+
+    Fires only when the brand appears as a whole word/phrase in the listing
+    title but is absent from the extracted query — so it never invents a brand,
+    only restores one the model removed. At most one brand is restored to avoid
+    over-stuffing the query.
+    """
+    if not title or not info.search_query:
+        return info
+    title_l = title.lower()
+    query_l = info.search_query.lower()
+    for brand in _VALUE_DEFINING_BRANDS:
+        pat = rf"(?<!\w){re.escape(brand)}(?!\w)"
+        if re.search(pat, title_l) and not re.search(pat, query_l):
+            info.search_query = f"{brand} {info.search_query}".strip()
+            if not re.search(pat, (info.amazon_query or "").lower()):
+                info.amazon_query = f"{brand} {info.amazon_query}".strip()
+            log.info(f"[ValueBrand] Re-injected dropped value brand '{brand}' into search query")
+            break
     return info
 
 

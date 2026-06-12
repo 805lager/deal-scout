@@ -1,1 +1,2 @@
 - [Prod cold starts](deal-scout-cold-start.md) — Deal Scout prod is an Autoscale deploy that scales to zero; first morning request cold-starts and errored. Extension retry absorbs it; real fix is Reserved VM.
+- [Endpoint auth footgun](deal-scout-endpoint-auth.md) — main.py handlers swallow exceptions into a 200; auth checks raising HTTPException must sit BEFORE the try or the gate silently bypasses. Verify unauth→401 via curl.

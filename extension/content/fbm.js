@@ -1036,6 +1036,11 @@
   }
 
   function _rawFingerprint(text) {
+    // Shared with the other marketplaces via lib/hydrate.js (identical logic);
+    // inline fallback kept so FBM never depends on load order.
+    if (window.DealScoutHydrate && window.DealScoutHydrate.rawFingerprint) {
+      return window.DealScoutHydrate.rawFingerprint(text);
+    }
     if (!text) return '';
     const norm = text.replace(/\s+/g, ' ').trim().toLowerCase();
     return norm.slice(0, 300);
@@ -1239,11 +1244,18 @@
       }
 
       if (h1Now && h1Now.length > 3 && !_GENERIC_TITLES.has(h1Now.toLowerCase())) {
-        const h1Lower = h1Now.toLowerCase();
-        const rawLower = rawData.raw_text.toLowerCase();
-        const h1Words = h1Lower.split(/\s+/).filter(w => w.length > 2);
-        const matchCount = h1Words.filter(w => rawLower.includes(w)).length;
-        _contentTitleMatch = h1Words.length === 0 || (matchCount / h1Words.length) >= 0.5;
+        // Shared with the other marketplaces via lib/hydrate.js. The inline
+        // fallback is byte-for-byte identical so FBM behavior never changes
+        // regardless of load order.
+        if (window.DealScoutHydrate && window.DealScoutHydrate.titleMatchesContent) {
+          _contentTitleMatch = window.DealScoutHydrate.titleMatchesContent(h1Now, rawData.raw_text);
+        } else {
+          const h1Lower = h1Now.toLowerCase();
+          const rawLower = rawData.raw_text.toLowerCase();
+          const h1Words = h1Lower.split(/\s+/).filter(w => w.length > 2);
+          const matchCount = h1Words.filter(w => rawLower.includes(w)).length;
+          _contentTitleMatch = h1Words.length === 0 || (matchCount / h1Words.length) >= 0.5;
+        }
 
         if (!_contentTitleMatch) {
           _titleCheckRetries++;

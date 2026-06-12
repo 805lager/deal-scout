@@ -1085,6 +1085,68 @@ def _apply_thin_comp_guard(
     return data, modified
 
 
+def _clamp_recommended_offer(
+    offer: float,
+    asking: float,
+    market_value: dict,
+) -> tuple[float, bool]:
+    """
+    Task #109 — bound Haiku's recommended_offer to a defensible range derived
+    from the market data so it can't hallucinate an absurd lowball or an
+    over-asking number.
+
+    Bounds:
+      • Ceiling — never recommend paying MORE than the seller's asking price,
+        nor materially (>15%) above a TRUSTWORTHY market anchor.
+      • Floor — never recommend an absurd lowball below half the realistic
+        value (the lower of asking and the market anchor).
+
+    A market anchor is only trusted when it rests on >=3 real sold comps;
+    below that the thin-comp guard already governs the offer, so we clamp
+    against the asking price alone and leave the (untrustworthy) anchor out
+    of it — otherwise a single weak comp could pull the offer ceiling down
+    and undo the thin-comp floor. Returns (clamped_offer, changed?).
+    """
+    try:
+        offer = float(offer or 0.0)
+    except (TypeError, ValueError):
+        offer = 0.0
+    asking = float(asking or 0.0)
+    mv = market_value or {}
+    sold_avg   = float(mv.get("sold_avg", 0) or 0)
+    sold_count = int(mv.get("sold_count", 0) or 0)
+    est        = float(mv.get("estimated_value", 0) or 0)
+    anchor = sold_avg if (sold_avg > 0 and sold_count >= 3) else est
+    trust  = anchor > 0 and sold_count >= 3
+
+    # Ceiling
+    if asking > 0 and trust:
+        ceiling = min(asking, anchor * 1.15)
+    elif asking > 0:
+        ceiling = asking
+    elif trust:
+        ceiling = anchor * 1.15
+    else:
+        return round(offer, 2), False  # nothing trustworthy to clamp against
+
+    # Floor
+    if trust and asking > 0:
+        floor = 0.5 * min(asking, anchor)
+    elif asking > 0:
+        floor = 0.4 * asking
+    else:
+        floor = 0.5 * anchor
+    if floor > ceiling:
+        floor = ceiling
+
+    clamped = offer
+    if clamped > ceiling:
+        clamped = ceiling
+    if clamped < floor:
+        clamped = floor
+    return round(clamped, 2), abs(clamped - offer) > 0.01
+
+
 def _normalize_negotiation(
     raw,
     score: int,
@@ -1240,8 +1302,14 @@ async def score_deal(
         all_urls = deduped
     image_results = []
     if all_urls:
-        log.info(f"Fetching {min(len(all_urls), 5)} listing image(s) for vision analysis...")
-        image_results = await _fetch_multiple_images(all_urls, max_images=5)
+        # Task #111 — cap vision at 4 images so photo-heavy listings don't
+        # balloon the final scoring call. Floor is 4 (NOT 2-3): the vision
+        # prompt sets is_stock_photo=false on ANY hand-held photo, and that flag
+        # is score-punitive — capping lower would hide real photos at positions
+        # 4-5 and cause false-positive stock-photo penalties.
+        _VISION_IMAGE_CAP = 4
+        log.info(f"Fetching {min(len(all_urls), _VISION_IMAGE_CAP)} listing image(s) for vision analysis...")
+        image_results = await _fetch_multiple_images(all_urls, max_images=_VISION_IMAGE_CAP)
 
     image_analyzed = len(image_results) > 0
     num_images = len(image_results)
@@ -1342,6 +1410,16 @@ async def score_deal(
             safe_offer = -1.0  # Sentinel: tells UI to display 'Not recommended'
         else:
             safe_offer = float(raw_offer)
+
+        # Task #109 — clamp the recommended offer to market-derived bounds so
+        # the model can't hallucinate an absurd lowball or an over-asking
+        # number. Skip the -1.0 "not recommended" sentinel.
+        if safe_offer > 0:
+            safe_offer, _offer_clamped = _clamp_recommended_offer(
+                safe_offer, float(listing.get("price") or 0.0), market_value or {}
+            )
+            if _offer_clamped:
+                log.info(f"[OfferClamp] recommended_offer clamped to ${safe_offer:.0f}")
 
         raw_aff_cat    = (data.get("affiliate_category") or "").strip().lower()
         raw_neg_msg    = (data.get("negotiation_message") or "").strip()

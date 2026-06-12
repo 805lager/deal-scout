@@ -253,7 +253,18 @@ body:not(.show-extra) .col-extra{display:none}
 </div>
 
 <script>
-const API_KEY = '{{API_KEY}}';
+// Task #113 — admin token is NEVER embedded in this page. We collect it
+// client-side (sessionStorage, prompting once per session) and send it as
+// X-Admin-Token on every admin API call.
+const API_KEY = (function () {
+  let t = '';
+  try { t = sessionStorage.getItem('ds_admin_token') || ''; } catch (_) {}
+  if (!t) {
+    t = (prompt('Enter admin token:') || '').trim();
+    if (t) { try { sessionStorage.setItem('ds_admin_token', t); } catch (_) {} }
+  }
+  return t;
+})();
 const CURRENT_VERSION = '{{CURRENT_VERSION}}';
 const BASE = window.location.pathname.replace(/\/admin\/audit\/?$/, '');
 
@@ -288,7 +299,7 @@ function switchTab(name) {
 }
 
 function headers() {
-  return {'Content-Type':'application/json','X-DS-Key':API_KEY};
+  return {'Content-Type':'application/json','X-Admin-Token':API_KEY};
 }
 
 function fmt$(v) {

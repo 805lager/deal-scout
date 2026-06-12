@@ -434,6 +434,15 @@
       '<span id="ds-progress-label">Analyzing deal\u2026</span>');
     panel.appendChild(body);
 
+    // Diagnostic line — mirrors FBM's loading panel. Reflects hydration
+    // progress, updated on each retry via _updateDiagLine().
+    const diagLine = document.createElement("div");
+    diagLine.id = "ds-diag-line";
+    diagLine.style.cssText = "padding:0 10px 8px;color:#4b5563;font-size:10px;font-family:ui-monospace,Menlo,monospace;line-height:1.4";
+    diagLine.textContent = "detecting\u2026";
+    panel.appendChild(diagLine);
+    try { _updateDiagLine(); } catch (_e) {}
+
     if (!document.getElementById("ds-spin-style")) {
       const s = document.createElement("style");
       s.id = "ds-spin-style";
@@ -445,6 +454,31 @@
   function renderProgress(label) {
     const el = document.getElementById("ds-progress-label");
     if (el) el.textContent = label;
+  }
+
+  // Current listing title from the CL DOM — used for hydration gating,
+  // content-title verification, and the loading diagnostic line.
+  function _dsTitle() {
+    return (
+      document.querySelector("#titletextonly")?.textContent?.trim() ||
+      document.querySelector(".postingtitletext, [class*='postingtitletext']")?.textContent?.trim() ||
+      document.querySelector("h1")?.textContent?.trim() ||
+      (document.title || "").replace(/[\s\-\u2013|]+craigslist.*$/i, "").replace(/\s*-\s*$/, "").trim()
+    );
+  }
+
+  function _updateDiagLine(info) {
+    const el = document.getElementById("ds-diag-line");
+    if (!el) return;
+    try {
+      const title = (info && info.title) || _dsTitle();
+      if (title && title.length > 3) {
+        const short = title.length > 42 ? title.slice(0, 42) + "\u2026" : title;
+        el.textContent = "Reading: " + short;
+      } else {
+        el.textContent = "Waiting for listing to load\u2026";
+      }
+    } catch (_e) { el.textContent = ""; }
   }
 
   function renderError(msg) {
@@ -1413,24 +1447,40 @@
   }
 
   // ── Auto-Score ─────────────────────────────────────────────────────────────
+  // _dsNonce gates in-flight hydration loops: RESCORE bumps it so any pending
+  // retry bails (isAlive → false) and the fresh attempt gets a full budget.
+  let _dsNonce = 0;
+
   async function autoScore() {
     if (!isListingPage()) return;
 
-    // CL is a traditional multi-page site — content is loaded at page ready.
-    // Brief poll for page text (max 2s) in case the browser is still parsing.
-    let waited = 0;
-    while ((document.body.innerText || "").length < 200 && waited < 10) {
-      await new Promise(r => setTimeout(r, 200));
-      waited++;
-    }
+    const myNonce = _dsNonce;
+    const snapUrl = location.href;
+    const isAlive = () => _dsNonce === myNonce && location.href === snapUrl;
 
-    const rawData = extractRaw();
-    if (!rawData.raw_text || rawData.raw_text.length < 100) {
+    showPanel();
+    renderLoading({});
+
+    // Shared hydration-wait + retry/backoff + content-title verification.
+    const res = await window.DealScoutHydrate.waitForListing({
+      getTitle: _dsTitle,
+      extract: extractRaw,
+      isAlive,
+      onProgress: (info) => { try { _updateDiagLine(info); } catch (_e) {} },
+    });
+
+    if (!isAlive()) return;
+    if (!res.ok) {
       showPanel();
-      renderError("Could not read this listing — try refreshing.");
+      renderError(
+        res.reason === "insufficient-content"
+          ? "Could not read this listing — try refreshing."
+          : "Listing still loading — tap RESCORE."
+      );
       return;
     }
 
+    const rawData = res.rawData;
     const abort = new AbortController();
     window.__dsCLAbort = abort;
 
@@ -1447,6 +1497,9 @@
 
   // ── Global trigger (called directly by popup via executeScript) ────────────
   window.__dsScoreCL = () => {
+    // Bump the nonce so any in-flight hydration loop bails, abort a streaming
+    // request, and reset _initiated so the retry budget starts fresh.
+    _dsNonce++;
     if (window.__dsCLAbort) { window.__dsCLAbort.abort(); window.__dsCLAbort = null; }
     _initiated = false;
     removePanel();

@@ -97,7 +97,14 @@ async def _get_token() -> Optional[str]:
                 log.info(f"[BrowseAPI] OAuth2 token acquired (expires in {data.get('expires_in', 7200)}s)")
                 return _cached_token
         except Exception as e:
-            log.warning(f"[BrowseAPI] OAuth2 token failed: {type(e).__name__}: {e}")
+            # Task #113 — log only the exception type + HTTP status (if any).
+            # Never log the raw exception: the token request carries a Basic
+            # credential header and external error payloads must not echo it.
+            _status = getattr(getattr(e, "response", None), "status_code", None)
+            log.warning(
+                f"[BrowseAPI] OAuth2 token failed: {type(e).__name__}"
+                + (f" (HTTP {_status})" if _status else "")
+            )
             _cached_token = None
             return None
 
